@@ -4,8 +4,8 @@ Commit your written reports to this directory using the exact filenames specifie
 
 | Deliverable     | Filename                          |
 |-----------------|-----------------------------------|
-| Project Plan    | `{USERNAME}-project-plan.pdf`     |
-| Final Report    | `{USERNAME}-final-report.pdf`     |
+| Project Plan    | `ld2022-project-plan.pdf`     |
+| Final Report    | `ld2022-final-report.pdf`     |
 
 **Filenames must:**
 - Be all lowercase  
