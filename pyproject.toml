@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odil-fwi"
+version = "0.1.0"
+description = "Accelerated FWI for Transcranial Ultrasound Imaging using the ODIL Framework"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Luke Dinsdale", email = "ld2022@ic.ac.uk" },
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "mpltools",
+    "pytest"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0",
+    "flake8>=7.0",
+    "pre-commit>=3.0",
+]
+
+[tool.setuptools]
+packages = [] # TODO: add package dir name
+
+
+[project.scripts]
+#odil-fwi = "odil_fwi.cli:main"
