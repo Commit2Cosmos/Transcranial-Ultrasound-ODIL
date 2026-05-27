@@ -1,1 +1,30 @@
 # Logbook
+
+## 27/05/2026: Weekly meeting summary
+
+The next meeting will be on the 8th June.
+
+Before the next meeting, the aim is for each of us to develop our own code (working collaboratively) to reproduce Fig 1 of the ODIL paper. The focus of this figure is comparing the solution of the 1D wave equation using a PINN and ODIL. It solves solely the forward problem. It also includes an ablation study which compares the error, training epochs, and execution time for both solutions. Some key details include:
+
+- ODIL solution was found on a 25 x 25 grid.
+- PINN consisted of two hidden layers with 25 neurons each.
+-  For a given number of parameters N, ODIL represents the solution on a $\sqrt{N} \times \sqrt{N}$ grid, while PINN consists of two equally sized hidden layers with tanh activation.
+- Collocation points are specific locations in the domain of a differential equation where the approximate solution is required to satisfy the equation exactly.
+-  The number of collocation points for PINN is fixed and amounts to 8192 points inside the domain and 768 points for the initial and boundary conditions functions.
+- The execution time is a product of the number of optimization epochs required to reach a 150% of the error obtained after 80000 epochs and an average execution time over the last 100 epochs.
+- The ablation study featured a comparison of training with L-BFGS-B and Newton's method. The error metric was the $L2$ norm.
+- In the figure, the plots compare against a reference solution computed using finite differences.
+
+General order of affairs:
+
+- Obtain reference solution
+- Implement ODIL
+- Implement PINN
+- Experiment
+
+Other notes fromt today:
+
+- The end goal of this exercise is to understand the ODIl methodology in practice. Experiements should explore its limitations, et cetera. This can also be a guide for estimating computational requirements and time to solution.
+- The hope is that ODIL will bypass the requirement for AWI.
+- You can spawn a notebook on the RCS using [JupyterHub](https://teams.microsoft.com/l/message/19:meeting_N2M2ZWIwMDctZGFjMC00ZjUwLTkwYjctMDRmZmYzYTI5ZWY2@thread.v2/1779885230370?context=%7B%22contextType%22%3A%22chat%22%7D).
+- Consider setting up Weights & Biases to track experiments over time
