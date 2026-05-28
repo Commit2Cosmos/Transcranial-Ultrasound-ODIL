@@ -28,3 +28,20 @@ Other notes fromt today:
 - The hope is that ODIL will bypass the requirement for AWI.
 - You can spawn a notebook on the RCS using [JupyterHub](https://teams.microsoft.com/l/message/19:meeting_N2M2ZWIwMDctZGFjMC00ZjUwLTkwYjctMDRmZmYzYTI5ZWY2@thread.v2/1779885230370?context=%7B%22contextType%22%3A%22chat%22%7D).
 - Consider setting up Weights & Biases to track experiments over time
+
+## 28/05: progress update
+
+Regarding the above task:
+
+- Created `notebooks/reproduction/{reference.ipynb,odil.ipynb,pinn.ipynb}`
+- Recreated the reference solution. Upon looking at the ODIL codebase, realised the initial condition the paper states in inconsistent with the plot. Mirrored their implementation as a result.
+- Recreated the ODIL result. 
+    - Discretised the wave equation as specified in the paper along with boundary conditions
+    - Split functionality into a `Wavefield` class and a `DiscretePDELoss` class. The later has a `__call__` method which is used by `scipy.optimize` to evaluate the full functional
+    - Implemented residual tracking and corresponding plotting functionality.
+    - Ran, timed, and plotted results for ODIL for L-BFGS-B and Newton-CG with wavefield initialised with zeros and random values.
+
+Next steps: 
+- [ ] Implement the PINN approach
+- [ ] Combine with reference and ODIL results in single plot including trace samples
+- [ ] Investigate limitations of ODIL along with proper runtime statistics
