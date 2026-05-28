@@ -26,6 +26,7 @@ dev = [
     "black>=24.0",
     "flake8>=7.0",
     "pre-commit>=3.0",
+    "ipykernel"
 ]
 
 [tool.setuptools]
