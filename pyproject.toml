@@ -17,7 +17,8 @@ dependencies = [
     "scipy",
     "matplotlib",
     "mpltools",
-    "pytest"
+    "pytest",
+    "jax"
 ]
 
 [project.optional-dependencies]
