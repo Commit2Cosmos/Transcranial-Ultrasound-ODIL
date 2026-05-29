@@ -18,7 +18,8 @@ dependencies = [
     "matplotlib",
     "mpltools",
     "pytest",
-    "jax"
+    "jax",
+    "torch",
 ]
 
 [project.optional-dependencies]
