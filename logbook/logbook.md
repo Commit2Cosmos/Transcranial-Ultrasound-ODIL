@@ -45,3 +45,7 @@ Next steps:
 - [ ] Implement the PINN approach
 - [ ] Combine with reference and ODIL results in single plot including trace samples
 - [ ] Investigate limitations of ODIL along with proper runtime statistics
+
+## 29/05: progress update
+
+I have implemented the PINN approach, but I am struggling to match their results. A key issue is the network is failing to replicate the high frequency information contained in the reference solution. I originally trained with just Adam and it produced a decent result but stagnated after ~10000 epochs. Now I am playing around with switching to L-BFGS later in the training to try to avoid getting stuck in local minima. I fear the network they said they used just doesn't have enough capacity to represent the high frequency data, though. The mismatch between what they stated and what they implemented in the code base for the reference solution is making me wary. They didn't mention anything about training strategy, and the architecture is slightly hazy, hence the difficulty. Will perservere...
