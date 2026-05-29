@@ -26,7 +26,7 @@ Other notes fromt today:
 
 - The end goal of this exercise is to understand the ODIl methodology in practice. Experiements should explore its limitations, et cetera. This can also be a guide for estimating computational requirements and time to solution.
 - The hope is that ODIL will bypass the requirement for AWI.
-- You can spawn a notebook on the RCS using [JupyterHub](https://teams.microsoft.com/l/message/19:meeting_N2M2ZWIwMDctZGFjMC00ZjUwLTkwYjctMDRmZmYzYTI5ZWY2@thread.v2/1779885230370?context=%7B%22contextType%22%3A%22chat%22%7D).
+- You can spawn a notebook on the RCS using [JupyterHub](https://jupyter.cx3.rcs.ic.ac.uk/hub/login?next=%2Fhub%2Fspawn).
 - Consider setting up Weights & Biases to track experiments over time
 
 ## 28/05: progress update
