@@ -28,7 +28,6 @@ dev = [
     "flake8>=7.0",
     "pre-commit>=3.0",
     "ipykernel",
-    "livelossplot",
     "torchinfo",
 ]
 
