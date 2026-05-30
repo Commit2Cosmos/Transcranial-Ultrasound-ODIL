@@ -1,2 +1,4 @@
 *.egg-info/
 .history
+*.ipynb_checkpoints
+**/wandb/*
