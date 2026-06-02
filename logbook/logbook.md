@@ -61,3 +61,12 @@ Also discussed how we could specialise. They suggested 3 options:
 3. Inverse focus: 2D FWI using ODIL
 
 I also brought up the possibility of an UQ study, and they seemed interested, so maybe worth reading about. If that does not go ahead, opt. 1 and 3 seem interesting to me, but opt. 1 is probably less likely due to the need for GPU programming, etc.
+
+## 02/06: progress update
+
+I have finished the baseline ODIL and PINN figure reproduction. Next, I will either:
+
+- Complete a similar ablation study
+- Extend the ODIL framework to invert for a non-constant wavespeed
+
+Note that the latter is effectively 1D FWI. In practice, we will need to add a data residual to the functional that measures the difference between the target and observed data at discrete point(s).
