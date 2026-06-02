@@ -273,7 +273,7 @@ def run_odil(
 
         convergence = result["success"]
         print(
-            f"Convergence: {" achieved" if convergence else " failed"}",
+            f"Convergence: {' achieved' if convergence else ' failed'}",
         )
         print("Exit reason:", result.message)
         if convergence:
