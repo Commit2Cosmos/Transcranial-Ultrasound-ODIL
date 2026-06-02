@@ -25,13 +25,14 @@ def plot_1d(
     uu: np.ndarray, xx: np.ndarray, tt: np.ndarray, title: str = "Exact solution"
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
+    umax = max(abs(np.max(uu)), abs(np.min(uu)))
 
     im = ax.imshow(
         uu,
         extent=(xx.min(), xx.max(), tt.max(), tt.min()),  # [xmin, xmax, tmax, tmin]
         cmap="RdBu_r",
-        vmin=-0.5,
-        vmax=0.5,  # symmetric since u is bounded in [-0.5, 0.5]
+        vmin=-umax,
+        vmax=umax,  # symmetric since u is bounded in [-0.5, 0.5]
         aspect=4,
     )
 
