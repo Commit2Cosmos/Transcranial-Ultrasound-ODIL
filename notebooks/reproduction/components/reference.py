@@ -17,7 +17,7 @@ def get_exact(tt: np.ndarray, x: np.ndarray) -> np.ndarray:
                 (x + t - 0.5) * k
             )  # rightward NOTE: they specify + 0.5 but plot - 0.5 for this part
 
-    u /= 2 * len(ii)  # 1/10 prefactor from the paper
+    u /= 10  # 1/10 prefactor from the paper
     return u
 
 

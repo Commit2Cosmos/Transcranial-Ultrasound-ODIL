@@ -226,7 +226,7 @@ def run_odil_newton(u, functional):
 
 
 def run_odil(
-    init_values,
+    init_values="zeros",
     method="L-BFGS-B",
     field_plot_title="ODIL",
     history_plot_title="Residual history",
