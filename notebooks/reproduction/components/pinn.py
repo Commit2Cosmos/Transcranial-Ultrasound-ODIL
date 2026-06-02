@@ -218,7 +218,7 @@ def plot_losses(losses: dict):
 
     titles = [
         r"$L(u_i^n)$",
-        r"$\|\mathcal{R}_\mathrm{PDE}\|^2$",
+        r"$\|\mathcal{R}_\mathrm{PDE}\|$",
         r"$\|\mathcal{R}_\mathrm{IC}\|$",
         r"$\|\mathcal{R}_\mathrm{left}\|$",
         r"$\|\mathcal{R}_\mathrm{right}\|$",
@@ -230,7 +230,7 @@ def plot_losses(losses: dict):
         ax.semilogy(data)
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Training loss")
-        ax.set_title(t)
+        ax.set_title(t + f", current = {data[-1]:.3e}")
 
     fig.suptitle("Training history per component")
     fig.tight_layout()
@@ -244,18 +244,30 @@ class PINNConfig:
     neurons: int = 25
     lr: float = 0.1
     epochs: int = 100
+    pde_weight: float = 1.0
     ic_weight: float = 1.0
     left_bc_weight: float = 1.0
     right_bc_weight: float = 1.0
     velocity_bc_weight: float = 1.0
-    pde_weight: float = 1.0
     t_0: float = 0.0
     t_N: float = 1.0
     x_0: float = -1.0
     x_I: float = 1.0
 
+    def show(self):
+        print("PINN Configuration:")
+        print(f"Layers: {self.layers}. Neurons per layer: {self.neurons}.")
+        print(f"Learning rate: {self.lr}. Epochs: {self.epochs}.")
+        print(
+            f"PDE weight: {self.pde_weight}.\nIC weight: {self.ic_weight}. "
+            + f"\nLeft BC weight: {self.left_bc_weight}."
+            + f"\nRight BC weight: {self.right_bc_weight}. "
+            + f"\nVelocity BC weight: {self.velocity_bc_weight}."
+        )
+        print(f"Seed: {self.seed}. Device: {self.device}.")
 
-def train(config: PINNConfig) -> PINN:
+
+def train(config: PINNConfig = PINNConfig()) -> PINN:
     set_seed(config.seed)
     device = config.device
 
@@ -270,7 +282,7 @@ def train(config: PINNConfig) -> PINN:
     lbfgs = torch.optim.LBFGS(
         pinn.parameters(),
         lr=config.lr,
-        max_iter=200,
+        max_iter=250,
         history_size=100,
         line_search_fn="strong_wolfe",
     )
@@ -299,19 +311,23 @@ def train(config: PINNConfig) -> PINN:
         loss = lbfgs.step(closure)
         history["L"].append(loss.item())
 
-        if ((i + 1) % 500 == 0) or (i == 0):
+        with torch.enable_grad():
+            ic_loss = loss_ic(pinn, t_ic, x_ic)
+            left_loss = loss_left(pinn, t_left, x_left)
+            right_loss = loss_right(pinn, t_right, x_right)
+            vel_loss = loss_velocity(pinn, t_vel, x_vel)
+            pde_loss = loss_pde(pinn, t_physics, x_physics)
+            history["IC"].append(ic_loss.item())
+            history["BC-Left"].append(left_loss.item())
+            history["BC-Right"].append(right_loss.item())
+            history["Vel"].append(vel_loss.item())
+            history["PDE"].append(pde_loss.item())
+
+        if ((i + 1) % 10 == 0) or (i == 0):
             clear_output(wait=True)
             training_plot(device, pinn, x_test, t_test, i)
             plot_losses(history)
             plt.show()
-
-        if i % 100 == 0:
-            with torch.enable_grad():
-                history["IC"].append(loss_ic(pinn, t_ic, x_ic))
-                history["BC-Left"].append(loss_left(pinn, t_left, x_left))
-                history["BC-Right"].append(loss_right(pinn, t_right, x_right))
-                history["Vel"].append(loss_velocity(pinn, t_vel, x_vel))
-                history["PDE"].append(loss_pde(pinn, t_physics, x_physics))
 
             print(f"Elapsed time: {time.time() - start:.1f}s")
 
