@@ -238,16 +238,16 @@ def plot_losses(losses: dict):
 
 @dataclass
 class PINNConfig:
-    seed: int = 6
+    seed: int = 7
     device: torch.device = get_device()
     layers: int = 2
     neurons: int = 25
-    lr: float = 1.0
-    epochs: int = 2500
-    ic_weight: float = 10.0
-    left_bc_weight: float = 10.0
-    right_bc_weight: float = 10.0
-    velocity_bc_weight: float = 10.0
+    lr: float = 0.1
+    epochs: int = 100
+    ic_weight: float = 1.0
+    left_bc_weight: float = 1.0
+    right_bc_weight: float = 1.0
+    velocity_bc_weight: float = 1.0
     pde_weight: float = 1.0
     t_0: float = 0.0
     t_N: float = 1.0
@@ -268,7 +268,11 @@ def train(config: PINNConfig) -> PINN:
     x_test = torch.linspace(config.x_0, config.x_I, 100).to(device)
 
     lbfgs = torch.optim.LBFGS(
-        pinn.parameters(), lr=config.lr, line_search_fn="strong_wolfe"
+        pinn.parameters(),
+        lr=config.lr,
+        max_iter=200,
+        history_size=100,
+        line_search_fn="strong_wolfe",
     )
 
     history = {"L": [], "PDE": [], "IC": [], "BC-Left": [], "BC-Right": [], "Vel": []}
