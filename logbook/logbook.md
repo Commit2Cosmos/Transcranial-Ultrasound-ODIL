@@ -70,3 +70,16 @@ I have finished the baseline ODIL and PINN figure reproduction. Next, I will eit
 - Extend the ODIL framework to invert for a non-constant wavespeed
 
 Note that the latter is effectively 1D FWI. In practice, we will need to add a data residual to the functional that measures the difference between the target and observed data at discrete point(s).
+
+## 08/06: Weekly meeting
+
+Today, we presented our results from the prior 2 weeks of experimentation. Over this period we have managed to accurately reproduce Figure 1 of the ODIL paper, experiment with algorithm ideas such as optimiser type, and implement baseline 1D and 2D implementations of FWI under ODIL. The presentation went well, and the supervisors seem satisfied with our progress so far.
+
+We also discussed how we would split into individual avenues for investigation in the project. I think I am drawn between 
+
+- Option 1: an efficient forward wave equation solver using the ODIL framework
+- Option 2: a 2D FWI library using the ODIL framework
+
+Option 1 is far more implementation focussed and will require a significant degree of software development, whereas option 2 is more specialised and will require a lot more experimentation around weighting, et cetera. Both are equally impactful.
+
+This week I am focussing on writing up my project plan, starting a literature review, and drafting implementation ideas.
