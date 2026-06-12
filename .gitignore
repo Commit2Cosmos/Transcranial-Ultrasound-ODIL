@@ -1,1 +1,5 @@
 *.egg-info/
+.history
+*.ipynb_checkpoints
+**/wandb/*
+**/__pycache__/*
