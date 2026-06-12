@@ -1,4 +1,4 @@
-name: Build Report
+name: build-report
 
 on:
 
@@ -18,11 +18,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Dependencies
-        run: sudo apt-get install -y --fix-missing latexmk texlive-latex-extra
+      - uses: actions/checkout@v4
 
       - name: Build Report
-        run: make report
-        working-directory: deliverables/report
+
+        uses: xu-cheng/latex-action@v3
+        
+        with:
+          working_directory: deliverables/report
+          root_file: latex/ld2022-report.tex
+          latexmk_use_lualatex: false
+          args: -pdf -cd -jobname=ld2022-report -outdir=../../
