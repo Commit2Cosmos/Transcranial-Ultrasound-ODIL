@@ -2,7 +2,11 @@
 
 ## About
 
-This subdirectory contains the components of my IRP report, written in `LaTeX`. To build the report locally, run
+This subdirectory contains the components of my IRP report, written in `LaTeX`. To build the report locally, first install the relevant dependencies:
+
+```bash
+sudo apt-get install latexmk && sudo apt install texlive-latex-extra
+```
 
 ```bash
 make report
