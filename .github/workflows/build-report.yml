@@ -1,0 +1,31 @@
+name: build-report
+
+on:
+
+  push:
+    branches: main
+    paths:
+      - 'deliverables/report/**'
+
+  pull_request:
+    branches: main
+    paths:
+      - 'deliverables/report/**'
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Report
+
+        uses: xu-cheng/latex-action@v3
+
+        with:
+          working_directory: deliverables/report
+          root_file: latex/report.tex
+          latexmk_use_lualatex: false
+          args: -pdf -cd -jobname=ld2022-report -outdir=../../
