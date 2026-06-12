@@ -1,0 +1,28 @@
+name: Build Report
+
+on:
+
+  push:
+    branches: [main, dev]
+    paths:
+      - 'deliverables/report/**'
+
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'deliverables/report/**'
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Dependencies
+        run: sudo apt-get install -y latexmk texlive-latex-extra
+        
+      - name: Build Report
+        run: make report
+        working-directory: deliverables/report
