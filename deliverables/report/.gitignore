@@ -9,3 +9,4 @@ build
 *.log
 *.out
 latex/report.pdf
+*.synctex.gz
