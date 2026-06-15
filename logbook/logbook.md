@@ -83,3 +83,71 @@ We also discussed how we would split into individual avenues for investigation i
 Option 1 is far more implementation focussed and will require a significant degree of software development, whereas option 2 is more specialised and will require a lot more experimentation around weighting, et cetera. Both are equally impactful.
 
 This week I am focussing on writing up my project plan, starting a literature review, and drafting implementation ideas.
+
+## 15/06: Weekly meeting
+
+This is the first of the weekly meetings following our splitting into our separate avenues for the project. We began with a discussion of how we will collaborate. Specifically:
+
+- We should work together to build a solid baseline
+- We should consider the basic test cases we should implement. These will be shared.
+    - Next two days: decide on spacings, models, geometries, and reference solutions (probably start with homogenous models with analytic solutions)
+    - Plotting tools e.g., colour schemes should be unanimous
+    - Define maximum problem sizes that are feasible to run locally
+    - Source frequency vs target size
+- Reference solutions should be comuted with stride
+    - Forward modelling at a very fine grid
+    - FWI for water start and perfect start
+    - Probably use the Shepp-Logan phantom model
+
+The others will rely on my forward solver. The others will probably tell me things to implement which I should follow. They should assume my main branch does what they want and pull from it. My work is the common point for each project.
+
+Ben suggest that development should focus on modularity in the context of what we want to experiment with, for now. Our priority should be to be able to play around easily with models, grids, et cetera.
+
+### Quick note on implementing sparse operators
+
+Consider the 2D wave equation,
+
+$$u_{tt} = c^2(u_{xx} + u_{yy}) = c^2 \nabla^2 u.$$
+
+Now let
+
+$$\nabla^2 = \delta_{xx} + \delta_{yy}.$$
+
+We must find some way to represent this as a matrix operation.
+
+Consider a simple central difference
+
+$$\nabla^2 u \approx \frac {u_{i+1, j} -2 u_{i, j} + u_{i-1, j}}{\Delta x^2} + \frac {u_{i, j+i-1} -2 u_{i, j} + u_{i, j-1}}{\Delta y^2} := D_x +D_y.$$
+
+We can represent $D_x$ as
+
+$$\alpha\begin{bmatrix}
+0 & 1 & 0\\
+1 & -2 & 1\\
+0 & 1 & 0\\
+\end{bmatrix},$$
+
+where $\alpha = \frac 1 {\Delta x^2}$. In this case then $D_y$ is simply
+
+$$\frac \beta \alpha D_x,$$
+
+where $\beta = \frac 1 {\Delta y^2}$. To turn this into the Laplacian operator, we need
+
+$$
+\begin{align*}
+&\delta_{xx} = D_x \otimes I_{N_y},\\
+&\delta_{yy} = D_y \otimes I_{N_x},\\
+\Rightarrow\ &\nabla^2 = \delta_{xx} + \delta_{yy}
+\end{align*}.$$
+
+The core components we will intially implement are
+
+- Optimiser
+- DiscreteLoss
+- DiscreteOperator
+- Model
+- Grid
+- AcqusitionGeometry
+- Domain
+
+I am largely handling the optimisers, operators (w Milica), and losses.
