@@ -1,7 +1,7 @@
-from base import Operator
+from base import SparseOperator
 import scipy.sparse as sp
 
-class Laplacian(Operator):
+class SparseLaplacian(SparseOperator):
     """2D Laplacian Operator"""
 
     def __init__(self, grid) -> None:

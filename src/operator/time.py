@@ -1,7 +1,7 @@
-from base import Operator
+from base import SparseOperator
 import scipy.sparse as sp
 
-class TimeOperator(Operator):
+class SparseTimeOperator(SparseOperator):
     """Time operator using central difference scheme"""
     
     def __init__(self, grid) -> None:

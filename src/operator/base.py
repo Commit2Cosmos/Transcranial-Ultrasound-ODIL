@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import scipy.sparse as sp
 import numpy as np
 
-class Operator(ABC):
+class SparseOperator(ABC):
     """Base class for spatial operators"""
     def __init__(self, grid) -> None:
         self.grid = grid
