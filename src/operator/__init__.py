@@ -1,3 +1,3 @@
-from base import SparseOperator
+from base import SparseOperator, DenseOperator
 
-__all__ = ["SparseOperator"]
+__all__ = ["SparseOperator", "DenseOperator"]

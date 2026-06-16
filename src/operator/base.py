@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
 import scipy.sparse as sp
-import numpy as np
+import torch
+
 
 class SparseOperator(ABC):
-    """Base class for spatial operators"""
+    """Base class for sparse operators used in direct solves"""
+
     def __init__(self, grid) -> None:
         self.grid = grid
 
@@ -13,4 +15,16 @@ class SparseOperator(ABC):
 
     @abstractmethod
     def assemble(self) -> None:
+        pass
+
+
+class DenseOperator(ABC):
+    """Base class for dense operators used for inverse problems"""
+
+    def __init__(self, grid) -> None:
+        self.grid = grid
+
+    @abstractmethod
+    def gradient(self, u) -> torch.Tensor:
+        """Computes the gradient w.r.t u using .roll"""
         pass
