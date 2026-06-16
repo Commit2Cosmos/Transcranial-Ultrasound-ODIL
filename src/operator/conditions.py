@@ -16,12 +16,38 @@ class Conditions(ABC):
     
 class NeumannMirrorBC2nd(Conditions):
     """Mirror ghost neighbours for 2nd-order spatial stencils (zero normal derivative)."""
-    pass
+    def patch_spatial_neighbors(
+        self,
+        uxm: jax.Array,
+        uxp: jax.Array,
+        uym: jax.Array,
+        uyp: jax.Array,
+        utm: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        pass
+
+    def apply(self, *args, **kwargs):
+        pass
 
 
 class NeumannMirrorBC4th(Conditions):
     """Mirror ghost neighbours for 4th-order spatial stencils (+/-1 and +/-2)."""
-    pass
+    def patch_spatial_neighbors(
+        self,
+        uxm2: jax.Array,
+        uxm: jax.Array,
+        uxp: jax.Array,
+        uxp2: jax.Array,
+        uym2: jax.Array,
+        uym: jax.Array,
+        uyp: jax.Array,
+        uyp2: jax.Array,
+        utm: jax.Array,
+    ) -> tuple[jax.Array, ...]:
+        pass
+
+    def apply(self, *args, **kwargs):
+        pass
 
 
 class InitialConditions(Conditions):
