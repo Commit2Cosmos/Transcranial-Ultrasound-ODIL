@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import scipy.sparse as sp
-import torch
-
+import jax
 
 class SparseOperator(ABC):
     """Base class for sparse operators used in direct solves"""
@@ -19,12 +18,12 @@ class SparseOperator(ABC):
 
 
 class DenseOperator(ABC):
-    """Base class for dense operators used for inverse problems"""
+    """Matrix-free operator using local stencils (e.g. ``jnp.roll``)."""
 
     def __init__(self, grid) -> None:
         self.grid = grid
 
     @abstractmethod
-    def gradient(self, u) -> torch.Tensor:
-        """Computes the gradient w.r.t u using .roll"""
+    def apply(self, u: jax.Array, **kwargs) -> jax.Array:
+        """Apply the discrete operator to field u."""
         pass
