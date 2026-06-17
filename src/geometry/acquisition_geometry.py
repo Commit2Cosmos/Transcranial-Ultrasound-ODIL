@@ -6,8 +6,8 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from grid.grid import Grid
-from models.velocity_models import VelocityModel
+from src.grid import Grid
+from src.models import VelocityModel
 
 
 class AcquisitionGeometry:
