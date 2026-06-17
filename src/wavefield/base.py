@@ -43,7 +43,7 @@ class Wavefield:
 
     @property
     def data(self) -> np.ndarray:
-        """Return flat parameter vector [amp (nt*nx*nx), wvsp (nx*ny)]"""
+        """Return flat parameter vector [amp (nt*nx*ny), wvsp (nx*ny)]"""
         return np.concatenate([self._amplitude.ravel(), self._wavespeed.ravel()])
 
     @data.setter
@@ -124,4 +124,4 @@ if __name__ == "__main__":
     amp = np.random.rand(grid.nt, *grid.shape)
     wsp = np.random.rand(*grid.shape)
     u = Wavefield(grid, init_amplitude=amp, init_wavespeed=wsp)
-    u.show(title="Test plot")
+    u.show(title="Test plot", idx=100)
