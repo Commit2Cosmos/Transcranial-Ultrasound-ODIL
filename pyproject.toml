@@ -31,8 +31,9 @@ dev = [
     "torchinfo",
 ]
 
-[tool.setuptools]
-packages = [] # TODO: add package dir name
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 
 [project.scripts]
