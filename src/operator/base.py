@@ -17,6 +17,10 @@ class SparseOperator(ABC):
     def assemble(self) -> None:
         pass
 
+    @abstractmethod
+    def apply(self, wavefield):
+        pass
+
 
 class DenseOperator(ABC):
     """Matrix-free operator using local stencils (e.g. ``torch.roll``)."""

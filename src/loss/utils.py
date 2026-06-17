@@ -10,17 +10,12 @@ import torch
 class LossConfig:
     """Configuration for the loss function."""
 
-    time_order: int = field(
-        init=False, default=2
-    )  # order of the 2nd time derivative method
-    space_order: int = field(init=False, default=2)  # order of the Laplcacian method
+    time_order: int = 2  # order of the time-derivative method
+    space_order: int = 2  # order of the Laplacian method
     time_operator: DenseOperator | SparseOperator = field(init=False)
-    spatial_operator: DenseOperator | SparseOperator = field(init=False)
+    laplacian_operator: DenseOperator | SparseOperator = field(init=False)
 
-    def __post_init__(self, timeorder: int = 2, spaceorder: int = 2):
-        self.time_order = timeorder
-        self.space_order = spaceorder
-
+    def __post_init__(self):
         if self.time_order == 2:
             self.time_operator = TimeOperator2ndOrder()
         elif self.time_order == 4:
@@ -29,9 +24,9 @@ class LossConfig:
             raise ValueError(f"Invalid time order: {self.time_order}")
 
         if self.space_order == 2:
-            self.spatial_operator = Laplacian2ndOrder()
+            self.laplacian_operator = Laplacian2ndOrder()
         elif self.space_order == 4:
-            self.spatial_operator = Laplacian4thOrder()
+            self.laplacian_operator = Laplacian4thOrder()
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
