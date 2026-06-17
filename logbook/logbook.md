@@ -151,3 +151,13 @@ The core components we will intially implement are
 - Domain
 
 I am largely handling the optimisers, operators (w Milica), and losses.
+
+## 17/06: Progress update
+
+We have done quite a lot in the last few days, and spread the initial development between us. This should be recorded in the commit history, but this serves as a recognition of their contribution either way. Here is a breakdown
+
+- Anton: Grid, AcqusitionGeometry, and VelocityModel classes
+- Melica: various classes relating to conditions and stencil application
+- Me: Optimiser classes, discrete loss classes, Wavefield class, SparseOperator classes 
+
+There was a little bit of implementation friction, namely becase my package now has to contain two pathways, one for the forward problem (my focus) and one for the inverse problem (their focus). This requires the use of different optimisers, losses, stencils, et cetera, and is not quite as simple as "just stick the wavespeed model in and optimise". 
