@@ -18,7 +18,7 @@ class SparseOperator(ABC):
         pass
 
     @abstractmethod
-    def apply(self, wavefield):
+    def apply(self, wavefield) -> torch.Tensor:
         pass
 
 
