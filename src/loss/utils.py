@@ -60,20 +60,32 @@ class LossTape:
 
     def show(self, title: str = "Loss History"):
         assert len(self.history["loss"]) > 0, "No loss history to show."
-        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+        ncols = 3 if len(self.history["data_residuals"]) > 0 else 2
+        fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
         # compute residual norms
-        r_norms = [torch.norm(residuals) for residuals in self.history["residuals"]]
+        pde_norms = [
+            torch.norm(residuals) for residuals in self.history["pde_residuals"]
+        ]
 
-        axs[0].plot(self.history["loss"])
+        axs[0].semilogy(self.history["loss"])
         axs[0].set_title("Loss")
         axs[0].set_xlabel("Iteration")
         axs[0].set_ylabel("Loss Value")
 
-        axs[1].plot(r_norms)
-        axs[1].set_title("Residual Norms")
+        axs[1].semilogy(pde_norms)
+        axs[1].set_title("PDE Residual Norms")
         axs[1].set_xlabel("Iteration")
         axs[1].set_ylabel("Residual Norm")
+
+        if ncols == 3:
+            data_norms = [
+                torch.norm(residuals) for residuals in self.history["data_residuals"]
+            ]
+            axs[2].semilogy(data_norms)
+            axs[2].set_title("Data Residual Norms")
+            axs[2].set_xlabel("Iteration")
+            axs[2].set_ylabel("Residual Norm")
 
         fig.suptitle(title)
         plt.tight_layout()
