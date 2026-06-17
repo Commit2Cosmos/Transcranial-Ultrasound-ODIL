@@ -28,10 +28,10 @@ class DiscreteLoss(ABC):
         pass
 
     @abstractmethod
-    def _residuals(self, data) -> torch.Tensor:
+    def _residuals(self, data: torch.Tensor) -> torch.Tensor:
         """Compute the residuals of the loss function given a wavefield."""
         pass
 
     @abstractmethod
-    def _eval_pde_loss(self, data) -> torch.Tensor:
+    def _eval_pde_loss(self, data: torch.Tensor) -> torch.Tensor:
         pass
