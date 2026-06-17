@@ -29,7 +29,6 @@ class Grid:
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     t_max: Optional[float] = None
-    nt: Optional[int] = None
     # TODO: DEVICE and DTYPE should be set in a config file
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
@@ -41,6 +40,7 @@ class Grid:
     interior_ny: int = field(init=False)
     nx: int = field(init=False)
     ny: int = field(init=False)
+    nt: int = field(init=False)
     extent: Tuple[Tuple[float, float], Tuple[float, float]] = field(init=False)
     dx: float = field(init=False)
     dy: float = field(init=False)
