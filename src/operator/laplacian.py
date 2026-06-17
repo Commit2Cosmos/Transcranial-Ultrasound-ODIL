@@ -37,7 +37,7 @@ class DenseLaplacian(DenseOperator):
     def __init__(self, grid) -> None:
         super().__init__(grid)
 
-    def gradient(self, u) -> torch.Tensor:
+    def apply(self, u: torch.Tensor, **kwargs) -> torch.Tensor:
         """Computes the gradient w.r.t u using .roll"""
         # compute the gradient in x and y directions
         d2udx2 = (
