@@ -14,8 +14,6 @@ class Wavefield:
     _wavespeed: np.ndarray = field(init=False)
     init_wavespeed: np.ndarray | None = None  # optional initialise speed
 
-    amp_extent: int = field(init=False)
-
     def __post_init__(self) -> None:
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
@@ -41,7 +39,7 @@ class Wavefield:
 
     @property
     def wavespeed(self) -> np.ndarray:
-        return self._amplitude
+        return self._wavespeed
 
     @property
     def data(self) -> np.ndarray:
@@ -92,24 +90,20 @@ class Wavefield:
         fig, axs = plt.subplots(1, 2, figsize=(12, 4))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
 
-        im1 = plt.imshow(
+        im1 = axs[0].imshow(
             amp_data,
-            ax=axs[0],
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="RdBu_r",
             aspect="auto",
-            title=f"Amplitude field ({view} plane, idx = {idx})",
         )
 
-        im2 = plt.imshow(
+        im2 = axs[1].imshow(
             self.wavespeed,
-            ax=axs[1],
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="viridis",
             aspect="auto",
-            title="Wave speed model",
         )
 
         i, j = view[0], view[1]  # extract letters for labelling
@@ -117,9 +111,22 @@ class Wavefield:
             ax.set_xlabel(i)
             ax.set_ylabel(j)
 
-        plt.colorbar(im1, cax=axs[0], title="Amplitude")
-        plt.colorbar(im2, cax=axs[1], title=r"Wavespeed ($ms^{-1}$)")
+        axs[0].set_title(
+            f"Amplitude field ({view} plane, {["t", "x", "y"][axis]} = {idx})"
+        )
+        axs[1].set_title("Wave speed model")
+
+        plt.colorbar(im1, ax=axs[0], label="Amplitude")
+        plt.colorbar(im2, ax=axs[1], label=r"Wavespeed ($ms^{-1}$)")
 
         fig.suptitle(title)
         fig.tight_layout()
-        fig.show()
+        plt.show()
+
+
+if __name__ == "__main__":
+    grid = Grid()
+    amp = np.random.rand(grid.nt, *grid.shape)
+    wsp = np.random.rand(*grid.shape)
+    u = Wavefield(grid, init_amplitude=amp, init_wavespeed=wsp)
+    u.show(title="Test plot")
