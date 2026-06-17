@@ -9,7 +9,7 @@ from skimage.transform import resize
 
 import numpy as np
 
-from grid.grid import Grid
+from src.grid import Grid
 
 
 class VelocityModel:
