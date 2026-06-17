@@ -37,7 +37,7 @@ class LossTape:
 
     name: str = "Default LossTape"
     log_every: int = 5  # log interval
-    history: dict = {"loss": [], "residuals": []}
+    history: dict = field(default_factory=lambda: {"loss": [], "residuals": []})
     success: bool = False
 
     def log(self, loss: float, residuals: torch.Tensor):
