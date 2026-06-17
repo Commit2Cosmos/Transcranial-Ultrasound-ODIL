@@ -29,6 +29,7 @@ class Grid:
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     t_max: Optional[float] = None
+    init_nt: Optional[int] = None  # optional override; derived from CFL if None
     # TODO: DEVICE and DTYPE should be set in a config file
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
@@ -74,9 +75,11 @@ class Grid:
         if self.t_max is None:
             diag = math.hypot(ix_max - ix_min, iy_max - iy_min)
             self.t_max = 2.0 * diag / self.c_ref
-        if self.nt is None:
+        if self.init_nt is None:
             dt_cfl = 1.0 / (self.c_ref * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
             self.nt = int(math.ceil(self.t_max / (self.cfl_safety * dt_cfl))) + 1
+        else:
+            self.nt = self.init_nt
         self.dt = self.t_max / (self.nt - 1)
 
         self.x = torch.linspace(x_min, x_max, self.nx, dtype=self.dtype, device=device)
