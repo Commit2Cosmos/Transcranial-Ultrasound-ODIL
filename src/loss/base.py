@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 from .utils import LossConfig, LossTape
 import torch
+import numpy as np
 
 
 class DiscreteLoss(ABC):
@@ -18,7 +19,7 @@ class DiscreteLoss(ABC):
         self.lap = config.laplacian_operator
 
     @abstractmethod
-    def evaluate(self, wavefield) -> Tuple[float, torch.Tensor]:
+    def evaluate(self, wavefield) -> Tuple[float, np.ndarray]:
         """Evaluate the loss function given a wavefield."""
         pass
 

@@ -4,6 +4,7 @@ from src.loss.utils import LossConfig, LossTape
 from .base import DiscreteLoss
 
 import torch
+import numpy as np
 
 
 class InverseLoss(DiscreteLoss):
@@ -17,7 +18,7 @@ class InverseLoss(DiscreteLoss):
 
     def evaluate(
         self, wavefield: torch.Tensor, wavespeed: torch.Tensor
-    ) -> Tuple[float, torch.Tensor]:
+    ) -> Tuple[float, np.ndarray]:
 
         wavefield.requires_grad_()
         r = self._residuals(wavefield, wavespeed)
@@ -30,7 +31,7 @@ class InverseLoss(DiscreteLoss):
         )
 
         self.callback.log(L.item(), r)
-        return L.item(), grad
+        return L.item(), grad.numpy()  # returns loss, grad together
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
         return torch.stack(

@@ -2,6 +2,7 @@ from typing import Tuple
 from .base import DiscreteLoss
 
 import torch
+import numpy as np
 
 
 class ForwardLoss(DiscreteLoss):
@@ -9,7 +10,7 @@ class ForwardLoss(DiscreteLoss):
 
     def evaluate(
         self, wavefield: torch.Tensor, wavespeed: torch.Tensor
-    ) -> Tuple[float, torch.Tensor]:
+    ) -> Tuple[float, np.ndarray]:
         wavefield.requires_grad_()
         r = self._residuals(wavefield, wavespeed)
         L = self._eval_loss(r)
@@ -21,7 +22,7 @@ class ForwardLoss(DiscreteLoss):
         )
 
         self.callback.log(L.item(), r)
-        return L.item(), grad
+        return L.item(), grad.numpy()  # returns loss, grad together
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
         return (residuals**2).sum()  # unnormalised for forward problem
