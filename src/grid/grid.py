@@ -3,8 +3,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 import torch
+
 
 @dataclass
 class Grid:
@@ -17,12 +19,15 @@ class Grid:
     """
 
     interior_shape: Tuple[int, int] = (100, 100)
-    interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = ((-1.0, 1.0), (-1.0, 1.0))
+    interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
+        (-1.0, 1.0),
+        (-1.0, 1.0),
+    )
     c_ref: float = 1.5
     cfl_safety: float = 0.8
-    pml_width: int = 10             # extra cells per side wrapping the interior
-    pml_power: int = 3              # sigma(d) = sigma_max * (d / L_pml)^pml_power
-    pml_R0: float = 1e-6            # target theoretical reflection coefficient
+    pml_width: int = 10  # extra cells per side wrapping the interior
+    pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
+    pml_R0: float = 1e-6  # target theoretical reflection coefficient
     t_max: Optional[float] = None
     nt: Optional[int] = None
     # TODO: DEVICE and DTYPE should be set in a config file
@@ -30,7 +35,6 @@ class Grid:
     dtype: torch.dtype = torch.float32
     # device: str = DEVICE
     # dtype: torch.dtype = DTYPE
-
 
     # derived
     interior_nx: int = field(init=False)
@@ -70,7 +74,7 @@ class Grid:
             diag = math.hypot(ix_max - ix_min, iy_max - iy_min)
             self.t_max = 2.0 * diag / self.c_ref
         if self.nt is None:
-            dt_cfl = 1.0 / (self.c_ref * math.sqrt(1.0/self.dx**2 + 1.0/self.dy**2))
+            dt_cfl = 1.0 / (self.c_ref * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
             self.nt = int(math.ceil(self.t_max / (self.cfl_safety * dt_cfl))) + 1
         self.dt = self.t_max / (self.nt - 1)
 
@@ -94,8 +98,7 @@ class Grid:
         return (slice(p, p + self.interior_nx), slice(p, p + self.interior_ny))
 
     def _sigma_max(self, L_pml_phys: float) -> float:
-        """sigma_max from a target theoretical reflection coefficient.
-        """
+        """sigma_max from a target theoretical reflection coefficient."""
         if L_pml_phys <= 0:
             raise ValueError("L_pml_phys must be positive.")
         if self.c_ref <= 0:
@@ -103,7 +106,9 @@ class Grid:
         if not (0.0 < self.pml_R0 < 1.0):
             raise ValueError("pml_R0 must lie strictly between 0 and 1.")
 
-        return -((self.pml_power + 1) * self.c_ref * math.log(self.pml_R0)) / (2.0 * L_pml_phys)
+        return -((self.pml_power + 1) * self.c_ref * math.log(self.pml_R0)) / (
+            2.0 * L_pml_phys
+        )
 
     def _build_pml_profiles(self):
         """sigma_x(i, j), sigma_y(i, j) on the full grid; zero in the interior."""
@@ -119,10 +124,12 @@ class Grid:
         i = torch.arange(self.nx, dtype=self.dtype, device=self.device)
         j = torch.arange(self.ny, dtype=self.dtype, device=self.device)
 
-        d_x = (torch.clamp(p - i, min=0.0) +
-               torch.clamp(i - (self.nx - 1 - p), min=0.0)) * self.dx
-        d_y = (torch.clamp(p - j, min=0.0) +
-               torch.clamp(j - (self.ny - 1 - p), min=0.0)) * self.dy
+        d_x = (
+            torch.clamp(p - i, min=0.0) + torch.clamp(i - (self.nx - 1 - p), min=0.0)
+        ) * self.dx
+        d_y = (
+            torch.clamp(p - j, min=0.0) + torch.clamp(j - (self.ny - 1 - p), min=0.0)
+        ) * self.dy
 
         sigma_x_1d = sigma_max_x * (d_x / L_pml_x) ** self.pml_power
         sigma_y_1d = sigma_max_y * (d_y / L_pml_y) ** self.pml_power
@@ -132,34 +139,49 @@ class Grid:
         return sigma_x, sigma_y
 
     def cfl(self, c_max: float) -> float:
-        return c_max * self.dt * math.sqrt(1.0/self.dx**2 + 1.0/self.dy**2)
+        return c_max * self.dt * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
 
     def plot_absorption_profile(self, ax=None):
         """Plot the 2D PML absorption (sigma_x + sigma_y) over the full grid."""
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.extent
-        im = ax.imshow((self.sigma_x + self.sigma_y).cpu().numpy().T,
-                       origin="lower", extent=[xmin, xmax, ymin, ymax],
-                       cmap="magma", aspect="equal")
-        ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
+        im = ax.imshow(
+            (self.sigma_x + self.sigma_y).cpu().numpy().T,
+            origin="lower",
+            extent=(xmin, xmax, ymin, ymax),
+            cmap="magma",
+            aspect="equal",
+        )
+        ax.set_xlabel("x [m]")
+        ax.set_ylabel("y [m]")
         ax.set_title(r"PML absorption $\sigma_x + \sigma_y$")
         (ix0, ix1), (iy0, iy1) = self.interior_extent
-        ax.add_patch(plt.Rectangle((ix0, iy0), ix1 - ix0, iy1 - iy0,
-                                   fill=False, edgecolor="white",
-                                   linestyle="--", linewidth=1.0,
-                                   label="non-PML interior"))
+        ax.add_patch(
+            Rectangle(
+                (ix0, iy0),
+                ix1 - ix0,
+                iy1 - iy0,
+                fill=False,
+                edgecolor="white",
+                linestyle="--",
+                linewidth=1.0,
+                label="non-PML interior",
+            )
+        )
         plt.colorbar(im, ax=ax, shrink=0.85, label=r"$\sigma$ [1/s]")
         return ax
 
     def summary(self) -> str:
         (ix0, ix1), (iy0, iy1) = self.interior_extent
         (xmin, xmax), (ymin, ymax) = self.extent
-        return (f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
-                f"total {self.nx}x{self.ny} (PML p={self.pml_width}), "
-                f"nt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m, "
-                f"dt={self.dt:.4f} s, cfl@c_ref={self.cfl(self.c_ref):.3f}, "
-                f"interior x in [{ix0:.2f}, {ix1:.2f}]m, "
-                f"y in [{iy0:.2f}, {iy1:.2f}]m, "
-                f"total x in [{xmin:.2f}, {xmax:.2f}]m, "
-                f"total y in [{ymin:.2f}, {ymax:.2f}]m")
+        return (
+            f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
+            f"total {self.nx}x{self.ny} (PML p={self.pml_width}), "
+            f"nt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m, "
+            f"dt={self.dt:.4f} s, cfl@c_ref={self.cfl(self.c_ref):.3f}, "
+            f"interior x in [{ix0:.2f}, {ix1:.2f}]m, "
+            f"y in [{iy0:.2f}, {iy1:.2f}]m, "
+            f"total x in [{xmin:.2f}, {xmax:.2f}]m, "
+            f"total y in [{ymin:.2f}, {ymax:.2f}]m"
+        )
