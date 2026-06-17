@@ -20,6 +20,7 @@ dependencies = [
     "pytest",
     "jax",
     "torch",
+    "scikit-image",
 ]
 
 [project.optional-dependencies]
