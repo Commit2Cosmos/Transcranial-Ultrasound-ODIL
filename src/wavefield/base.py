@@ -107,9 +107,8 @@ class Wavefield:
             ax.set_xlabel(i)
             ax.set_ylabel(j)
 
-        axs[0].set_title(
-            f"Amplitude field ({view} plane, {["t", "x", "y"][axis]} = {idx})"
-        )
+        slice_plane = ["t", "x", "y"][axis]
+        axs[0].set_title(f"Amplitude field ({view} plane, {slice_plane} = {idx})")
         axs[1].set_title("Wave speed model")
 
         plt.colorbar(im1, ax=axs[0], label="Amplitude")
