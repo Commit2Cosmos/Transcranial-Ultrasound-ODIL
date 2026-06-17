@@ -18,7 +18,7 @@ class DiscreteLoss(ABC):
         self.lap = config.laplacian_operator
 
     @abstractmethod
-    def evaulate(self, wavefield) -> Tuple[float, torch.Tensor]:
+    def evaluate(self, wavefield) -> Tuple[float, torch.Tensor]:
         """Evaluate the loss function given a wavefield."""
         pass
 
