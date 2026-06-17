@@ -28,16 +28,15 @@ class InverseLoss(DiscreteLoss):
         return L.item(), grad.numpy()  # returns loss, grad together
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
-        return torch.stack(
-            [(r**2).mean() for r in residuals]
-        )  # normalise for inverse problem
+        r_pde, r_data = residuals
+        return (r_pde**2).mean() + (r_data**2).mean()  # normalise for inverse problem
 
-    def _residuals(self, data) -> torch.Tensor:
+    def _residuals(self, data: torch.Tensor) -> torch.Tensor:
         r_pde = self._eval_pde_loss(data)
         r_data = self._eval_data_loss(data)
         return torch.cat([r_pde, r_data])
 
-    def _eval_pde_loss(self, data):
+    def _eval_pde_loss(self, data: torch.Tensor):
         utt = self.time_op.apply(data)
         lap = self.lap.apply(data)
         return utt - (data.wavespeed**2) * lap  # u_tt - c^2(u_xx + u_yy)

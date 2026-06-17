@@ -24,7 +24,7 @@ class ForwardLoss(DiscreteLoss):
         return L.item(), grad.numpy()  # returns loss, grad together
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
-        return (residuals**2).sum()  # unnormalised for forward problem
+        return (residuals**2).mean()
 
     def _residuals(self, data: torch.Tensor) -> torch.Tensor:
         r_pde = self._eval_pde_loss(data)
