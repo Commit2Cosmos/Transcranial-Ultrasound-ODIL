@@ -37,9 +37,10 @@ class InverseLoss(DiscreteLoss):
         return r_pde, r_data
 
     def _eval_pde_loss(self, data: torch.Tensor):
-        utt = self.time_op.apply(data)
-        lap = self.lap.apply(data)
-        return utt - (data.wavespeed**2) * lap  # u_tt - c^2(u_xx + u_yy)
+        amp_idx = self.config.speed_offset  # idx to split amplitude and wave speed data
+        utt = self.time_op.apply(data[:amp_idx])
+        lap = self.lap.apply(data[:amp_idx])
+        return utt - (data[amp_idx:] ** 2) * lap  # u_tt - c^2(u_xx + u_yy)
 
     def _eval_data_loss(self, wavefield):
         return wavefield - self.d_obs

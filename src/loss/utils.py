@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
+from typing import Tuple
 from src.operator import DenseOperator, SparseOperator
 from src.operator import TimeOperator2ndOrder, TimeOperator4thOrder
 from src.operator import Laplacian2ndOrder, Laplacian4thOrder
+from src.grid import Grid
 import matplotlib.pyplot as plt
 import torch
 
@@ -10,10 +12,12 @@ import torch
 class LossConfig:
     """Configuration for the loss function."""
 
+    grid: Grid
     time_order: int = 2  # order of the time-derivative method
     space_order: int = 2  # order of the Laplacian method
     time_operator: DenseOperator | SparseOperator = field(init=False)
     laplacian_operator: DenseOperator | SparseOperator = field(init=False)
+    speed_offset: int = field(init=False)
 
     def __post_init__(self):
         if self.time_order == 2:
@@ -30,6 +34,9 @@ class LossConfig:
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
+        (Nx, Ny), Nt = self.grid.shape, self.grid.nt
+        self.speed_offset = Nx * Ny * Nt  # idx for accessing wavespeed
+
 
 @dataclass
 class LossTape:
@@ -37,13 +44,19 @@ class LossTape:
 
     name: str = "Default LossTape"
     log_every: int = 5  # log interval
-    history: dict = field(default_factory=lambda: {"loss": [], "residuals": []})
+    history: dict = field(
+        default_factory=lambda: {"loss": [], "pde_residuals": [], "data_residuals": []}
+    )
     success: bool = False
 
-    def log(self, loss: float, residuals: torch.Tensor):
+    def log(self, loss: float, residuals: Tuple[torch.Tensor, torch.Tensor]):
         """Log the loss and residuals."""
         self.history["loss"].append(loss)
-        self.history["residuals"].append(residuals.detach().cpu().numpy())
+        self.history["pde_residuals"].append(residuals[0].detach().cpu().numpy())
+
+        # forward solver has no data loss
+        if len(residuals) > 1:
+            self.history["data_residuals"].append(residuals[1].detach().cpu().numpy())
 
     def show(self, title: str = "Loss History"):
         assert len(self.history["loss"]) > 0, "No loss history to show."
