@@ -64,7 +64,7 @@ class Wavefield:
         self._amplitude = flat[:n_amp].reshape(Nt, Nx, Ny)
         self._wavespeed = flat[n_amp:].reshape(Nx, Ny)
 
-    def show(self, title="Wavefield and model", view: str = "xy", idx=None):
+    def show(self, idx: int, title="Wavefield and model", view: str = "xy"):
         assert view in [
             "xy",
             "ty",
@@ -76,14 +76,10 @@ class Wavefield:
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
 
-        # default to centre of chosen plane
-        if idx is None:
-            param = [Nt, Nx, Ny][axis]  # extract upper limit of axis
-            idx = param // 2
+        param = [Nt, Nx, Ny][axis]  # extract upper limit of axis
 
-        assert (
-            idx >= 0 and idx < param
-        ), f"idx should be an int in range [0, {param}], got {idx}."
+        if not (0 <= idx < param):
+            raise ValueError(f"idx should be an int in range [0, {param}], got {idx}.")
 
         amp_data = np.take(self.amplitude, idx, axis=axis)  # extract slice
 
