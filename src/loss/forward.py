@@ -1,5 +1,6 @@
 from typing import Tuple
 from .base import DiscreteLoss
+from .utils import LossConfig, LossTape
 
 import torch
 import numpy as np
@@ -8,18 +9,16 @@ import numpy as np
 class ForwardLoss(DiscreteLoss):
     """Loss function for the forward problem."""
 
-    def evaluate(
-        self, wavefield: torch.Tensor, wavespeed: torch.Tensor
-    ) -> Tuple[float, np.ndarray]:
-        wavefield.requires_grad_()
-        r = self._residuals(wavefield, wavespeed)
+    def __init__(self, wavespeed, config: LossConfig, callback: LossTape | None = None):
+        super().__init__(config, callback)
+        self.c: torch.Tensor = wavespeed
+
+    def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
+        d = torch.tensor(data, requires_grad=True, dtype=torch.float64)
+        r = self._residuals(d)
         L = self._eval_loss(r)
         L.backward()
-        grad = (
-            wavefield.grad
-            if wavefield.grad is not None
-            else torch.zeros_like(wavefield)
-        )
+        grad = d.grad if d.grad is not None else torch.zeros_like(d)
 
         self.callback.log(L.item(), r)
         return L.item(), grad.numpy()  # returns loss, grad together
@@ -27,11 +26,11 @@ class ForwardLoss(DiscreteLoss):
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
         return (residuals**2).sum()  # unnormalised for forward problem
 
-    def _residuals(self, wavefield, wavespeed) -> torch.Tensor:
-        r_pde = self._eval_pde_loss(wavefield, wavespeed)
+    def _residuals(self, data: torch.Tensor) -> torch.Tensor:
+        r_pde = self._eval_pde_loss(data)
         return r_pde
 
-    def _eval_pde_loss(self, wavefield, wavespeed):
-        utt = self.time_op.apply(wavefield)
-        lap = self.lap.apply(wavefield)
-        return utt - (wavespeed**2) * lap  # u_tt - c^2(u_xx + u_yy)
+    def _eval_pde_loss(self, data: torch.Tensor):
+        utt = self.time_op.apply(data)
+        lap = self.lap.apply(data)
+        return utt - (self.c**2) * lap  # u_tt - c^2(u_xx + u_yy)

@@ -19,7 +19,7 @@ class DiscreteLoss(ABC):
         self.lap = config.laplacian_operator
 
     @abstractmethod
-    def evaluate(self, wavefield) -> Tuple[float, np.ndarray]:
+    def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         """Evaluate the loss function given a wavefield."""
         pass
 
@@ -28,10 +28,10 @@ class DiscreteLoss(ABC):
         pass
 
     @abstractmethod
-    def _residuals(self, wavefield) -> torch.Tensor:
+    def _residuals(self, data) -> torch.Tensor:
         """Compute the residuals of the loss function given a wavefield."""
         pass
 
     @abstractmethod
-    def _eval_pde_loss(self, wavefield, wavespeed) -> torch.Tensor:
+    def _eval_pde_loss(self, data) -> torch.Tensor:
         pass
