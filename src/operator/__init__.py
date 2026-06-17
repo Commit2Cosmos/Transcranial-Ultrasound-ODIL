@@ -1,5 +1,5 @@
-from base import SparseOperator, DenseOperator
-from .conditions import(
+from .base import SparseOperator, DenseOperator
+from .conditions import (
     InitialConditions,
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,

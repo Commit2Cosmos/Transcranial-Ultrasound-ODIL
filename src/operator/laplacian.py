@@ -1,4 +1,4 @@
-from base import SparseOperator, DenseOperator
+from .base import SparseOperator, DenseOperator
 import scipy.sparse as sp
 import torch
 
