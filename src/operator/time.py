@@ -32,6 +32,6 @@ class DenseTimeOperator(DenseOperator):
     def gradient(self, u) -> torch.Tensor:
         """Computes the gradient w.r.t u using .roll"""
         d2udt2 = (
-            torch.roll(u, -1, axis=0) - 2 * u + torch.roll(u, 1, axis=0)
+            torch.roll(u, -1, dims=0) - 2 * u + torch.roll(u, 1, dims=0)
         ) / self.grid.dt**2
         return d2udt2

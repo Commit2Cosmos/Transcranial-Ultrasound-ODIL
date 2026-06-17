@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable
-import jax
+
+# import torch
 import scipy.optimize as scopt
 
 
@@ -9,7 +10,7 @@ class Optimiser(ABC):
 
     def __init__(self, loss_fn: Callable) -> None:
         self.loss_fn = loss_fn  # loss function
-        self.grad_fn = jax.grad(loss_fn)  # gradient provided by JAX autodiff
+        self.grad_fn = None  # autograd(loss_fn)  # gradient provided by JAX autodiff
 
     @abstractmethod  # to be implemented by classes that inherit
     def minimise(self, u0, **kwargs):

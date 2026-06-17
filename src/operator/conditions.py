@@ -2,8 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-import jax
-import jax.numpy as jnp
+import torch
 
 
 class Conditions(ABC):
@@ -12,44 +11,53 @@ class Conditions(ABC):
     @abstractmethod
     def apply(self, *args, **kwargs):
         raise NotImplementedError
-    
-    
+
+
 class NeumannMirrorBC2nd(Conditions):
-    """Mirror ghost neighbours for 2nd-order spatial stencils (zero normal derivative)."""
+    """Mirror ghost neighbours for 2nd-order spatial stencils
+    (zero normal derivative).
+    """
+
+    @abstractmethod
     def patch_spatial_neighbors(
         self,
-        uxm: jax.Array,
-        uxp: jax.Array,
-        uym: jax.Array,
-        uyp: jax.Array,
-        utm: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        uxm: torch.Tensor,
+        uxp: torch.Tensor,
+        uym: torch.Tensor,
+        uyp: torch.Tensor,
+        utm: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
 
+    @abstractmethod
     def apply(self, *args, **kwargs):
         pass
 
 
 class NeumannMirrorBC4th(Conditions):
     """Mirror ghost neighbours for 4th-order spatial stencils (+/-1 and +/-2)."""
+
+    @abstractmethod
     def patch_spatial_neighbors(
         self,
-        uxm2: jax.Array,
-        uxm: jax.Array,
-        uxp: jax.Array,
-        uxp2: jax.Array,
-        uym2: jax.Array,
-        uym: jax.Array,
-        uyp: jax.Array,
-        uyp2: jax.Array,
-        utm: jax.Array,
-    ) -> tuple[jax.Array, ...]:
+        uxm2: torch.Tensor,
+        uxm: torch.Tensor,
+        uxp: torch.Tensor,
+        uxp2: torch.Tensor,
+        uym2: torch.Tensor,
+        uym: torch.Tensor,
+        uyp: torch.Tensor,
+        uyp2: torch.Tensor,
+        utm: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
         pass
 
+    @abstractmethod
     def apply(self, *args, **kwargs):
         pass
 
 
 class InitialConditions(Conditions):
     """Hard displacement IC enforced as a residual row at t=0."""
+
     pass
