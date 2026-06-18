@@ -43,6 +43,10 @@ class AcquisitionGeometry:
         step = max(1, self.n_receivers // self.n_sources)
         self.src_ij = self.recv_ij[::step][: self.n_sources]
 
+        # ensure same device and dtype as grid
+        self.device = self.grid.device
+        self.dtype = self.grid.dtype
+
     def _place_ellipse(self, n: int) -> torch.Tensor:
         """Return (n, 2) integer full-grid indices on an ellipse inside the interior."""
         (ix_min, ix_max), (iy_min, iy_max) = self.grid.interior_extent
@@ -50,7 +54,7 @@ class AcquisitionGeometry:
         a = self.a_frac * (ix_max - ix_min) / 2.0
         b = self.b_frac * (iy_max - iy_min) / 2.0
 
-        k = torch.arange(n, dtype=torch.float64)
+        k = torch.arange(n, dtype=self.dtype, device=self.device)
         theta = 2.0 * math.pi * k / n
         x_k = cx + a * torch.cos(theta)
         y_k = cy + b * torch.sin(theta)
