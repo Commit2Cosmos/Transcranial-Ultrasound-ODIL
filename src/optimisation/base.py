@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
+from typing import Tuple, List
 
 import scipy.optimize as scopt
 import numpy as np
 from src.loss import DiscreteLoss, ForwardLoss, InverseLoss
 from src.wavefield import Wavefield
+from src.loss.utils import LossTape
 
 
 class Optimiser(ABC):
@@ -28,7 +30,7 @@ class ScipyOptimiser(Optimiser):
         self.method = method  # e.g., 'L-BFGS-B', 'Newton-CG'
         self.opts = opts  # e.g., maxiter, ftol
 
-    def minimise(self, callback=None) -> scopt.OptimizeResult:
+    def minimise(self, callback=None) -> Tuple[List[Wavefield], LossTape]:
         # use amplitude data only for the forward
         if isinstance(self.loss, ForwardLoss):
             # tile amplitude for each shot, since forward loss only optimises amplitude
@@ -56,7 +58,38 @@ class ScipyOptimiser(Optimiser):
             callback=callback,
             options=self.opts,
         )
-        return result
+        self.loss.callback.result = result  # store optimisation result in loss callback
+
+        if not result.success:
+            print(f"Warning: Optimisation did not converge: {result.message}")
+
+        # cast result into list of per-shot wavefields
+        outputs = []
+        if isinstance(self.loss, ForwardLoss):
+            n_shots = self.loss.config.geometry.n_sources
+            chunks = result.x.reshape(n_shots, -1)  # (n_shots, Nt*Nx*Ny)
+
+            for s in range(n_shots):
+                wf = Wavefield(
+                    grid=self.wavefield.grid, init_wavespeed=self.wavefield.wavespeed
+                )
+                wf.amplitude = chunks[s]
+                outputs.append(wf)
+
+        elif isinstance(self.loss, InverseLoss):
+            n_shots = self.loss.config.geometry.n_sources
+            speed_offset = self.loss.config.speed_offset
+
+            amp_blocks = result.x[:speed_offset].reshape(
+                n_shots, -1
+            )  # (n_shots, Nt*Nx*Ny)
+            wsp = result.x[speed_offset:]  # (Nx*Ny,)
+            for s in range(n_shots):
+                wf = Wavefield(grid=self.wavefield.grid, init_wavespeed=wsp)
+                wf.amplitude = amp_blocks[s]
+                outputs.append(wf)
+
+        return outputs, self.loss.callback
 
 
 class LBFGSB(ScipyOptimiser):
