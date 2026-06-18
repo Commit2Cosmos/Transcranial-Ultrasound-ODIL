@@ -18,36 +18,44 @@ class Wavefield:
     _init_ut: torch.Tensor = field(init=False)
     init_velocity: np.ndarray | None = None  # optional initial velocity field
 
+    # ensure device and dataype are consistent
+    device: torch.Device = field(init=False)
+    dtype: torch.dtype = field(init=False)
+
     def __post_init__(self) -> None:
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
 
+        # extract device and dtype from grid for consistency
+        self.device = self.grid.device
+        self.dtype = self.grid.dtype
+
         # cast inputs to torch Tensors to accept numpy arrays as well
         # initialise amplitude as Nx*Ny*Nt or provided values
         self._amplitude = (
-            torch.zeros(size=(Nt, Nx, Ny), dtype=torch.float64, device=self.grid.device)
+            torch.zeros(size=(Nt, Nx, Ny), dtype=self.dtype, device=self.device)
             if self.init_amplitude is None
             else torch.as_tensor(
-                self.init_amplitude, dtype=torch.float64, device=self.grid.device
+                self.init_amplitude, dtype=self.dtype, device=self.device
             )
         )
 
         # initialise wavespeed as Nx*Ny or provided values
         self._wavespeed = (
-            torch.ones(size=(Nx, Ny), dtype=torch.float64, device=self.grid.device)
+            torch.ones(size=(Nx, Ny), dtype=self.dtype, device=self.device)
             if self.init_wavespeed is None
             else torch.as_tensor(
-                self.init_wavespeed, dtype=torch.float64, device=self.grid.device
+                self.init_wavespeed, dtype=self.dtype, device=self.device
             )
         )
 
         self._init_ut = (
             torch.zeros(
-                size=(Nx, Ny), dtype=torch.float64, device=self.grid.device
+                size=(Nx, Ny), dtype=self.dtype, device=self.device
             )  # default init is zeros
             if self.init_velocity is None
             else torch.as_tensor(
-                self.init_velocity, dtype=torch.float64, device=self.grid.device
+                self.init_velocity, dtype=self.dtype, device=self.device
             )
         )
 
@@ -86,11 +94,11 @@ class Wavefield:
         # resahpe and cast to torch tensors
         self._amplitude = torch.as_tensor(
             flat[:n_amp].reshape(Nt, Nx, Ny),
-            dtype=torch.float64,
-            device=self.grid.device,
+            dtype=self.dtype,
+            device=self.device,
         )
         self._wavespeed = torch.as_tensor(
-            flat[n_amp:].reshape(Nx, Ny), dtype=torch.float64, device=self.grid.device
+            flat[n_amp:].reshape(Nx, Ny), dtype=self.dtype, device=self.device
         )
 
     def show(self, idx: int, title="Wavefield and model", view: str = "xy"):
