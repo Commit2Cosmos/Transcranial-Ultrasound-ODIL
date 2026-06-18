@@ -30,6 +30,10 @@ class AcquisitionGeometry:
         ring_center: Tuple[float, float] = (0.0, 0.0),
     ):
         self.grid = grid
+        # ensure same device and dtype as grid
+        self.device = self.grid.device
+        self.dtype = self.grid.dtype
+
         self.n_receivers = n_receivers
         self.n_sources = n_receivers if n_sources is None else n_sources
         self.f0 = f0
@@ -42,10 +46,6 @@ class AcquisitionGeometry:
         self.recv_ij = self._place_ellipse(self.n_receivers)
         step = max(1, self.n_receivers // self.n_sources)
         self.src_ij = self.recv_ij[::step][: self.n_sources]
-
-        # ensure same device and dtype as grid
-        self.device = self.grid.device
-        self.dtype = self.grid.dtype
 
     def _place_ellipse(self, n: int) -> torch.Tensor:
         """Return (n, 2) integer full-grid indices on an ellipse inside the interior."""
