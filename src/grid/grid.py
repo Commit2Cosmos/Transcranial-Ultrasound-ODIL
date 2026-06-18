@@ -31,7 +31,7 @@ class Grid:
     t_max: Optional[float] = None
     init_nt: Optional[int] = None  # optional override; derived from CFL if None
     # TODO: DEVICE and DTYPE should be set in a config file
-    device: str = "cpu"
+    device: torch.Device = field(init=False)
     dtype: torch.dtype = torch.float32
     # device: str = DEVICE
     # dtype: torch.dtype = DTYPE
@@ -57,7 +57,7 @@ class Grid:
     def __post_init__(self):
         self.interior_nx, self.interior_ny = self.interior_shape
         (ix_min, ix_max), (iy_min, iy_max) = self.interior_extent
-        device = torch.device(self.device)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.dx = (ix_max - ix_min) / (self.interior_nx - 1)
         self.dy = (iy_max - iy_min) / (self.interior_ny - 1)
@@ -82,10 +82,14 @@ class Grid:
             self.nt = self.init_nt
         self.dt = self.t_max / (self.nt - 1)
 
-        self.x = torch.linspace(x_min, x_max, self.nx, dtype=self.dtype, device=device)
-        self.y = torch.linspace(y_min, y_max, self.ny, dtype=self.dtype, device=device)
+        self.x = torch.linspace(
+            x_min, x_max, self.nx, dtype=self.dtype, device=self.device
+        )
+        self.y = torch.linspace(
+            y_min, y_max, self.ny, dtype=self.dtype, device=self.device
+        )
         self.t = torch.linspace(
-            0.0, self.t_max, self.nt, dtype=self.dtype, device=device
+            0.0, self.t_max, self.nt, dtype=self.dtype, device=self.device
         )
         self.X, self.Y = torch.meshgrid(self.x, self.y, indexing="ij")
 
@@ -119,18 +123,15 @@ class Grid:
         """sigma_x(i, j), sigma_y(i, j) on the full grid; zero in the interior."""
         p = self.pml_width
         if p == 0:
-            zeros = torch.zeros(
-                self.nx, self.ny, dtype=self.dtype, device=torch.device(self.device)
-            )
+            zeros = torch.zeros(self.nx, self.ny, dtype=self.dtype, device=self.device)
             return zeros, zeros
         L_pml_x = p * self.dx
         L_pml_y = p * self.dy
         sigma_max_x = self._sigma_max(L_pml_x)
         sigma_max_y = self._sigma_max(L_pml_y)
 
-        device = torch.device(self.device)
-        i = torch.arange(self.nx, dtype=self.dtype, device=device)
-        j = torch.arange(self.ny, dtype=self.dtype, device=device)
+        i = torch.arange(self.nx, dtype=self.dtype, device=self.device)
+        j = torch.arange(self.ny, dtype=self.dtype, device=self.device)
 
         d_x = (
             torch.clamp(p - i, min=0.0) + torch.clamp(i - (self.nx - 1 - p), min=0.0)
