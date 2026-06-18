@@ -1,6 +1,7 @@
 from typing import Tuple
 
 from src.loss.utils import LossConfig, LossTape
+from geometry import AcquisitionGeometry
 from .base import DiscreteLoss
 
 import torch
@@ -11,10 +12,15 @@ class InverseLoss(DiscreteLoss):
     """Loss function for the forward problem."""
 
     def __init__(
-        self, observed_wavefield, config: LossConfig, callback: LossTape | None = None
+        self,
+        observed_wavefield,
+        geometry: AcquisitionGeometry,
+        config: LossConfig,
+        callback: LossTape | None = None,
     ):
         super().__init__(config, callback)
         self.d_obs = observed_wavefield
+        self.geometry = geometry
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
 
@@ -45,4 +51,5 @@ class InverseLoss(DiscreteLoss):
         return utt - (data[amp_idx:] ** 2) * lap  # u_tt - c^2(u_xx + u_yy)
 
     def _eval_data_loss(self, wavefield):
-        return wavefield - self.d_obs
+        i, j = self.geometry.recv_ij[:, 0], self.geometry.recv_ij[:, 1]
+        return wavefield[:, i, j] - self.d_obs[:, i, j]  # observed data at receivers
