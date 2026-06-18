@@ -1,7 +1,6 @@
 from typing import Tuple
 
 from src.loss.utils import LossConfig, LossTape
-from geometry import AcquisitionGeometry
 from .base import DiscreteLoss
 
 import torch
@@ -14,31 +13,66 @@ class InverseLoss(DiscreteLoss):
     def __init__(
         self,
         observed_wavefield,
-        geometry: AcquisitionGeometry,
         config: LossConfig,
         callback: LossTape | None = None,
     ):
-        super().__init__(geometry, config, callback)
+        super().__init__(config, callback)
         self.d_obs = torch.as_tensor(
             observed_wavefield,
             dtype=torch.float64,
-            device=self.config.wavefield.grid.device,
+            device=self.config.device,
         )
+
+    def _eval_pde_loss(
+        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int
+    ) -> torch.Tensor:
+        utt = self.time_op.apply(amp)
+        lap = self.lap.apply(amp)
+        return (
+            utt - (wsp**2) * lap - self.sources[shot_idx]
+        )  # u_tt - c^2(u_xx + u_yy) - f
+
+    def _eval_data_loss(self, d_syn: torch.Tensor, shot_idx: int) -> torch.Tensor:
+        i, j = self.config.geometry.recv_ij[:, 0], self.config.geometry.recv_ij[:, 1]
+        return (
+            d_syn[:, i, j] - self.d_obs[shot_idx, :, i, j]
+        )  # observed data for this source at receivers
+
+    def _residuals(
+        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int = 0
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        r_pde = self._eval_pde_loss(amp, wsp, shot_idx)
+        r_data = self._eval_data_loss(amp, shot_idx)
+        return r_pde, r_data
+
+    def _eval_loss(self, residuals: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        r_pde, r_data = residuals
+        return torch.mean(r_pde**2) + torch.mean(
+            r_data**2
+        )  # normalise for inverse problem
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         # scipy wants a function that takes a flat np.ndarray and returns loss, jac
         # we need a torch.Tensor to compute the loss and gradient
-        d = torch.tensor(data, requires_grad=True, dtype=torch.float64)
+        d = torch.tensor(
+            data, requires_grad=True, dtype=torch.float64, device=self.config.device
+        )
 
         # reshape out so operators can do their thing
         Nt = self.config.wavefield.grid.nt
         Nx, Ny = self.config.wavefield.grid.shape
-        amp = d[: self.config.speed_offset].reshape(Nt, Nx, Ny)
+        n_shots = self.config.geometry.n_sources
+
+        amp = d[: self.config.speed_offset].reshape(n_shots, Nt, Nx, Ny)
         wsp = d[self.config.speed_offset :].reshape(Nx, Ny)
 
-        # cmpute residuals and evaluate loss
-        r = self._residuals(amp, wsp)
-        L = self._eval_loss(r)
+        # cmpute residuals for each shot, then sum
+        residuals = [self._residuals(amp[s], wsp, s) for s in range(n_shots)]
+        L = torch.stack([self._eval_loss(r) for r in residuals]).sum()
+
+        # detach before .backward frees graph
+        r_pde = torch.stack([r[0].detach() for r in residuals])
+        r_data = torch.stack([r[1].detach() for r in residuals])
 
         # backprop and extract gradient
         L.backward()
@@ -47,26 +81,6 @@ class InverseLoss(DiscreteLoss):
         # log
         self.evaluations += 1
         if self.evaluations % self.callback.log_every == 0:
-            self.callback.log(L.item(), r)
+            self.callback.log(L.item(), (r_pde, r_data))
 
-        return L.item(), grad.numpy()  # return loss, grad together for scipy
-
-    def _eval_pde_loss(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
-        utt = self.time_op.apply(amp)
-        lap = self.lap.apply(amp)
-        return utt - (wsp**2) * lap  # u_tt - c^2(u_xx + u_yy)
-
-    def _eval_data_loss(self, d_syn: torch.Tensor):
-        i, j = self.geometry.recv_ij[:, 0], self.geometry.recv_ij[:, 1]
-        return d_syn[:, i, j] - self.d_obs[:, i, j]  # observed data at receivers
-
-    def _residuals(
-        self, amp: torch.Tensor, wsp: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        r_pde = self._eval_pde_loss(amp, wsp)
-        r_data = self._eval_data_loss(amp)
-        return r_pde, r_data
-
-    def _eval_loss(self, residuals: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        r_pde, r_data = residuals
-        return (r_pde**2).mean() + (r_data**2).mean()  # normalise for inverse problem
+        return L.item(), grad.cpu().numpy()  # return loss, grad together for scipy

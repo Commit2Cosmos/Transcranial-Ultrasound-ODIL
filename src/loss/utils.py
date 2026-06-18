@@ -4,6 +4,7 @@ from src.operator import DenseOperator, SparseOperator
 from src.operator import TimeOperator2ndOrder, TimeOperator4thOrder
 from src.operator import Laplacian2ndOrder, Laplacian4thOrder
 from src.wavefield import Wavefield
+from geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
 
@@ -13,11 +14,13 @@ class LossConfig:
     """Configuration for the loss function."""
 
     wavefield: Wavefield
+    geometry: AcquisitionGeometry
     time_order: int = 2  # order of the time-derivative method
     space_order: int = 2  # order of the Laplacian method
     time_operator: DenseOperator | SparseOperator = field(init=False)
     laplacian_operator: DenseOperator | SparseOperator = field(init=False)
     speed_offset: int = field(init=False)
+    device: torch.Device = field(init=False)
 
     def __post_init__(self):
         if self.time_order == 2:
@@ -35,7 +38,10 @@ class LossConfig:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
         (Nx, Ny), Nt = self.wavefield.grid.shape, self.wavefield.grid.nt
-        self.speed_offset = Nx * Ny * Nt  # idx for accessing wavespeed
+        n_shots = self.geometry.n_sources
+        self.speed_offset = n_shots * Nx * Ny * Nt  # idx for accessing wavespeed
+
+        self.device = self.wavefield.grid.device
 
 
 @dataclass
