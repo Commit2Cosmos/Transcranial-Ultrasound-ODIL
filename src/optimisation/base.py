@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 
 import scipy.optimize as scopt
-from loss import DiscreteLoss, ForwardLoss, InverseLoss
-from wavefield import Wavefield
+from src.loss import DiscreteLoss, ForwardLoss, InverseLoss
+from src.wavefield import Wavefield
 
 
 class Optimiser(ABC):
