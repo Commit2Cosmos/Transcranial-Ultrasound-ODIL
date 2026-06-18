@@ -41,7 +41,8 @@ class LossConfig:
         n_shots = self.geometry.n_sources
         self.speed_offset = n_shots * Nx * Ny * Nt  # idx for accessing wavespeed
 
-        self.device = self.wavefield.grid.device
+        self.device = self.wavefield.device
+        self.dtype = self.wavefield.dtype
 
 
 @dataclass
