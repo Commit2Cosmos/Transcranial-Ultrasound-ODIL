@@ -10,13 +10,17 @@ from src.grid import Grid
 class Wavefield:
     grid: Grid
     _amplitude: torch.Tensor = field(init=False)
-    init_amplitude: np.ndarray | None = None  # optionally initialise field
+    init_amplitude: torch.Tensor | np.ndarray | None = (
+        None  # optionally initialise field
+    )
 
     _wavespeed: torch.Tensor = field(init=False)
-    init_wavespeed: np.ndarray | None = None  # optional initialise speed
+    init_wavespeed: torch.Tensor | np.ndarray | None = None  # optional initialise speed
 
     _init_ut: torch.Tensor = field(init=False)
-    init_velocity: np.ndarray | None = None  # optional initial velocity field
+    init_velocity: torch.Tensor | np.ndarray | None = (
+        None  # optional initial velocity field
+    )
 
     # ensure device and dataype are consistent
     device: torch.device = field(init=False)
