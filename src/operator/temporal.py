@@ -98,9 +98,7 @@ class TimeOperator2ndOrder(TemporalOperator):
     wavefield: Wavefield
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        init_ut = torch.as_tensor(
-            self.wavefield.init_ut, dtype=u.dtype, device=u.device
-        )
+        init_ut = self.wavefield.init_ut
         utm = torch.roll(u, 1, dims=0)
         utmm = torch.roll(u, 2, dims=0)
         return _time_stencil_2point(u, utm, utmm, self.wavefield.grid.dt, init_ut)
@@ -113,9 +111,7 @@ class TimeOperator4thOrder(TemporalOperator):
     wavefield: Wavefield
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        init_ut = torch.as_tensor(
-            self.wavefield.init_ut, dtype=u.dtype, device=u.device
-        )
+        init_ut = self.wavefield.init_ut
         utm2, utm1, utp1, utp2 = _roll_time_4th(u)
         utm2, utm1, utp1, utp2 = _patch_time_neighbors_4th(
             u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
