@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 import scipy.optimize as scopt
+import numpy as np
 from src.loss import DiscreteLoss, ForwardLoss, InverseLoss
 from src.wavefield import Wavefield
 
@@ -30,9 +31,22 @@ class ScipyOptimiser(Optimiser):
     def minimise(self, callback=None) -> scopt.OptimizeResult:
         # use amplitude data only for the forward
         if isinstance(self.loss, ForwardLoss):
-            u0 = self.wavefield.amplitude.cpu().numpy().ravel()
+            # tile amplitude for each shot, since forward loss only optimises amplitude
+            u0 = np.tile(
+                self.wavefield.amplitude.cpu().numpy().ravel(),
+                self.loss.config.geometry.n_sources,
+            )
         elif isinstance(self.loss, InverseLoss):
-            u0 = self.wavefield.flat_data
+            n_shots = self.loss.config.geometry.n_sources  # extract shots
+            amp0 = np.tile(
+                self.wavefield.amplitude.cpu().numpy().ravel(), n_shots
+            )  # tile amplitude for each shot
+            wsp0 = (
+                self.wavefield.wavespeed.cpu().numpy().ravel()
+            )  # tile wavespeed for each shot
+            u0 = np.concatenate(
+                [amp0, wsp0]
+            )  # concatenate amplitude and wavespeed for inverse problem
 
         result = scopt.minimize(
             fun=self.loss.evaluate,
