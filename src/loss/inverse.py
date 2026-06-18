@@ -19,7 +19,7 @@ class InverseLoss(DiscreteLoss):
         super().__init__(config, callback)
         self.d_obs = torch.as_tensor(
             observed_wavefield,
-            dtype=torch.float64,
+            dtype=self.config.dtype,
             device=self.config.device,
         )
 
