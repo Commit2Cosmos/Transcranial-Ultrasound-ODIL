@@ -1,7 +1,7 @@
 "Boundary and Initial conditions for finite-difference stencils"
 
 from abc import ABC, abstractmethod
-from wavefield import Wavefield
+from src.wavefield import Wavefield
 
 import torch
 
