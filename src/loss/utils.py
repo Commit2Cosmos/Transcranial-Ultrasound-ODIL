@@ -14,7 +14,7 @@ class LossConfig:
     wave_eq: WaveEquation
     geometry: AcquisitionGeometry
     speed_offset: int = field(init=False)
-    device: torch.Device = field(init=False)
+    device: torch.device = field(init=False)
 
     def __post_init__(self):
         wf = self.wave_eq.wavefield

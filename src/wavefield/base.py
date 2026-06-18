@@ -19,7 +19,7 @@ class Wavefield:
     init_velocity: np.ndarray | None = None  # optional initial velocity field
 
     # ensure device and dataype are consistent
-    device: torch.Device = field(init=False)
+    device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)
 
     def __post_init__(self) -> None:

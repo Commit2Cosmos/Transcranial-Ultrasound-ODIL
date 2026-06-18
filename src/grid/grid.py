@@ -31,7 +31,7 @@ class Grid:
     t_max: Optional[float] = None
     init_nt: Optional[int] = None  # optional override; derived from CFL if None
     # TODO: DEVICE and DTYPE should be set in a config file
-    device: torch.Device = field(init=False)
+    device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
     # device: str = DEVICE
     # dtype: torch.dtype = DTYPE
