@@ -18,10 +18,6 @@ class DiscreteLoss(ABC):
             callback if callback is not None else LossTape()
         )  # loss history callback
 
-        # extract operator config
-        self.time_op = config.time_operator
-        self.lap = config.laplacian_operator
-
         # precompute source fields for each shot
         self.sources = torch.stack(
             [
