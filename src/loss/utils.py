@@ -21,9 +21,9 @@ class LossConfig:
 
     def __post_init__(self):
         if self.time_order == 2:
-            self.time_operator = TimeOperator2ndOrder()
+            self.time_operator = TimeOperator2ndOrder(self.grid)
         elif self.time_order == 4:
-            self.time_operator = TimeOperator4thOrder()
+            self.time_operator = TimeOperator4thOrder(self.grid)
         else:
             raise ValueError(f"Invalid time order: {self.time_order}")
 
