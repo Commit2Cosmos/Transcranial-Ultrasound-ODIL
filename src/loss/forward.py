@@ -20,7 +20,7 @@ class ForwardLoss(DiscreteLoss):
         return r_pde
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
-        return torch.mean(residuals**2)
+        return torch.sum(residuals**2)
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         d = torch.tensor(
