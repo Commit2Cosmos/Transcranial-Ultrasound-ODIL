@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
 from .utils import LossConfig, LossTape
+from geometry import AcquisitionGeometry
 import torch
 import numpy as np
 
@@ -8,7 +9,12 @@ import numpy as np
 class DiscreteLoss(ABC):
     """Base class for discrete loss functions."""
 
-    def __init__(self, config: LossConfig, callback: LossTape | None = None):
+    def __init__(
+        self,
+        geometry: AcquisitionGeometry,
+        config: LossConfig,
+        callback: LossTape | None = None,
+    ):
         self.config = config  # loss configuration
         self.callback = (
             callback if callback is not None else LossTape()
@@ -17,6 +23,9 @@ class DiscreteLoss(ABC):
         # extract operator config
         self.time_op = config.time_operator
         self.lap = config.laplacian_operator
+
+        # store acquisiton geometry
+        self.geometry = geometry
 
         self.evaluations = 0  # counter for number of loss evaluations
 
