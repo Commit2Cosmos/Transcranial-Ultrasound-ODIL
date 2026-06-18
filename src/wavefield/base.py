@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -8,62 +9,68 @@ from src.grid import Grid
 @dataclass
 class Wavefield:
     grid: Grid
-    _amplitude: np.ndarray = field(init=False)
+    _amplitude: torch.Tensor = field(init=False)
     init_amplitude: np.ndarray | None = None  # optionally initialise field
 
-    _wavespeed: np.ndarray = field(init=False)
+    _wavespeed: torch.Tensor = field(init=False)
     init_wavespeed: np.ndarray | None = None  # optional initialise speed
 
-    _init_ut: np.ndarray = field(init=False)
-    init_velocity: np.ndarray | None = (
-        None  # optional initial time derivative (∂u/∂t at t=0)
-    )
+    _init_ut: torch.Tensor = field(init=False)
+    init_velocity: np.ndarray | None = None  # optional initial velocity field
 
     def __post_init__(self) -> None:
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
 
-        # data are stored as flattened arrays
+        # cast inputs to torch Tensors to accept numpy arrays as well
         # initialise amplitude as Nx*Ny*Nt or provided values
         self._amplitude = (
-            np.zeros(shape=(Nt, Nx, Ny), dtype=float)
+            torch.zeros(size=(Nt, Nx, Ny), dtype=torch.float64, device=self.grid.device)
             if self.init_amplitude is None
-            else np.asarray(self.init_amplitude, dtype=float)
+            else torch.as_tensor(
+                self.init_amplitude, dtype=torch.float64, device=self.grid.device
+            )
         )
 
         # initialise wavespeed as Nx*Ny or provided values
         self._wavespeed = (
-            np.ones(shape=(Nx, Ny))
+            torch.ones(size=(Nx, Ny), dtype=torch.float64, device=self.grid.device)
             if self.init_wavespeed is None
-            else np.asarray(self.init_wavespeed, dtype=float)
+            else torch.as_tensor(
+                self.init_wavespeed, dtype=torch.float64, device=self.grid.device
+            )
         )
 
         self._init_ut = (
-            self._amplitude[0, :, :].copy()
+            torch.zeros(
+                size=(Nx, Ny), dtype=torch.float64, device=self.grid.device
+            )  # default init is zeros
             if self.init_velocity is None
-            else np.asarray(self.init_velocity, dtype=float)
+            else torch.as_tensor(
+                self.init_velocity, dtype=torch.float64, device=self.grid.device
+            )
         )
 
     @property
-    def init_ut(self) -> np.ndarray:
+    def init_ut(self) -> torch.Tensor:
         return self._init_ut
 
     @property
-    def amplitude(self) -> np.ndarray:
+    def amplitude(self) -> torch.Tensor:
         return self._amplitude
 
     @property
-    def wavespeed(self) -> np.ndarray:
+    def wavespeed(self) -> torch.Tensor:
         return self._wavespeed
 
     @property
-    def data(self) -> np.ndarray:
-        """Return flat parameter vector [amp (nt*nx*ny), wvsp (nx*ny)]"""
-        return np.concatenate([self._amplitude.ravel(), self._wavespeed.ravel()])
+    def flat_data(self) -> np.ndarray:
+        """Return flat parameter vector [amp (nt*nx*ny), wvsp (nx*ny)] as np.ndarray"""
+        return torch.cat([self._amplitude.ravel(), self._wavespeed.ravel()]).numpy()
 
-    @data.setter
-    def data(self, flat: np.ndarray) -> None:
-        """Cast flattened data back into amplitude and wavespeed components"""
+    @flat_data.setter
+    def flat_data(self, flat: np.ndarray) -> None:
+        """Cast flattened data back into amplitude and wavespeed tensors"""
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
 
@@ -76,8 +83,15 @@ class Wavefield:
                 f"expected flat vector of length {total}, got {flat.shape}"
             )
 
-        self._amplitude = flat[:n_amp].reshape(Nt, Nx, Ny)
-        self._wavespeed = flat[n_amp:].reshape(Nx, Ny)
+        # resahpe and cast to torch tensors
+        self._amplitude = torch.as_tensor(
+            flat[:n_amp].reshape(Nt, Nx, Ny),
+            dtype=torch.float64,
+            device=self.grid.device,
+        )
+        self._wavespeed = torch.as_tensor(
+            flat[n_amp:].reshape(Nx, Ny), dtype=torch.float64, device=self.grid.device
+        )
 
     def show(self, idx: int, title="Wavefield and model", view: str = "xy"):
         assert view in [
@@ -96,7 +110,9 @@ class Wavefield:
         if not (0 <= idx < param):
             raise ValueError(f"idx should be an int in range [0, {param}], got {idx}.")
 
-        amp_data = np.take(self.amplitude, idx, axis=axis)  # extract slice
+        amp_data = np.take(
+            self.amplitude.cpu().numpy(), idx, axis=axis
+        )  # extract slice
 
         fig, axs = plt.subplots(1, 2, figsize=(12, 4))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
@@ -110,7 +126,7 @@ class Wavefield:
         )
 
         im2 = axs[1].imshow(
-            self.wavespeed,
+            self.wavespeed.cpu().numpy(),
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="viridis",
