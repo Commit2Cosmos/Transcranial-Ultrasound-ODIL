@@ -5,6 +5,7 @@ from src.wavefield import Wavefield
 from src.geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
+import scipy.optimize as scopt
 
 
 @dataclass
@@ -37,7 +38,7 @@ class LossTape:
     history: dict = field(
         default_factory=lambda: {"loss": [], "pde_residuals": [], "data_residuals": []}
     )
-    success: bool = False
+    _result: scopt.OptimizeResult = field(init=False)  # store optimisation result
 
     def log(self, loss: float, residuals: Tuple[torch.Tensor, ...]) -> None:
         """Log the loss and residuals."""
@@ -80,3 +81,11 @@ class LossTape:
         fig.suptitle(title)
         plt.tight_layout()
         plt.show()
+
+    @property
+    def result(self) -> scopt.OptimizeResult:
+        return self._result
+
+    @result.setter
+    def result(self, value: scopt.OptimizeResult):
+        self._result = value
