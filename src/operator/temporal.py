@@ -7,6 +7,7 @@ import torch
 
 from .base import DenseOperator
 from .spatial import _fourth_derivative_1d
+from src.wavefield import Wavefield
 
 
 def _time_stencil_2point(
@@ -19,7 +20,7 @@ def _time_stencil_2point(
     """dt^2 * u_tt."""
     u_t_tm = u - utm  # u^t - u^{t-1}
     u_t_tmm = utm - utmm  # u^{t-1} - u^{t-2}
-    u_t_tmm = u_t_tmm.clone() 
+    u_t_tmm = u_t_tmm.clone()
     u_t_tmm[1, :, :] = dt * init_ut  # IC patch at t=1
     return u_t_tm - u_t_tmm  # dt^2 * u_tt
 
@@ -48,7 +49,7 @@ def _patch_time_neighbors_4th(
 
     # inventing fake past and future values
     utm1[0, :, :] = u[0, :, :] - dt * init_ut  # fake u_{-1} u0 - dt * ut0
-    utm2[0, :, :] = u[0, :, :] - 2.0 * dt * init_ut  # fake u_{-2} u0 - 2 * dt * ut0
+    utm2[0, :, :] = u[0, :, :] - 2.0 * dt * init_ut  # fake u_{-2} u0 - 2 * dt * ut0
     utm2[1, :, :] = u[0, :, :] - dt * init_ut
 
     utp1[-1, :, :] = u[-2, :, :]  # pretend u6 is u4
@@ -85,9 +86,7 @@ class TemporalOperator(DenseOperator):
     """Base class for time stencil operators."""
 
     @abstractmethod
-    def apply(
-        self, u: torch.Tensor, init_ut: torch.Tensor | None = None, **kwargs
-    ) -> torch.Tensor:
+    def apply(self, u: torch.Tensor, **kwargs) -> torch.Tensor:
         """Return dt^2 * u_tt on the full (nt, nx, ny) field."""
         raise NotImplementedError
 
@@ -96,29 +95,29 @@ class TemporalOperator(DenseOperator):
 class TimeOperator2ndOrder(TemporalOperator):
     """2nd-order time stencil."""
 
-    grid: object
+    wavefield: Wavefield
 
-    def apply(
-        self, u: torch.Tensor, init_ut: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        init_ut = self.grid.init_ut if init_ut is None else init_ut
+    def apply(self, u: torch.Tensor) -> torch.Tensor:
+        init_ut = torch.as_tensor(
+            self.wavefield.init_ut, dtype=u.dtype, device=u.device
+        )
         utm = torch.roll(u, 1, dims=0)
         utmm = torch.roll(u, 2, dims=0)
-        return _time_stencil_2point(u, utm, utmm, self.grid.dt, init_ut)
+        return _time_stencil_2point(u, utm, utmm, self.wavefield.grid.dt, init_ut)
 
 
 @dataclass
 class TimeOperator4thOrder(TemporalOperator):
     """4th-order time stencil."""
 
-    grid: object
+    wavefield: Wavefield
 
-    def apply(
-        self, u: torch.Tensor, init_ut: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        init_ut = self.grid.init_ut if init_ut is None else init_ut
+    def apply(self, u: torch.Tensor) -> torch.Tensor:
+        init_ut = torch.as_tensor(
+            self.wavefield.init_ut, dtype=u.dtype, device=u.device
+        )
         utm2, utm1, utp1, utp2 = _roll_time_4th(u)
         neighbours = _patch_time_neighbors_4th(
-            u, utm2, utm1, utp1, utp2, self.grid.dt, init_ut
+            u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
         )
-        return _time_stencil_4th(u, *neighbours, self.grid.dt, init_ut)
+        return _time_stencil_4th(u, *neighbours, self.wavefield.grid.dt, init_ut)

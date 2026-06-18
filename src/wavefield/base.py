@@ -14,6 +14,11 @@ class Wavefield:
     _wavespeed: np.ndarray = field(init=False)
     init_wavespeed: np.ndarray | None = None  # optional initialise speed
 
+    _init_ut: np.ndarray = field(init=False)
+    init_velocity: np.ndarray | None = (
+        None  # optional initial time derivative (∂u/∂t at t=0)
+    )
+
     def __post_init__(self) -> None:
         Nx, Ny = self.grid.shape
         Nt = self.grid.nt
@@ -32,6 +37,16 @@ class Wavefield:
             if self.init_wavespeed is None
             else np.asarray(self.init_wavespeed, dtype=float)
         )
+
+        self._init_ut = (
+            self._amplitude[0, :, :].copy()
+            if self.init_velocity is None
+            else np.asarray(self.init_velocity, dtype=float)
+        )
+
+    @property
+    def init_ut(self) -> np.ndarray:
+        return self._init_ut
 
     @property
     def amplitude(self) -> np.ndarray:
