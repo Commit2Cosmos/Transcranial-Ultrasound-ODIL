@@ -117,7 +117,9 @@ class TimeOperator4thOrder(TemporalOperator):
             self.wavefield.init_ut, dtype=u.dtype, device=u.device
         )
         utm2, utm1, utp1, utp2 = _roll_time_4th(u)
-        neighbours = _patch_time_neighbors_4th(
+        utm2, utm1, utp1, utp2 = _patch_time_neighbors_4th(
             u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
         )
-        return _time_stencil_4th(u, *neighbours, self.wavefield.grid.dt, init_ut)
+        return _time_stencil_4th(
+            u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
+        )
