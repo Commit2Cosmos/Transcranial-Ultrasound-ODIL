@@ -26,7 +26,7 @@ class ForwardLoss(DiscreteLoss):
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         d = torch.tensor(
-            data, requires_grad=True, dtype=torch.float64, device=self.config.device
+            data, requires_grad=True, dtype=self.config.dtype, device=self.config.device
         )
 
         # extract and reshape amplitude
