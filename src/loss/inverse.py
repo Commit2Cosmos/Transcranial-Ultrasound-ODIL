@@ -19,7 +19,11 @@ class InverseLoss(DiscreteLoss):
         callback: LossTape | None = None,
     ):
         super().__init__(geometry, config, callback)
-        self.d_obs = observed_wavefield
+        self.d_obs = torch.as_tensor(
+            observed_wavefield,
+            dtype=torch.float64,
+            device=self.config.wavefield.grid.device,
+        )
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         # scipy wants a function that takes a flat np.ndarray and returns loss, jac
@@ -30,7 +34,7 @@ class InverseLoss(DiscreteLoss):
         Nt = self.config.wavefield.grid.nt
         Nx, Ny = self.config.wavefield.grid.shape
         amp = d[: self.config.speed_offset].reshape(Nt, Nx, Ny)
-        wsp = d[: self.config.speed_offset].reshape(Nx, Ny)
+        wsp = d[self.config.speed_offset :].reshape(Nx, Ny)
 
         # cmpute residuals and evaluate loss
         r = self._residuals(amp, wsp)
