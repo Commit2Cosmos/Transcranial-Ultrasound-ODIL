@@ -30,7 +30,7 @@ class ScipyOptimiser(Optimiser):
     def minimise(self, callback=None) -> scopt.OptimizeResult:
         # use amplitude data only for the forward
         if isinstance(self.loss, ForwardLoss):
-            u0 = self.wavefield.amplitude.ravel()
+            u0 = self.wavefield.amplitude.cpu().numpy().ravel()
         elif isinstance(self.loss, InverseLoss):
             u0 = self.wavefield.flat_data
 
