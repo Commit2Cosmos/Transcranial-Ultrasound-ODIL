@@ -1,9 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Tuple
-from src.operator import DenseOperator, SparseOperator
-from src.operator import TimeOperator2ndOrder, TimeOperator4thOrder
-from src.operator import Laplacian2ndOrder, Laplacian4thOrder
-from src.wavefield import Wavefield
+from src.operator import WaveEquation
+from wavefield import Wavefield
 from geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
@@ -13,36 +11,21 @@ import torch
 class LossConfig:
     """Configuration for the loss function."""
 
-    wavefield: Wavefield
+    wave_eq: WaveEquation
     geometry: AcquisitionGeometry
-    time_order: int = 2  # order of the time-derivative method
-    space_order: int = 2  # order of the Laplacian method
-    time_operator: DenseOperator | SparseOperator = field(init=False)
-    laplacian_operator: DenseOperator | SparseOperator = field(init=False)
     speed_offset: int = field(init=False)
     device: torch.Device = field(init=False)
 
     def __post_init__(self):
-        if self.time_order == 2:
-            self.time_operator = TimeOperator2ndOrder(self.wavefield)
-        elif self.time_order == 4:
-            self.time_operator = TimeOperator4thOrder(self.wavefield)
-        else:
-            raise ValueError(f"Invalid time order: {self.time_order}")
+        wf = self.wave_eq.wavefield
+        (Nx, Ny), Nt = wf.grid.shape, wf.grid.nt
+        self.speed_offset = self.geometry.n_sources * Nx * Ny * Nt
+        self.device = wf.grid.device
+        self.dtype = wf.grid.dtype
 
-        if self.space_order == 2:
-            self.laplacian_operator = Laplacian2ndOrder()
-        elif self.space_order == 4:
-            self.laplacian_operator = Laplacian4thOrder()
-        else:
-            raise ValueError(f"Invalid space order: {self.space_order}")
-
-        (Nx, Ny), Nt = self.wavefield.grid.shape, self.wavefield.grid.nt
-        n_shots = self.geometry.n_sources
-        self.speed_offset = n_shots * Nx * Ny * Nt  # idx for accessing wavespeed
-
-        self.device = self.wavefield.device
-        self.dtype = self.wavefield.dtype
+    @property
+    def wavefield(self) -> Wavefield:
+        return self.wave_eq.wavefield
 
 
 @dataclass
