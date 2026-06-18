@@ -14,7 +14,7 @@ class ForwardLoss(DiscreteLoss):
         # extract and reshape amplitude
         Nt = self.config.wavefield.grid.nt
         Nx, Ny = self.config.wavefield.grid.shape
-        amp = d[: self.config.speed_offset].reshape(Nt, Nx, Ny)
+        amp = d.reshape(Nt, Nx, Ny)
 
         #  get wavespeed separately, we need it to compute the PDE residuals
         wsp = self.config.wavefield.wavespeed
