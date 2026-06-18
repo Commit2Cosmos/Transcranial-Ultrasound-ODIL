@@ -49,7 +49,7 @@ class LossTape:
     )
     success: bool = False
 
-    def log(self, loss: float, residuals: Tuple[torch.Tensor, torch.Tensor]):
+    def log(self, loss: float, residuals: Tuple[torch.Tensor, ...]) -> None:
         """Log the loss and residuals."""
         self.history["loss"].append(loss)
         self.history["pde_residuals"].append(residuals[0].detach().cpu().numpy())

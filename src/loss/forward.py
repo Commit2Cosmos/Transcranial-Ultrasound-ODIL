@@ -20,7 +20,10 @@ class ForwardLoss(DiscreteLoss):
         L.backward()
         grad = d.grad if d.grad is not None else torch.zeros_like(d)
 
-        self.callback.log(L.item(), r)
+        self.evaluations += 1
+
+        if self.evaluations % self.callback.log_every == 0:
+            self.callback.log(L.item(), (r,))  # tuple for consistency with inverse loss
         return L.item(), grad.numpy()  # returns loss, grad together
 
     def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:

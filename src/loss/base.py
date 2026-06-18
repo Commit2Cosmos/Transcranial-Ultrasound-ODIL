@@ -18,6 +18,8 @@ class DiscreteLoss(ABC):
         self.time_op = config.time_operator
         self.lap = config.laplacian_operator
 
+        self.evaluations = 0  # counter for number of loss evaluations
+
     @abstractmethod
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         """Evaluate the loss function given a wavefield."""
