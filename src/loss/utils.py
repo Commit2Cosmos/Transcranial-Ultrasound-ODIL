@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Tuple
 from src.operator import WaveEquation
-from wavefield import Wavefield
-from geometry import AcquisitionGeometry
+from src.wavefield import Wavefield
+from src.geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
 
