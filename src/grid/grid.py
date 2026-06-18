@@ -181,16 +181,17 @@ class Grid:
         plt.colorbar(im, ax=ax, shrink=0.85, label=r"$\sigma$ [1/s]")
         return ax
 
+    @property
     def summary(self) -> str:
         (ix0, ix1), (iy0, iy1) = self.interior_extent
         (xmin, xmax), (ymin, ymax) = self.extent
         return (
             f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
-            f"total {self.nx}x{self.ny} (PML p={self.pml_width}), "
-            f"nt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m, "
-            f"dt={self.dt:.4f} s, cfl@c_ref={self.cfl(self.c_ref):.3f}, "
-            f"interior x in [{ix0:.2f}, {ix1:.2f}]m, "
-            f"y in [{iy0:.2f}, {iy1:.2f}]m, "
-            f"total x in [{xmin:.2f}, {xmax:.2f}]m, "
-            f"total y in [{ymin:.2f}, {ymax:.2f}]m"
+            f"total {self.nx}x{self.ny} (PML p={self.pml_width}),"
+            f"\nnt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m,"
+            f"\ndt={self.dt:.4f} s, cfl@c_ref={self.cfl(self.c_ref):.3f},"
+            f"\ninterior x in [{ix0:.2f}, {ix1:.2f}]m,"
+            f"\ny in [{iy0:.2f}, {iy1:.2f}]m,"
+            f"\ntotal x in [{xmin:.2f}, {xmax:.2f}]m,"
+            f"\ntotal y in [{ymin:.2f}, {ymax:.2f}]m"
         )
