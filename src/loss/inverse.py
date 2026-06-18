@@ -18,9 +18,8 @@ class InverseLoss(DiscreteLoss):
         config: LossConfig,
         callback: LossTape | None = None,
     ):
-        super().__init__(config, callback)
+        super().__init__(geometry, config, callback)
         self.d_obs = observed_wavefield
-        self.geometry = geometry
 
     def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
         # scipy wants a function that takes a flat np.ndarray and returns loss, jac
