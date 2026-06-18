@@ -52,4 +52,4 @@ class ForwardLoss(DiscreteLoss):
                 L.item(), (r_pde,)
             )  # tuple for consistency with inverse loss
 
-        return L.item(), grad.numpy()  # returns loss, grad together
+        return L.item(), grad.cpu().numpy()  # returns loss, grad together
