@@ -101,8 +101,15 @@ class LBFGSB(ScipyOptimiser):
         loss: DiscreteLoss,
         maxiter: int = 500,
         ftol: float = 1e-8,
+        gtol: float = 1e-10,
         **opts,
     ) -> None:
         super().__init__(
-            wavefield, loss, method="L-BFGS-B", maxiter=maxiter, ftol=ftol, **opts
+            wavefield,
+            loss,
+            method="L-BFGS-B",
+            maxiter=maxiter,
+            ftol=ftol,
+            gtol=gtol,
+            **opts,
         )
