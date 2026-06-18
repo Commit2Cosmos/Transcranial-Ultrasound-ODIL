@@ -122,7 +122,7 @@ class Wavefield:
             self.amplitude.cpu().numpy(), idx, axis=axis
         )  # extract slice
 
-        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
 
         im1 = axs[0].imshow(
@@ -130,15 +130,13 @@ class Wavefield:
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="RdBu_r",
-            aspect="auto",
         )
 
         im2 = axs[1].imshow(
-            self.wavespeed.cpu().numpy(),
+            self.wavespeed.cpu().numpy().T,
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="viridis",
-            aspect="auto",
         )
 
         i, j = view[0], view[1]  # extract letters for labelling
@@ -150,8 +148,8 @@ class Wavefield:
         axs[0].set_title(f"Amplitude field ({view} plane, {slice_plane} = {idx})")
         axs[1].set_title("Wave speed model")
 
-        plt.colorbar(im1, ax=axs[0], label="Amplitude")
-        plt.colorbar(im2, ax=axs[1], label=r"Wavespeed ($ms^{-1}$)")
+        plt.colorbar(im1, ax=axs[0], label="Amplitude", shrink=0.85)
+        plt.colorbar(im2, ax=axs[1], label=r"Wavespeed ($ms^{-1}$)", shrink=0.85)
 
         fig.suptitle(title)
         fig.tight_layout()
