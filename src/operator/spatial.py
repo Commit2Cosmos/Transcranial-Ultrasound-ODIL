@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 
 from .base import DenseOperator
-from ._corrections import NeumannMirrorBC2nd, NeumannMirrorBC4th
+from .conditions import NeumannMirrorBC2nd, NeumannMirrorBC4th
 
 
 # second-order 5 point Laplacian
