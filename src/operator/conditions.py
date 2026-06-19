@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from src.wavefield import Wavefield
+from .temporal import _first_time_derivative
 
 import torch
 
@@ -104,3 +105,24 @@ class NeumannMirrorBC4th(Conditions):
 
     def apply(self, *args, **kwargs):
         return self.patch_spatial_neighbors(*args, **kwargs)
+
+
+class PML(Conditions):
+    """Absorbing layer enforced as a damping term"""
+
+    def __init__(self, wavefield: Wavefield, weight: float = 1.0) -> None:
+        self.wavefield = wavefield
+        self.weight = weight
+        grid = wavefield.grid
+
+        # precompute pml
+        self.sigma_sum = grid.sigma_x + grid.sigma_y
+        self.sigma_prod = grid.sigma_x * grid.sigma_y
+
+    def apply_residual(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        dt = self.wavefield.grid.dt
+        u_t = _first_time_derivative(u, dt, self.wavefield.init_ut)
+        return fu + self.weight * (self.sigma_sum * u_t + self.sigma_prod * u)
+
+    def apply(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        return self.apply_residual(fu, u)
