@@ -22,7 +22,7 @@ def _time_stencil_2point(
     u_t_tmm = utm - utmm  # u^{t-1} - u^{t-2}
     u_t_tmm = u_t_tmm.clone()
     u_t_tmm[1, :, :] = dt * init_ut  # IC patch at t=1
-    return u_t_tm - u_t_tmm  # dt^2 * u_tt
+    return (u_t_tm - u_t_tmm) / dt**2  # u_tt
 
 
 def _roll_time_4th(u: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -75,7 +75,7 @@ def _time_stencil_4th(
     u_t_tmm = utm1 - utm2
     u_t_tmm = u_t_tmm.clone()
     u_t_tmm[1, :, :] = dt * init_ut
-    u_tt_2pt = u_t_tm - u_t_tmm
+    u_tt_2pt = (u_t_tm - u_t_tmm) / dt**2
     u_tt = u_tt.clone()
     u_tt[1, :, :] = u_tt_2pt[1, :, :]
     u_tt[2, :, :] = u_tt_2pt[2, :, :]
