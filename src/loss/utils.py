@@ -39,7 +39,16 @@ class LossTape:
     history: dict = field(
         default_factory=lambda: {"loss": [], "pde_residuals": [], "data_residuals": []}
     )
+    _norm_cache: dict = field(default_factory=lambda: {"pde": [], "data": []})
     _result: scopt.OptimizeResult = field(init=False)  # store optimisation result
+
+    def _norms(self, key: str, cache_key: str) -> list:
+        """Return residual norms, computing only entries not already cached."""
+        residuals = self.history[key]
+        cache = self._norm_cache[cache_key]
+        for r in residuals[len(cache) :]:
+            cache.append(float(np.linalg.norm(r)))
+        return cache
 
     def log(self, loss: float, residuals: Tuple[torch.Tensor, ...]) -> None:
         """Log the loss and residuals."""
@@ -55,10 +64,8 @@ class LossTape:
         ncols = 3 if len(self.history["data_residuals"]) > 0 else 2
         fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
-        # compute residual norms
-        pde_norms = [
-            np.linalg.norm(residuals) for residuals in self.history["pde_residuals"]
-        ]
+        # compute residual norms (cached; only new entries recomputed)
+        pde_norms = self._norms("pde_residuals", "pde")
 
         axs[0].semilogy(self.history["loss"])
         axs[0].set_title("Loss")
@@ -71,9 +78,7 @@ class LossTape:
         axs[1].set_ylabel("Residual Norm")
 
         if ncols == 3:
-            data_norms = [
-                torch.norm(residuals) for residuals in self.history["data_residuals"]
-            ]
+            data_norms = self._norms("data_residuals", "data")
             axs[2].semilogy(data_norms)
             axs[2].set_title("Data Residual Norms")
             axs[2].set_xlabel("Iteration")
