@@ -7,6 +7,7 @@ import torch
 
 from .base import DenseOperator
 from .conditions import NeumannMirrorBC2nd, NeumannMirrorBC4th
+from src.wavefield import Wavefield
 
 
 # second-order 5 point Laplacian
@@ -17,7 +18,7 @@ def _laplacian_5pt(
     uym: torch.Tensor,
     uyp: torch.Tensor,
     dx: float,
-    dy: int,
+    dy: float,
 ) -> torch.Tensor:
     return (uxm - 2.0 * utm + uxp) / dx**2 + (uym - 2.0 * utm + uyp) / dy**2
 
@@ -51,6 +52,9 @@ class SpatialOperator(DenseOperator):
 class Laplacian2ndOrder(SpatialOperator):
     """2nd-order 5-point Laplacian."""
 
+    def __init__(self, wavefield: Wavefield):
+        super().__init__(wavefield)
+
     # collects the four spatial neighbors of the t-1 field
     def gather_neighbors(
         self, utm: torch.Tensor
@@ -78,6 +82,9 @@ class Laplacian2ndOrder(SpatialOperator):
 class Laplacian4thOrder(SpatialOperator):
     """4th-order 9-point Laplacian."""
 
+    def __init__(self, wavefield: Wavefield):
+        super().__init__(wavefield)
+
     def gather_neighbors(self, utm: torch.Tensor) -> tuple[torch.Tensor, ...]:
         uxm2 = torch.roll(utm, 2, dims=1)  # two cells left(i-2,j)
         uxm = torch.roll(utm, 1, dims=1)  # one cell left(i-1,j)
@@ -90,7 +97,11 @@ class Laplacian4thOrder(SpatialOperator):
         return uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2
 
     def apply(
-        self, utm: torch.Tensor, bc: NeumannMirrorBC4th | None = None
+        self,
+        utm: torch.Tensor,
+        dx: float,
+        dy: float,
+        bc: NeumannMirrorBC4th | None = None,
     ) -> torch.Tensor:
         bc = bc or NeumannMirrorBC4th()
         uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = self.gather_neighbors(utm)

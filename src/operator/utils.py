@@ -38,9 +38,9 @@ class WaveEquation:
             raise ValueError(f"Invalid time order: {self.time_order}")
 
         if self.space_order == 2:
-            self._lap = Laplacian2ndOrder()
+            self._lap = Laplacian2ndOrder(self.wavefield)
         elif self.space_order == 4:
-            self._lap = Laplacian4thOrder()
+            self._lap = Laplacian4thOrder(self.wavefield)
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
 

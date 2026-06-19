@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import animation
 
 from src.grid import Grid
 
@@ -166,6 +167,52 @@ class Wavefield:
         fig.suptitle(title)
         fig.tight_layout()
         plt.show()
+
+    def animate(
+        self,
+        filename: str = "wavefield.gif",
+        fps: int = 20,
+        cmap: str = "RdBu_r",
+        title: str = "Wavefield history",
+    ) -> str:
+        """Render the amplitude field over all time steps to an animated GIF."""
+
+        amp = self.amplitude.cpu().numpy()  # (Nt, Nx, Ny)
+        Nt = self.grid.nt
+        (xmin, xmax), (ymin, ymax) = self.grid.extent
+        t = self.grid.t.cpu().numpy()
+
+        # fixed colour scale
+        vmax = float(np.abs(amp).max()) or 1.0
+        vmin = -vmax
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(
+            amp[0],
+            origin="lower",
+            extent=(xmin, xmax, ymin, ymax),
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            animated=True,
+        )
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ttl = ax.set_title(f"{title}  (t = {t[0]:.3f} s)")
+        plt.colorbar(im, ax=ax, label="Amplitude", shrink=0.85)
+
+        # update for drawing frames
+        def update(frame: int):
+            im.set_data(amp[frame])
+            ttl.set_text(f"{title}  (t = {t[frame]:.3f} s)")
+            return im, ttl
+
+        anim = animation.FuncAnimation(
+            fig, update, frames=Nt, interval=1000 / fps, blit=False
+        )
+        anim.save(filename, writer=animation.PillowWriter(fps=fps))
+        plt.close(fig)
+        return filename
 
 
 if __name__ == "__main__":
