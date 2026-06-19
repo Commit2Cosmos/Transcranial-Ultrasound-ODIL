@@ -16,8 +16,10 @@ def _laplacian_5pt(
     uxp: torch.Tensor,
     uym: torch.Tensor,
     uyp: torch.Tensor,
+    dx: float,
+    dy: int,
 ) -> torch.Tensor:
-    return (uxm - 2.0 * utm + uxp) + (uym - 2.0 * utm + uyp)
+    return (uxm - 2.0 * utm + uxp) / dx**2 + (uym - 2.0 * utm + uyp) / dy**2
 
 
 # fourth-order uxx or uyy
@@ -67,7 +69,9 @@ class Laplacian2ndOrder(SpatialOperator):
         uxm, uxp, uym, uyp = bc.patch_spatial_neighbors(
             uxm, uxp, uym, uyp, utm
         )  # replace teh wrong periodic roll with the mirrored interior values
-        return _laplacian_5pt(utm, uxm, uxp, uym, uyp)
+        dx = self.wavefield.grid.dx
+        dy = self.wavefield.grid.dy
+        return _laplacian_5pt(utm, uxm, uxp, uym, uyp, dx, dy)
 
 
 @dataclass
@@ -94,6 +98,8 @@ class Laplacian4thOrder(SpatialOperator):
             uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2, utm
         )
         uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = neighbours
-        u_xx = _fourth_derivative_1d(uxm2, uxm, utm, uxp, uxp2)
-        u_yy = _fourth_derivative_1d(uym2, uym, utm, uyp, uyp2)
+        dx = self.wavefield.grid.dx
+        dy = self.wavefield.grid.dy
+        u_xx = _fourth_derivative_1d(uxm2, uxm, utm, uxp, uxp2) / dx**2
+        u_yy = _fourth_derivative_1d(uym2, uym, utm, uyp, uyp2) / dy**2
         return u_xx + u_yy
