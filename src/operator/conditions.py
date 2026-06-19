@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from src.wavefield import Wavefield
-from .temporal import _first_time_derivative
 
 import torch
 
@@ -120,6 +119,8 @@ class PML(Conditions):
         self.sigma_prod = grid.sigma_x * grid.sigma_y
 
     def apply_residual(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        from .temporal import _first_time_derivative  # avoid circular import
+
         dt = self.wavefield.grid.dt
         u_t = _first_time_derivative(u, dt, self.wavefield.init_ut)
         return fu + self.weight * (self.sigma_sum * u_t + self.sigma_prod * u)
