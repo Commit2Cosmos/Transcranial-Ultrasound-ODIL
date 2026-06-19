@@ -99,8 +99,6 @@ class Laplacian4thOrder(SpatialOperator):
     def apply(
         self,
         utm: torch.Tensor,
-        dx: float,
-        dy: float,
         bc: NeumannMirrorBC4th | None = None,
     ) -> torch.Tensor:
         bc = bc or NeumannMirrorBC4th()
