@@ -9,6 +9,7 @@ from .conditions import (
     InitialConditions,
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,
+    PML,
 )
 
 
@@ -20,11 +21,13 @@ class WaveEquation:
     time_order: int = 2
     space_order: int = 2
     ic_weight: float = 1.0
+    pml_weight: float = 1.0
 
     _time_op: DenseOperator = field(init=False)
     _lap: DenseOperator = field(init=False)
     _ic: InitialConditions = field(init=False)
-    _bc: Conditions | None = None
+    _bc: Conditions = field(init=False)
+    _pml: PML = field(init=False)
 
     def __post_init__(self):
         if self.time_order == 2:
@@ -42,9 +45,11 @@ class WaveEquation:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
         self._ic = InitialConditions(self.wavefield, weight=self.ic_weight)
+
         self._bc = (
             NeumannMirrorBC2nd() if self.space_order == 2 else NeumannMirrorBC4th()
         )
+        self._pml = PML(self.wavefield, self.pml_weight)
 
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
@@ -53,4 +58,5 @@ class WaveEquation:
         utt = self._time_op.apply(amp)
         lap = self._lap.apply(amp, bc=self._bc)
         r = utt - wsp**2 * lap - source
+        r = self._pml.apply(r, amp)  # damping over PML region
         return self._ic.apply(r, amp)
