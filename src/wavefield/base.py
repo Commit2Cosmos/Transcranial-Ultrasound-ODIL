@@ -139,7 +139,7 @@ class Wavefield:
         (xmin, xmax), (ymin, ymax) = self.grid.extent
 
         im1 = axs[0].imshow(
-            amp_data,
+            amp_data.T,
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap="RdBu_r",
@@ -188,7 +188,7 @@ class Wavefield:
 
         fig, ax = plt.subplots(figsize=(6, 5))
         im = ax.imshow(
-            amp[0],
+            amp[0].T,
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap=cmap,
@@ -203,7 +203,7 @@ class Wavefield:
 
         # update for drawing frames
         def update(frame: int):
-            im.set_data(amp[frame])
+            im.set_data(amp[frame].T)
             ttl.set_text(f"{title}  (t = {t[frame]:.3f} s)")
             return im, ttl
 
