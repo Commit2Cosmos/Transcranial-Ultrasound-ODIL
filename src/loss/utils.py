@@ -6,6 +6,7 @@ from src.geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
 import scipy.optimize as scopt
+import numpy as np
 
 
 @dataclass
@@ -56,7 +57,7 @@ class LossTape:
 
         # compute residual norms
         pde_norms = [
-            torch.norm(residuals) for residuals in self.history["pde_residuals"]
+            np.linalg.norm(residuals) for residuals in self.history["pde_residuals"]
         ]
 
         axs[0].semilogy(self.history["loss"])
