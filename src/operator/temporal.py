@@ -10,6 +10,21 @@ from .spatial import _fourth_derivative_1d
 from src.wavefield import Wavefield
 
 
+def _first_time_derivative(
+    u: torch.Tensor, dt: float, init_ut: torch.Tensor
+) -> torch.Tensor:
+    """Centered du/dt on the full (nt, nx, ny) field, IC-consistent at the ends."""
+    utm1 = torch.roll(u, 1, dims=0)
+    utp1 = torch.roll(u, -1, dims=0)
+    utm1 = utm1.clone()
+    utp1 = utp1.clone()
+    # fake past consistent with the stencil's velocity IC
+    utm1[0, :, :] = u[0, :, :] - dt * init_ut
+    # one-sided at the final step (no future sample)
+    utp1[-1, :, :] = u[-1, :, :]
+    return (utp1 - utm1) / (2.0 * dt)
+
+
 def _time_stencil_2point(
     u: torch.Tensor,
     utm: torch.Tensor,
