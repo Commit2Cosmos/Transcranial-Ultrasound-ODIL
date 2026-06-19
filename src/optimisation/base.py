@@ -16,7 +16,7 @@ class Optimiser(ABC):
         self.wavefield = wavefield  # wavefield to optimise
 
     @abstractmethod  # to be implemented by classes that inherit
-    def minimise(self, u0, **kwargs):
+    def minimise(self, maxiter, ftol, gtol, callback=None):
         pass
 
 
@@ -30,7 +30,15 @@ class ScipyOptimiser(Optimiser):
         self.method = method  # e.g., 'L-BFGS-B', 'Newton-CG'
         self.opts = opts  # e.g., maxiter, ftol
 
-    def minimise(self, callback=None) -> Tuple[List[Wavefield], LossTape]:
+    def minimise(
+        self, maxiter=500, ftol=1e-8, gtol=1e-10, callback=None
+    ) -> Tuple[List[Wavefield], LossTape]:
+
+        # apply specified config
+        self.opts["maxiter"] = maxiter
+        self.opts["ftol"] = ftol
+        self.opts["gtol"] = gtol
+
         # use amplitude data only for the forward
         if isinstance(self.loss, ForwardLoss):
             # tile amplitude for each shot, since forward loss only optimises amplitude
