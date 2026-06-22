@@ -30,6 +30,10 @@ class AcquisitionGeometry:
         ring_center: Tuple[float, float] = (0.0, 0.0),
     ):
         self.grid = grid
+        # ensure same device and dtype as grid
+        self.device = self.grid.device
+        self.dtype = self.grid.dtype
+
         self.n_receivers = n_receivers
         self.n_sources = n_receivers if n_sources is None else n_sources
         self.f0 = f0
@@ -50,7 +54,7 @@ class AcquisitionGeometry:
         a = self.a_frac * (ix_max - ix_min) / 2.0
         b = self.b_frac * (iy_max - iy_min) / 2.0
 
-        k = torch.arange(n, dtype=torch.float64)
+        k = torch.arange(n, dtype=self.dtype, device=self.device)
         theta = 2.0 * math.pi * k / n
         x_k = cx + a * torch.cos(theta)
         y_k = cy + b * torch.sin(theta)

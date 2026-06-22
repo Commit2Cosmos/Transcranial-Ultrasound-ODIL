@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import scipy.sparse as sp
 import torch
+from src.wavefield import Wavefield
 
 
 class SparseOperator(ABC):
@@ -25,8 +26,8 @@ class SparseOperator(ABC):
 class DenseOperator(ABC):
     """Matrix-free operator using local stencils (e.g. ``torch.roll``)."""
 
-    def __init__(self, grid) -> None:
-        self.grid = grid
+    def __init__(self, wavefield: Wavefield) -> None:
+        self.wavefield = wavefield
 
     @abstractmethod
     def apply(self, u: torch.Tensor, **kwargs) -> torch.Tensor:

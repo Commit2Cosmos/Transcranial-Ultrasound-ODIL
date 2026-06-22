@@ -1,41 +1,33 @@
 from dataclasses import dataclass, field
 from typing import Tuple
-from src.operator import DenseOperator, SparseOperator
-from src.operator import TimeOperator2ndOrder, TimeOperator4thOrder
-from src.operator import Laplacian2ndOrder, Laplacian4thOrder
-from src.grid import Grid
+from src.operator import WaveEquation
+from src.wavefield import Wavefield
+from src.geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
+import scipy.optimize as scopt
+import numpy as np
 
 
 @dataclass
 class LossConfig:
     """Configuration for the loss function."""
 
-    grid: Grid
-    time_order: int = 2  # order of the time-derivative method
-    space_order: int = 2  # order of the Laplacian method
-    time_operator: DenseOperator | SparseOperator = field(init=False)
-    laplacian_operator: DenseOperator | SparseOperator = field(init=False)
+    wave_eq: WaveEquation
+    geometry: AcquisitionGeometry
     speed_offset: int = field(init=False)
+    device: torch.device = field(init=False)
 
     def __post_init__(self):
-        if self.time_order == 2:
-            self.time_operator = TimeOperator2ndOrder()
-        elif self.time_order == 4:
-            self.time_operator = TimeOperator4thOrder()
-        else:
-            raise ValueError(f"Invalid time order: {self.time_order}")
+        wf = self.wave_eq.wavefield
+        (Nx, Ny), Nt = wf.grid.shape, wf.grid.nt
+        self.speed_offset = self.geometry.n_sources * Nx * Ny * Nt
+        self.device = wf.grid.device
+        self.dtype = wf.grid.dtype
 
-        if self.space_order == 2:
-            self.laplacian_operator = Laplacian2ndOrder()
-        elif self.space_order == 4:
-            self.laplacian_operator = Laplacian4thOrder()
-        else:
-            raise ValueError(f"Invalid space order: {self.space_order}")
-
-        (Nx, Ny), Nt = self.grid.shape, self.grid.nt
-        self.speed_offset = Nx * Ny * Nt  # idx for accessing wavespeed
+    @property
+    def wavefield(self) -> Wavefield:
+        return self.wave_eq.wavefield
 
 
 @dataclass
@@ -47,9 +39,18 @@ class LossTape:
     history: dict = field(
         default_factory=lambda: {"loss": [], "pde_residuals": [], "data_residuals": []}
     )
-    success: bool = False
+    _norm_cache: dict = field(default_factory=lambda: {"pde": [], "data": []})
+    _result: scopt.OptimizeResult = field(init=False)  # store optimisation result
 
-    def log(self, loss: float, residuals: Tuple[torch.Tensor, torch.Tensor]):
+    def _norms(self, key: str, cache_key: str) -> list:
+        """Return residual norms, computing only entries not already cached."""
+        residuals = self.history[key]
+        cache = self._norm_cache[cache_key]
+        for r in residuals[len(cache) :]:
+            cache.append(float(np.linalg.norm(r)))
+        return cache
+
+    def log(self, loss: float, residuals: Tuple[torch.Tensor, ...]) -> None:
         """Log the loss and residuals."""
         self.history["loss"].append(loss)
         self.history["pde_residuals"].append(residuals[0].detach().cpu().numpy())
@@ -63,10 +64,8 @@ class LossTape:
         ncols = 3 if len(self.history["data_residuals"]) > 0 else 2
         fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
-        # compute residual norms
-        pde_norms = [
-            torch.norm(residuals) for residuals in self.history["pde_residuals"]
-        ]
+        # compute residual norms (cached; only new entries recomputed)
+        pde_norms = self._norms("pde_residuals", "pde")
 
         axs[0].semilogy(self.history["loss"])
         axs[0].set_title("Loss")
@@ -79,9 +78,7 @@ class LossTape:
         axs[1].set_ylabel("Residual Norm")
 
         if ncols == 3:
-            data_norms = [
-                torch.norm(residuals) for residuals in self.history["data_residuals"]
-            ]
+            data_norms = self._norms("data_residuals", "data")
             axs[2].semilogy(data_norms)
             axs[2].set_title("Data Residual Norms")
             axs[2].set_xlabel("Iteration")
@@ -90,3 +87,11 @@ class LossTape:
         fig.suptitle(title)
         plt.tight_layout()
         plt.show()
+
+    @property
+    def result(self) -> scopt.OptimizeResult:
+        return self._result
+
+    @result.setter
+    def result(self, value: scopt.OptimizeResult):
+        self._result = value
