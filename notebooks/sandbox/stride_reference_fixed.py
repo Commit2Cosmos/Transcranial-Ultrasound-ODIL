@@ -16,7 +16,7 @@ SOS_SOFT = 1540.0
 SOS_SKULL = 2800.0
 
 # confirm git pull worked.
-REF_VERSION = 5
+REF_VERSION = 6
 
 
 def configure_devito() -> str:
@@ -366,6 +366,18 @@ def check_forward_ready(problem, *, min_shots: int | None = None) -> int:
     return n
 
 
+def sos_norm(vmin: float = 1400.0, vcenter: float = 1600.0, vmax: float = 3000.0):
+    """Two-slope (nonlinear) normalisation for SoS colorbars.
+
+    Maps half the colormap to [vmin, vcenter] (soft-tissue range, ~200 m/s)
+    and half to [vcenter, vmax] (skull range, ~1400 m/s), so soft-tissue
+    contrast is not visually crushed by the much higher skull speed.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    return TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+
+
 def domain_extent_mm(domain_m: float) -> tuple[float, float, float, float]:
     """Imshow extent (x0, x1, y0, y1) in mm for a square domain."""
     mm = domain_m * 1000.0
@@ -379,8 +391,9 @@ def plot_vp(
     title="vp",
     ax=None,
     show=True,
-    vmin=None,
-    vmax=None,
+    vmin=1400.0,
+    vmax=3000.0,
+    norm=None,
 ):
     import matplotlib.pyplot as plt
     import numpy as np
@@ -390,12 +403,14 @@ def plot_vp(
     if ax is None:
         _, ax = plt.subplots(figsize=(4, 4))
 
+    if norm is None:
+        norm = sos_norm(vmin=vmin, vcenter=1600.0, vmax=vmax)
+
     im = ax.imshow(
         data.T,
         origin="lower",
         extent=(0, domain_m * 1000, 0, domain_m * 1000),
-        vmin=vmin,
-        vmax=vmax,
+        norm=norm,
     )
 
     plt.colorbar(im, ax=ax, label="m/s")
@@ -416,6 +431,7 @@ def plot_vp_overview(
     *,
     domain_m: float = 0.25,
     shot_id: int = 0,
+    norm=None,
 ):
     """Static overview: vp + transducers + shot wavelet (replaces problem.plot())."""
     import matplotlib.pyplot as plt
@@ -424,9 +440,12 @@ def plot_vp_overview(
     shot = problem.acquisitions.get(shot_id)
     ext = domain_extent_mm(domain_m)
 
+    if norm is None:
+        norm = sos_norm()
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-    im = axes[0].imshow(data.T, origin="lower", extent=ext, cmap="viridis")
+    im = axes[0].imshow(data.T, origin="lower", extent=ext, cmap="viridis", norm=norm)
     fig.colorbar(im, ax=axes[0], label="m/s", fraction=0.046)
     axes[0].set_title("vp")
     axes[0].set_xlabel("x (mm)")
