@@ -6,8 +6,8 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from src.grid import Grid
-from src.models import VelocityModel
+from odil_wave.grid import Grid
+from odil_wave.models import VelocityModel
 
 
 class AcquisitionGeometry:

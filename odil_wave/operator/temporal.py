@@ -7,7 +7,7 @@ import torch
 
 from .base import DenseOperator
 from .spatial import _fourth_derivative_1d
-from src.wavefield import Wavefield
+from odil_wave.wavefield import Wavefield
 
 
 def _first_time_derivative(

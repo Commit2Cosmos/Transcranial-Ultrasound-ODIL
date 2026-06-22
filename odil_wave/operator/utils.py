@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import torch
-from src.wavefield import Wavefield
+from odil_wave.wavefield import Wavefield
 from .base import DenseOperator
 from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .spatial import Laplacian2ndOrder, Laplacian4thOrder

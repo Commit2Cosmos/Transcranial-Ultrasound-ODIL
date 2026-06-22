@@ -1,6 +1,6 @@
 from typing import Tuple
 
-from src.loss.utils import LossConfig, LossTape
+from odil_wave.loss.utils import LossConfig, LossTape
 from .base import DiscreteLoss
 
 import torch

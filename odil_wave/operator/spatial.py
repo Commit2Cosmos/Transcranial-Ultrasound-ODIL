@@ -7,7 +7,7 @@ import torch
 
 from .base import DenseOperator
 from .conditions import NeumannMirrorBC2nd, NeumannMirrorBC4th
-from src.wavefield import Wavefield
+from odil_wave.wavefield import Wavefield
 
 
 # second-order 5 point Laplacian

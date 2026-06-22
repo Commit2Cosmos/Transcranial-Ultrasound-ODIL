@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import scipy.sparse as sp
 import torch
-from src.wavefield import Wavefield
+from odil_wave.wavefield import Wavefield
 
 
 class SparseOperator(ABC):

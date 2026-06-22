@@ -3,9 +3,9 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "odil-fwi"
+name = "odil-wave"
 version = "0.1.0"
-description = "Accelerated FWI for Transcranial Ultrasound Imaging using the ODIL Framework"
+description = "A package for solving the wave equation using the ODIL framework."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -34,8 +34,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["odil_wave*"]
 
 
 [project.scripts]
-#odil-fwi = "odil_fwi.cli:main"
+#odil-wave = "odil_wave.cli:main"

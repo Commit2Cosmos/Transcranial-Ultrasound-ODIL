@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-from src.grid import Grid
+from odil_wave.grid import Grid
 
 
 @dataclass

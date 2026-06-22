@@ -9,7 +9,7 @@ from skimage.transform import resize
 
 import numpy as np
 
-from src.grid import Grid
+from odil_wave.grid import Grid
 
 
 class VelocityModel:

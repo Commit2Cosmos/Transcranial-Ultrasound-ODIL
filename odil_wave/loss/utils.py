@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Tuple
-from src.operator import WaveEquation
-from src.wavefield import Wavefield
-from src.geometry import AcquisitionGeometry
+from odil_wave.operator import WaveEquation
+from odil_wave.wavefield import Wavefield
+from odil_wave.geometry import AcquisitionGeometry
 import matplotlib.pyplot as plt
 import torch
 import scipy.optimize as scopt

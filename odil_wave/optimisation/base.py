@@ -3,9 +3,9 @@ from typing import Tuple, List
 
 import scipy.optimize as scopt
 import numpy as np
-from src.loss import DiscreteLoss, ForwardLoss, InverseLoss
-from src.wavefield import Wavefield
-from src.loss.utils import LossTape
+from odil_wave.loss import DiscreteLoss, ForwardLoss, InverseLoss
+from odil_wave.wavefield import Wavefield
+from odil_wave.loss.utils import LossTape
 
 
 class Optimiser(ABC):
