@@ -45,14 +45,16 @@ class Wavefield:
             )
         )
 
-        # initialise wavespeed as Nx*Ny or provided values
-        self._wavespeed = (
-            torch.ones(size=(Nx, Ny), dtype=self.dtype, device=self.device)
-            if self.init_wavespeed is None
-            else torch.as_tensor(
+        # initialise wavespeed as Nx*Ny or provided values (flat 1D accepted, reshaped to (Nx, Ny))
+        if self.init_wavespeed is None:
+            self._wavespeed = torch.ones(
+                size=(Nx, Ny), dtype=self.dtype, device=self.device
+            )
+        else:
+            wsp = torch.as_tensor(
                 self.init_wavespeed, dtype=self.dtype, device=self.device
             )
-        )
+            self._wavespeed = wsp.reshape(Nx, Ny)
 
         self._init_ut = (
             torch.zeros(
@@ -83,6 +85,12 @@ class Wavefield:
     @property
     def wavespeed(self) -> torch.Tensor:
         return self._wavespeed
+
+    @wavespeed.setter
+    def wavespeed(self, value) -> None:
+        Nx, Ny = self.grid.shape
+        wsp = torch.as_tensor(value, dtype=self.dtype, device=self.device)
+        self._wavespeed = wsp.reshape(Nx, Ny)
 
     @property
     def flat_data(self) -> np.ndarray:
