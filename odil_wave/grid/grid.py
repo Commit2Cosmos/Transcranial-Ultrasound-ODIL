@@ -30,11 +30,8 @@ class Grid:
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     t_max: Optional[float] = None
     init_nt: Optional[int] = None  # optional override; derived from CFL if None
-    # TODO: DEVICE and DTYPE should be set in a config file
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
-    # device: str = DEVICE
-    # dtype: torch.dtype = DTYPE
 
     # derived
     interior_nx: int = field(init=False)
