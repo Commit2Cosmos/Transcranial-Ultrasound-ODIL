@@ -6,6 +6,8 @@ from matplotlib.patches import Rectangle
 
 from skimage.data import shepp_logan_phantom
 from skimage.transform import resize
+from skimage import morphology
+from scipy import ndimage as ndi
 
 import numpy as np
 
@@ -30,6 +32,29 @@ class VelocityModel:
         self.profile_kwargs = profile_kwargs
         self.c = self._build()
 
+    def _shepp_logan_embedded(self, scale: float) -> torch.Tensor:
+        """Resized, rotated, PML-padded Shepp-Logan phantom, values in [0, 1].
+
+        Shared by the `shepp_logan` truth profile and the `shepp_logan_skull`
+        warm-start init so the truth medium and the prior stay spatially
+        aligned.
+        """
+        g = self.grid
+        s_nx = max(2, int(g.interior_nx * scale))
+        s_ny = max(2, int(g.interior_ny * scale))
+        phantom = shepp_logan_phantom().astype(np.float32)
+        # Rotate 90 deg so the long axis aligns with AcquisitionGeometry's y.
+        phantom = np.rot90(phantom, k=1).copy()
+        phantom = resize(phantom, (s_nx, s_ny), anti_aliasing=True, mode="reflect")
+        phantom = phantom / phantom.max()  # normalize so contrast = true peak delta
+        phantom_t = torch.from_numpy(phantom).to(dtype=g.dtype, device=g.device)
+        p = g.pml_width
+        i0 = p + (g.interior_nx - s_nx) // 2
+        j0 = p + (g.interior_ny - s_ny) // 2
+        field = torch.zeros(g.shape, dtype=g.dtype, device=g.device)
+        field[i0 : i0 + s_nx, j0 : j0 + s_ny] = phantom_t
+        return field
+
     def _build(self) -> torch.Tensor:
         g = self.grid
         base_field = torch.full(g.shape, self.base, dtype=g.dtype, device=g.device)
@@ -45,25 +70,47 @@ class VelocityModel:
                 mask, torch.full_like(base_field, self.base + self.contrast), base_field
             )
 
-        if self.profile == "skull":
-            raise NotImplementedError("TODO")
-
         if self.profile == "shepp_logan":
             scale = self.profile_kwargs.get("scale", 0.7)
-            s_nx = max(2, int(g.interior_nx * scale))
-            s_ny = max(2, int(g.interior_ny * scale))
-            phantom = shepp_logan_phantom().astype(np.float32)
-            # Rotate 90deg so the phantom's long axis aligns with the
-            # AcquisitionGeometry ellipse's semi-major axis (y).
-            phantom = np.rot90(phantom, k=1).copy()
-            phantom = resize(phantom, (s_nx, s_ny), anti_aliasing=True, mode="reflect")
-            phantom_t = torch.from_numpy(phantom).to(dtype=g.dtype, device=g.device)
-            p = g.pml_width
-            i0 = p + (g.interior_nx - s_nx) // 2
-            j0 = p + (g.interior_ny - s_ny) // 2
-            c = base_field.clone()
-            c[i0 : i0 + s_nx, j0 : j0 + s_ny] = self.base + self.contrast * phantom_t
+            phantom_field = self._shepp_logan_embedded(scale)
+            return base_field + self.contrast * phantom_field
+
+        if self.profile == "shepp_logan_skull":
+            scale = self.profile_kwargs.get("scale", 0.7)
+            threshold = self.profile_kwargs.get("threshold", 0.05)
+            interior_erosion = self.profile_kwargs.get("interior_erosion", 2)
+            interior_value = self.profile_kwargs.get("interior_value", self.base)
+            phantom_field = self._shepp_logan_embedded(scale)
+
+            # Filled-head mask: threshold + fill holes.
+            mask_np = (phantom_field > threshold).cpu().numpy()
+            head_mask_np = ndi.binary_fill_holes(mask_np)
+
+            # Three disjoint regions:
+            #   background (~head_mask)            -> base
+            #   brain interior (eroded head_mask)  -> interior_value
+            #   skull rim (head ^ ~interior)       -> base + contrast * phantom
+            interior_mask_np = morphology.erosion(
+                head_mask_np, morphology.disk(interior_erosion)
+            )
+            rim_mask_np = head_mask_np & ~interior_mask_np
+            interior_mask = torch.from_numpy(interior_mask_np).to(device=g.device)
+            rim_mask = torch.from_numpy(rim_mask_np).to(device=g.device)
+
+            c = torch.where(
+                interior_mask,
+                torch.full_like(base_field, interior_value),
+                base_field,
+            )
+            c = torch.where(
+                rim_mask,
+                base_field + self.contrast * phantom_field,
+                c,
+            )
             return c
+
+        if self.profile == "skull":
+            raise NotImplementedError("Implement a realistic skull model!")
 
         raise ValueError(f"Unknown velocity profile: {self.profile!r}")
 
