@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import binary_erosion, binary_fill_holes
 from skimage.data import shepp_logan_phantom
 from skimage.transform import resize
 
@@ -104,14 +105,6 @@ def perfect_skull_start(
     return start, skull_mask
 
 
-def inversion_vp_from_true(problem, vp_true):
-    """Deprecated: a full-truth start is not a perfect-skull start."""
-    raise RuntimeError(
-        "Do not initialise FWI from the complete true model. "
-        "Use perfect_skull_start(...) followed by inversion_vp_from_array(...)."
-    )
-
-
 def project_root() -> Path:
     path = Path(__file__).resolve()
     for parent in path.parents:
@@ -125,8 +118,6 @@ def reference_dir(resolution: int) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     return out
 
-
-from scipy.ndimage import binary_erosion, binary_fill_holes
 
 def shepp_logan_sos(
     shape: tuple[int, int],
@@ -492,8 +483,8 @@ def build_stride_problem(
     name: str,
     interior_shape: tuple[int, int],
     domain_m: float = 0.25,
-    extra: tuple[int, int] = (40, 40),
-    absorbing: tuple[int, int] = (30, 30),
+    extra: tuple[int, int] = (100, 100),
+    absorbing: tuple[int, int] = (90, 90),
     f_centre: float = 200e3,
     n_cycles: int = 3,
     n_receivers: int = 64,
