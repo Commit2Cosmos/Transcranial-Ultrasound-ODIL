@@ -1,14 +1,18 @@
 from typing import Tuple
 
-from odil_wave.loss.utils import LossConfig, LossTape
-from .base import DiscreteLoss
-
 import torch
-import numpy as np
+
+from .base import DiscreteLoss
+from .utils import LossConfig, LossTape
 
 
 class InverseLoss(DiscreteLoss):
-    """Loss function for the forward problem."""
+    """Joint (u, c) inverse-problem loss.
+
+    L = w_pde  * sum_s mean(r_pde_s  ** 2)
+      + w_data * sum_s mean(r_data_s ** 2)
+      + w_reg  * R(c_interior)            (if a Regulariser is attached)
+    """
 
     def __init__(
         self,
@@ -18,67 +22,48 @@ class InverseLoss(DiscreteLoss):
     ):
         super().__init__(config, callback)
         self.d_obs = torch.as_tensor(
-            observed_wavefield,
-            dtype=self.config.dtype,
-            device=self.config.device,
+            observed_wavefield, dtype=self.config.dtype, device=self.config.device
         )
 
     def _eval_pde_loss(
         self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int
     ) -> torch.Tensor:
-        return self.config.wave_eq.residual(
-            amp, wsp, self.sources[shot_idx]
-        )  # u_tt - c^2(u_xx + u_yy) - f
+        return self.config.wave_eq.residual(amp, wsp, self.sources[shot_idx])
 
     def _eval_data_loss(self, d_syn: torch.Tensor, shot_idx: int) -> torch.Tensor:
-        i, j = self.config.geometry.recv_ij[:, 0], self.config.geometry.recv_ij[:, 1]
-        return (
-            d_syn[:, i, j] - self.d_obs[shot_idx, :, i, j]
-        )  # observed data for this source at receivers
+        i = self.config.geometry.recv_ij[:, 0]
+        j = self.config.geometry.recv_ij[:, 1]
+        return d_syn[:, i, j] - self.d_obs[shot_idx, :, i, j]
 
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int = 0
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        r_pde = self._eval_pde_loss(amp, wsp, shot_idx)
-        r_data = self._eval_data_loss(amp, shot_idx)
-        return r_pde, r_data
-
-    def _eval_loss(self, residuals: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        r_pde, r_data = residuals
-        return torch.mean(r_pde**2) + torch.mean(
-            r_data**2
-        )  # normalise for inverse problem
-
-    def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
-        # scipy wants a function that takes a flat np.ndarray and returns loss, jac
-        # we need a torch.Tensor to compute the loss and gradient
-        d = torch.tensor(
-            data, requires_grad=True, dtype=torch.float64, device=self.config.device
+        return (
+            self._eval_pde_loss(amp, wsp, shot_idx),
+            self._eval_data_loss(amp, shot_idx),
         )
 
-        # reshape out so operators can do their thing
-        Nt = self.config.wavefield.grid.nt
-        Nx, Ny = self.config.wavefield.grid.shape
-        n_shots = self.config.geometry.n_sources
+    def evaluate(
+        self,
+        amp: torch.Tensor,
+        c_full: torch.Tensor,
+        c_interior: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        n_shots = amp.shape[0]
+        residuals = [self._residuals(amp[s], c_full, s) for s in range(n_shots)]
 
-        amp = d[: self.config.speed_offset].reshape(n_shots, Nt, Nx, Ny)
-        wsp = d[self.config.speed_offset :].reshape(Nx, Ny)
+        w = self.config.weights
+        pde_terms = torch.stack([torch.mean(r[0] ** 2) for r in residuals]).sum()
+        data_terms = torch.stack([torch.mean(r[1] ** 2) for r in residuals]).sum()
+        L = w["pde"] * pde_terms + w["data"] * data_terms
 
-        # cmpute residuals for each shot, then sum
-        residuals = [self._residuals(amp[s], wsp, s) for s in range(n_shots)]
-        L = torch.stack([self._eval_loss(r) for r in residuals]).sum()
+        if self.config.regulariser is not None and c_interior is not None:
+            L = L + w["reg"] * self.config.regulariser(c_interior)
 
-        # detach before .backward frees graph
-        r_pde = torch.stack([r[0].detach() for r in residuals])
-        r_data = torch.stack([r[1].detach() for r in residuals])
-
-        # backprop and extract gradient
-        L.backward()
-        grad = d.grad if d.grad is not None else torch.zeros_like(d)
-
-        # log
         self.evaluations += 1
         if self.evaluations % self.callback.log_every == 0:
+            r_pde = torch.stack([r[0].detach() for r in residuals])
+            r_data = torch.stack([r[1].detach() for r in residuals])
             self.callback.log(L.item(), (r_pde, r_data))
 
-        return L.item(), grad.cpu().numpy()  # return loss, grad together for scipy
+        return L
