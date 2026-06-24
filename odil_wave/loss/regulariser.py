@@ -34,4 +34,5 @@ class Regulariser:
 
         # TODO: implement the isotropic TV branch.
         if self.kind == "tv_iso":
-            raise NotImplementedError("tv_iso branch isn't implementated!")
+            eps = 1e-8
+            return torch.sum(torch.sqrt(dx_c**2 + dy_c**2 + eps))
