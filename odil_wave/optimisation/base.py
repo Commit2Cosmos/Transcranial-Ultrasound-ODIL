@@ -1,123 +1,151 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, List
+from typing import List, Tuple
 
-import scipy.optimize as scopt
-import numpy as np
+import torch
+
 from odil_wave.loss import DiscreteLoss, ForwardLoss, InverseLoss
-from odil_wave.wavefield import Wavefield
 from odil_wave.loss.utils import LossTape
+from odil_wave.wavefield import Wavefield
 
 
 class Optimiser(ABC):
-    """Base optimiser class"""
+    """Base optimiser class."""
 
     def __init__(self, wavefield: Wavefield, loss: DiscreteLoss) -> None:
-        self.loss = loss  # loss function
-        self.wavefield = wavefield  # wavefield to optimise
+        self.loss = loss
+        self.wavefield = wavefield
 
-    @abstractmethod  # to be implemented by classes that inherit
-    def minimise(self, maxiter, ftol, gtol, callback=None):
-        pass
-
-
-class ScipyOptimiser(Optimiser):
-    """Wrapper around scipy.optimize.minimize"""
-
-    def __init__(
-        self, wavefield: Wavefield, loss: DiscreteLoss, method: str = "L-BFGS-B", **opts
-    ) -> None:
-        super().__init__(wavefield, loss)
-        self.method = method  # e.g., 'L-BFGS-B', 'Newton-CG'
-        self.opts = opts  # e.g., maxiter, ftol
-
-    def minimise(
-        self, maxiter=500, ftol=1e-8, gtol=1e-10, callback=None
-    ) -> Tuple[List[Wavefield], LossTape]:
-
-        # apply specified config
-        self.opts["maxiter"] = maxiter
-        self.opts["ftol"] = ftol
-        self.opts["gtol"] = gtol
-
-        # use amplitude data only for the forward
-        if isinstance(self.loss, ForwardLoss):
-            # tile amplitude for each shot, since forward loss only optimises amplitude
-            u0 = np.tile(
-                self.wavefield.amplitude.cpu().numpy().ravel(),
-                self.loss.config.geometry.n_sources,
-            )
-        elif isinstance(self.loss, InverseLoss):
-            n_shots = self.loss.config.geometry.n_sources  # extract shots
-            amp0 = np.tile(
-                self.wavefield.amplitude.cpu().numpy().ravel(), n_shots
-            )  # tile amplitude for each shot
-            wsp0 = (
-                self.wavefield.wavespeed.cpu().numpy().ravel()
-            )  # tile wavespeed for each shot
-            u0 = np.concatenate(
-                [amp0, wsp0]
-            )  # concatenate amplitude and wavespeed for inverse problem
-
-        result = scopt.minimize(
-            fun=self.loss.evaluate,
-            x0=u0,
-            method=self.method,
-            jac=True,  # gradient provided by torch through .evaluate
-            callback=callback,
-            options=self.opts,
-        )
-        self.loss.callback.result = result  # store optimisation result in loss callback
-
-        if not result.success:
-            print(f"Warning: Optimisation did not converge: {result.message}")
-
-        # cast result into list of per-shot wavefields
-        outputs = []
-        if isinstance(self.loss, ForwardLoss):
-            n_shots = self.loss.config.geometry.n_sources
-            chunks = result.x.reshape(n_shots, -1)  # (n_shots, Nt*Nx*Ny)
-
-            for s in range(n_shots):
-                wf = Wavefield(
-                    grid=self.wavefield.grid, init_wavespeed=self.wavefield.wavespeed
-                )
-                wf.amplitude = chunks[s]
-                outputs.append(wf)
-
-        elif isinstance(self.loss, InverseLoss):
-            n_shots = self.loss.config.geometry.n_sources
-            speed_offset = self.loss.config.speed_offset
-
-            amp_blocks = result.x[:speed_offset].reshape(
-                n_shots, -1
-            )  # (n_shots, Nt*Nx*Ny)
-            wsp = result.x[speed_offset:]  # (Nx*Ny,)
-            for s in range(n_shots):
-                wf = Wavefield(grid=self.wavefield.grid, init_wavespeed=wsp)
-                wf.amplitude = amp_blocks[s]
-                outputs.append(wf)
-
-        return outputs, self.loss.callback
+    @abstractmethod
+    def minimise(self, **kwargs) -> Tuple[List[Wavefield], LossTape]:
+        raise NotImplementedError
 
 
-class LBFGSB(ScipyOptimiser):
-    """Subclass for L-BFGS method"""
+class LBFGSB(Optimiser):
+    """`torch.optim.LBFGS`-based optimiser.
+
+    Hard IC and frozen-PML c:
+      - per-shot amplitudes are `(NT-1, NX, NY)` parameters; a zero row is
+        spliced at t=0 inside the closure (and on the returned `Wavefield`s).
+      - the c parameter has interior shape `(interior_nx, interior_ny)`;
+        `LossConfig.build_full_c` pads to `(NX, NY)` with `pml_c` on the
+        PML ring.
+    """
+
+    _DEFAULT_OPTS = {
+        "n_iter": 100,
+        "max_iter": 20,
+        "history_size": 100,
+        "line_search_fn": "strong_wolfe",
+        "tolerance_grad": 1e-7,
+        "tolerance_change": 1e-9,
+    }
 
     def __init__(
         self,
         wavefield: Wavefield,
         loss: DiscreteLoss,
-        maxiter: int = 500,
-        ftol: float = 1e-8,
-        gtol: float = 1e-10,
         **opts,
     ) -> None:
-        super().__init__(
-            wavefield,
-            loss,
-            method="L-BFGS-B",
-            maxiter=maxiter,
-            ftol=ftol,
-            gtol=gtol,
-            **opts,
+        super().__init__(wavefield, loss)
+        self.opts = dict(self._DEFAULT_OPTS)
+        self.opts.update(opts)
+
+    def _split_opts(self) -> Tuple[int, dict]:
+        opts = dict(self.opts)
+        n_iter = int(opts.pop("n_iter"))
+        # Only forward keys that torch.optim.LBFGS accepts.
+        allowed = {
+            "lr",
+            "max_iter",
+            "max_eval",
+            "tolerance_grad",
+            "tolerance_change",
+            "history_size",
+            "line_search_fn",
+        }
+        torch_opts = {k: v for k, v in opts.items() if k in allowed}
+        return n_iter, torch_opts
+
+    def minimise(self, **overrides) -> Tuple[List[Wavefield], LossTape]:
+        self.opts.update(overrides)
+        n_iter, torch_opts = self._split_opts()
+
+        grid = self.wavefield.grid
+        dtype = grid.dtype
+        device = grid.device
+        Nx, Ny = grid.shape
+        n_shots = self.loss.config.geometry.n_sources
+
+        zero_row = torch.zeros(1, Nx, Ny, dtype=dtype, device=device)
+
+        # per-shot amplitudes (NT-1, NX, NY), zero IC row spliced in closure
+        amp_seed = (
+            self.wavefield.amplitude[1:].detach().clone().to(dtype=dtype, device=device)
         )
+        u_inner_params = [torch.nn.Parameter(amp_seed.clone()) for _ in range(n_shots)]
+
+        if isinstance(self.loss, InverseLoss):
+            c0 = self.wavefield.wavespeed.detach().to(dtype=dtype, device=device)
+            c0_int = c0[grid.interior_slice].clone()
+            c_interior_param = torch.nn.Parameter(c0_int)
+            params = u_inner_params + [c_interior_param]
+        else:
+            c_interior_param = None
+            params = list(u_inner_params)
+
+        optimiser = torch.optim.LBFGS(params, **torch_opts)
+
+        def closure():
+            optimiser.zero_grad()
+            amps = torch.stack(
+                [
+                    torch.cat([zero_row, u_inner_params[s]], dim=0)
+                    for s in range(n_shots)
+                ]
+            )
+            if isinstance(self.loss, InverseLoss):
+                c_full = self.loss.config.build_full_c(c_interior_param)
+                L = self.loss.evaluate(amps, c_full, c_interior_param)
+            else:
+                wsp = self.wavefield.wavespeed
+                L = self.loss.evaluate(amps, wsp)
+            L.backward()
+            return L
+
+        for i in range(n_iter):
+            loss_value = optimiser.step(closure)
+            if isinstance(self.loss, InverseLoss):
+                c_full_now = (
+                    self.loss.config.build_full_c(c_interior_param)
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                self.loss.callback.log_c(c_full_now)
+
+            print(f"Iteration: {i}")
+
+        # Build returned wavefields with hard zero IC row and reshaped c.
+        outputs: List[Wavefield] = []
+        if isinstance(self.loss, ForwardLoss):
+            wsp_full = self.wavefield.wavespeed.detach()
+            for s in range(n_shots):
+                wf = Wavefield(grid=grid, init_wavespeed=wsp_full)
+                amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
+                wf.amplitude = amp_full
+                outputs.append(wf)
+        else:
+            c_full_final = self.loss.config.build_full_c(c_interior_param).detach()
+            for s in range(n_shots):
+                wf = Wavefield(grid=grid, init_wavespeed=c_full_final)
+                amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
+                wf.amplitude = amp_full
+                outputs.append(wf)
+
+        self.loss.callback.result = {
+            "loss": (
+                float(loss_value.detach().cpu()) if loss_value is not None else None
+            ),
+            "n_outer_iter": n_iter,
+        }
+        return outputs, self.loss.callback
