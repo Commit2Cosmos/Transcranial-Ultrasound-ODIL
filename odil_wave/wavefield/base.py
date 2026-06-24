@@ -92,36 +92,6 @@ class Wavefield:
         wsp = torch.as_tensor(value, dtype=self.dtype, device=self.device)
         self._wavespeed = wsp.reshape(Nx, Ny)
 
-    @property
-    def flat_data(self) -> np.ndarray:
-        """Return flat parameter vector [amp (nt*nx*ny), wvsp (nx*ny)] as np.ndarray"""
-        return torch.cat([self._amplitude.ravel(), self._wavespeed.ravel()]).numpy()
-
-    @flat_data.setter
-    def flat_data(self, flat: np.ndarray) -> None:
-        """Cast flattened data back into amplitude and wavespeed tensors"""
-        Nx, Ny = self.grid.shape
-        Nt = self.grid.nt
-
-        n_amp = Nx * Ny * Nt  # num amplitude entries
-        n_wsp = Nx * Ny  # num wavespeed entries
-        total = n_amp + n_wsp  # total
-
-        if flat.shape != (total,):
-            raise ValueError(
-                f"expected flat vector of length {total}, got {flat.shape}"
-            )
-
-        # resahpe and cast to torch tensors
-        self._amplitude = torch.as_tensor(
-            flat[:n_amp].reshape(Nt, Nx, Ny),
-            dtype=self.dtype,
-            device=self.device,
-        )
-        self._wavespeed = torch.as_tensor(
-            flat[n_amp:].reshape(Nx, Ny), dtype=self.dtype, device=self.device
-        )
-
     def show(self, idx: int, title="Wavefield and model", view: str = "xy"):
         assert view in [
             "xy",
@@ -221,11 +191,3 @@ class Wavefield:
         anim.save(filename, writer=animation.PillowWriter(fps=fps))
         plt.close(fig)
         return filename
-
-
-if __name__ == "__main__":
-    grid = Grid()
-    amp = np.random.rand(grid.nt, *grid.shape)
-    wsp = np.random.rand(*grid.shape)
-    u = Wavefield(grid, init_amplitude=amp, init_wavespeed=wsp)
-    u.show(title="Test plot", idx=100)
