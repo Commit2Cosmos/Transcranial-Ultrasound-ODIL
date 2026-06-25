@@ -177,7 +177,7 @@ def training_plot(
     error = torch.abs(u - uu_exact) / uu_exact.std()
     fig, axs = plt.subplots(1, 2, figsize=(8, 5))
     umax = u.abs().max().item()
-    
+
     im0 = axs[0].imshow(
         u,
         extent=[xx.min().item(), xx.max().item(), tt.max().item(), tt.min().item()],

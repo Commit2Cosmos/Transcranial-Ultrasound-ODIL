@@ -1,6 +1,5 @@
 from .base import SparseOperator, DenseOperator
 from .conditions import (
-    InitialConditions,
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,
 )
@@ -11,7 +10,6 @@ from .utils import WaveEquation
 __all__ = [
     "SparseOperator",
     "DenseOperator",
-    "InitialConditions",
     "Laplacian2ndOrder",
     "Laplacian4thOrder",
     "NeumannMirrorBC2nd",

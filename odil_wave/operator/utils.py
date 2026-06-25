@@ -6,7 +6,6 @@ from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .spatial import Laplacian2ndOrder, Laplacian4thOrder
 from .conditions import (
     Conditions,
-    InitialConditions,
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,
     PML,
@@ -15,17 +14,19 @@ from .conditions import (
 
 @dataclass
 class WaveEquation:
-    """Discrete acoustic wave equation u_tt - c^2*lap(u) = f."""
+    """Discrete acoustic wave equation u_tt - c^2*lap(u) = f.
+
+    Initial conditions (u(0,x,y)=0 and u_t(0,x,y)=init_ut) are hard-
+    constrained.
+    """
 
     wavefield: Wavefield
     time_order: int = 2
     space_order: int = 2
-    ic_weight: float = 1.0
     pml_weight: float = 1.0
 
     _time_op: DenseOperator = field(init=False)
     _lap: DenseOperator = field(init=False)
-    _ic: InitialConditions = field(init=False)
     _bc: Conditions = field(init=False)
     _pml: PML = field(init=False)
 
@@ -44,8 +45,6 @@ class WaveEquation:
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
-        self._ic = InitialConditions(self.wavefield, weight=self.ic_weight)
-
         self._bc = (
             NeumannMirrorBC2nd() if self.space_order == 2 else NeumannMirrorBC4th()
         )
@@ -54,9 +53,8 @@ class WaveEquation:
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:
-        """u_tt - c^2*(u_xx + u_yy) - f, with IC mismatch enforced at t=0."""
+        """u_tt - c^2*(u_xx + u_yy) - f with PML damping."""
         utt = self._time_op.apply(amp)
         lap = self._lap.apply(amp, bc=self._bc)
         r = utt - wsp**2 * lap - source
-        r = self._pml.apply(r, amp)  # damping over PML region
-        return self._ic.apply(r, amp)
+        return self._pml.apply(r, amp)

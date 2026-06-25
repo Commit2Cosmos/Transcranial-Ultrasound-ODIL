@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
-from .utils import LossConfig, LossTape
+
 import torch
-import numpy as np
+
+from .utils import LossConfig, LossTape
 
 
 class DiscreteLoss(ABC):
@@ -13,35 +13,28 @@ class DiscreteLoss(ABC):
         config: LossConfig,
         callback: LossTape | None = None,
     ):
-        self.config = config  # loss configuration
-        self.callback = (
-            callback if callback is not None else LossTape()
-        )  # loss history callback
+        self.config = config
+        self.callback = callback if callback is not None else LossTape()
 
-        # precompute source fields for each shot
+        # precompute (cast to config.dtype/device) source fields for each shot
         self.sources = torch.stack(
             [
-                self.config.geometry.source_field(i)
+                self.config.geometry.source_field(i).to(
+                    dtype=self.config.dtype, device=self.config.device
+                )
                 for i in range(self.config.geometry.n_sources)
             ]
         )
 
-        self.evaluations = 0  # counter for number of loss evaluations
+        self.evaluations = 0
 
     @abstractmethod
-    def evaluate(self, data: np.ndarray) -> Tuple[float, np.ndarray]:
-        """Evaluate the loss function given a wavefield."""
-        pass
+    def evaluate(self, *args, **kwargs) -> torch.Tensor:
+        """Return a torch scalar loss; autograd handles gradients."""
+        raise NotImplementedError
 
     @abstractmethod
-    def _eval_loss(self, residuals: torch.Tensor) -> torch.Tensor:
-        pass
-
-    @abstractmethod
-    def _residuals(self, data: torch.Tensor) -> torch.Tensor:
-        """Compute the residuals of the loss function given a wavefield."""
-        pass
-
-    @abstractmethod
-    def _eval_pde_loss(self, data: torch.Tensor) -> torch.Tensor:
-        pass
+    def _residuals(
+        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int
+    ) -> torch.Tensor:
+        raise NotImplementedError

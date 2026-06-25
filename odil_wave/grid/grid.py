@@ -18,23 +18,22 @@ class Grid:
     optimization variable lives on the full extended grid `(NT, NX, NY)`.
     """
 
+    # TODO: enforce it is passed; no default
     interior_shape: Tuple[int, int] = (100, 100)
     interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
         (-1.0, 1.0),
         (-1.0, 1.0),
     )
-    c_ref: float = 1.5
-    cfl_safety: float = 0.8
+    # TODO: enforce it is passed; no default
+    c_max: float = 1.5
     pml_width: int = 10  # extra cells per side wrapping the interior
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
-    t_max: Optional[float] = None
-    init_nt: Optional[int] = None  # optional override; derived from CFL if None
-    # TODO: DEVICE and DTYPE should be set in a config file
+    # TODO: enforce it is passed; no default
+    t_max: float = field(init=None)  # specify based on forward wavefield observations
+    init_nt: Optional[int] = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
-    # device: str = DEVICE
-    # dtype: torch.dtype = DTYPE
 
     # derived
     interior_nx: int = field(init=False)
@@ -71,13 +70,9 @@ class Grid:
         y_max = iy_max + p * self.dy
         self.extent = ((x_min, x_max), (y_min, y_max))
 
-        # TODO: check proper way of setting t_max and nt
-        if self.t_max is None:
-            diag = math.hypot(ix_max - ix_min, iy_max - iy_min)
-            self.t_max = 2.0 * diag / self.c_ref
         if self.init_nt is None:
-            dt_cfl = 1.0 / (self.c_ref * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
-            self.nt = int(math.ceil(self.t_max / (self.cfl_safety * dt_cfl))) + 1
+            dt_cfl = 1.0 / (self.c_max * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
+            self.nt = int(math.ceil(self.t_max / dt_cfl)) + 1
         else:
             self.nt = self.init_nt
         self.dt = self.t_max / (self.nt - 1)
@@ -110,12 +105,12 @@ class Grid:
         """sigma_max from a target theoretical reflection coefficient."""
         if L_pml_phys <= 0:
             raise ValueError("L_pml_phys must be positive.")
-        if self.c_ref <= 0:
-            raise ValueError("c_ref must be positive.")
+        if self.c_max <= 0:
+            raise ValueError("c_max must be positive.")
         if not (0.0 < self.pml_R0 < 1.0):
             raise ValueError("pml_R0 must lie strictly between 0 and 1.")
 
-        return -((self.pml_power + 1) * self.c_ref * math.log(self.pml_R0)) / (
+        return -((self.pml_power + 1) * self.c_max * math.log(self.pml_R0)) / (
             2.0 * L_pml_phys
         )
 
@@ -189,7 +184,7 @@ class Grid:
             f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
             f"total {self.nx}x{self.ny} (PML p={self.pml_width}),"
             f"\nnt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m,"
-            f"\ndt={self.dt:.4f} s, cfl@c_ref={self.cfl(self.c_ref):.3f},"
+            f"\ndt={self.dt:.4f} s, cfl@c_max={self.cfl(self.c_max):.3f},"
             f"\ninterior x in [{ix0:.2f}, {ix1:.2f}]m,"
             f"\ny in [{iy0:.2f}, {iy1:.2f}]m,"
             f"\ntotal x in [{xmin:.2f}, {xmax:.2f}]m,"
