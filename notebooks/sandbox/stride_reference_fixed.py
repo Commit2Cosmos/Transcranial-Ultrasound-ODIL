@@ -124,47 +124,58 @@ def shepp_logan_sos(
     c_water: float = SOS_WATER,
     c_soft: float = SOS_SOFT,
     c_skull: float = SOS_SKULL,
+    phantom_scale: float = 0.85,
 ) -> np.ndarray:
-    """Shepp–Logan interior with skull only on the outer head boundary."""
+    """Shepp-Logan phantom centred inside a larger water region."""
 
-    phantom = np.rot90(
+    original = np.rot90(
         shepp_logan_phantom(),
         k=1,
     ).astype(np.float32)
 
-    phantom = resize(
-        phantom,
-        shape,
+    # Size occupied by the smaller phantom.
+    phantom_shape = (
+        int(round(shape[0] * phantom_scale)),
+        int(round(shape[1] * phantom_scale)),
+    )
+
+    smaller_phantom = resize(
+        original,
+        phantom_shape,
         anti_aliasing=True,
         mode="reflect",
         preserve_range=True,
     ).astype(np.float32)
 
-    phantom -= phantom.min()
-    if phantom.max() > 0:
-        phantom /= phantom.max()
+    smaller_phantom -= smaller_phantom.min()
+    if smaller_phantom.max() > 0:
+        smaller_phantom /= smaller_phantom.max()
 
-    model = np.full(
-        shape,
-        c_water,
-        dtype=np.float32,
-    )
+    # Full computational domain starts as water.
+    phantom = np.zeros(shape, dtype=np.float32)
 
-    # Outer head support only
+    start_x = (shape[0] - phantom_shape[0]) // 2
+    start_y = (shape[1] - phantom_shape[1]) // 2
+
+    phantom[
+        start_x : start_x + phantom_shape[0],
+        start_y : start_y + phantom_shape[1],
+    ] = smaller_phantom
+
+    model = np.full(shape, c_water, dtype=np.float32)
+
     outer_head = phantom > 0.05
     outer_head = binary_fill_holes(outer_head)
 
-    # Fill the whole head with soft tissue first
     model[outer_head] = c_soft
 
-    # Add Shepp Logan internal sound-speed variations
     interior_values = 1450.0 + 300.0 * phantom
     model[outer_head] = interior_values[outer_head]
 
-    # Build skull only from the outer head boundary
+    # Base skull thickness on the phantom size, not the complete grid.
     erosion_pixels = max(
         2,
-        int(round(0.02 * min(shape))),
+        int(round(0.02 * min(phantom_shape))),
     )
 
     inner_head = binary_erosion(
@@ -176,7 +187,6 @@ def shepp_logan_sos(
     model[skull_mask] = c_skull
 
     return model
-
 
 def water_model(shape: tuple[int, int], c_water: float = SOS_WATER) -> np.ndarray:
     return np.full(shape, c_water, dtype=np.float32)
@@ -515,7 +525,10 @@ def build_stride_problem(
     problem = Problem(name=name, space=space, time=time)
 
     if use_shepp_logan:
-        vp_array = shepp_logan_sos(interior_shape)
+        vp_array = shepp_logan_sos(
+            interior_shape,
+            phantom_scale=0.90,
+        )
     else:
         vp_array = water_model(interior_shape)
 
