@@ -83,7 +83,7 @@ def _time_stencil_4th(
     init_ut: torch.Tensor,
 ) -> torch.Tensor:
     # Compute 4th-order u_tt everywhere
-    u_tt = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2)
+    u_tt = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2)/dt**2
     # Compute 2nd-order u_tt (IC-safe)
     # near the start not enough values, so use 2nd-order u_tt
     u_t_tm = u - utm1
