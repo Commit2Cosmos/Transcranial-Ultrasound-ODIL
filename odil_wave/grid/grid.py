@@ -143,6 +143,44 @@ class Grid:
         sigma_y = sigma_y_1d.view(1, -1).expand(self.nx, self.ny).contiguous()
         return sigma_x, sigma_y
 
+
+    # Alternative constructor
+    @classmethod
+    def from_frequency(
+        cls,
+        f_max: float,
+        c_min: float,
+        interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
+            (-1.0, 1.0),
+            (-1.0, 1.0),
+        ),
+        n_ppw: int = 10,
+        **kwargs,
+    ) -> "Grid":
+        """Construct a Grid with dx chosen from maximum source frequency.
+        
+        Uses the points-per-wavelength (PPW) criterion:
+            dx = c_min / (f_max * n_ppw)
+
+        """
+        if "init_nt" in kwargs:
+            raise ValueError(
+                "init_nt cannot be passed to Grid.from_frequency: the number "
+                "of timesteps must be determined by the CFL condition once dx "
+                "is set from frequency. Pass t_max instead."
+            )
+        dx = c_min / (f_max * n_ppw)
+        (ix_min, ix_max), (iy_min, iy_max) = interior_extent
+        nx = round((ix_max - ix_min) / dx) + 1
+        ny = round((iy_max - iy_min) / dx) + 1
+        return cls(
+            interior_shape=(nx, ny),
+            interior_extent=interior_extent,
+            c_min=c_min,
+            **kwargs,
+        )
+
+
     def cfl(self, c_max: float) -> float:
         return c_max * self.dt * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
 
