@@ -127,9 +127,9 @@ class InverseLoss(DiscreteLoss):
             L = L + w["reg"] * self.config.regulariser(c_interior)
 
         self.evaluations += 1
-        if self.evaluations % self.callback.log_every == 0:
-            r_pde = torch.stack([r[0].detach() for r in residuals])
-            r_data = torch.stack([r[1].detach() for r in residuals])
-            self.callback.log(L.item(), (r_pde, r_data))
+        self._last_residuals = (
+            torch.stack([r[0].detach() for r in residuals]),
+            torch.stack([r[1].detach() for r in residuals]),
+        )
 
         return L

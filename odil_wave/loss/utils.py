@@ -73,7 +73,7 @@ class LossTape:
     """Tape to store the loss + residuals + c-history during optimisation."""
 
     name: str = "Default LossTape"
-    log_every: int = 5
+    log_every: int = 1
     history: dict = field(
         default_factory=lambda: {
             "loss": [],

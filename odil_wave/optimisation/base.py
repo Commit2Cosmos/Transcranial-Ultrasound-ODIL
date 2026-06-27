@@ -112,6 +112,7 @@ class LBFGSB(Optimiser):
             L.backward()
             return L
 
+        log_every = max(1, int(self.loss.callback.log_every))
         for i in range(n_iter):
             loss_value = optimiser.step(closure)
             if isinstance(self.loss, InverseLoss):
@@ -122,6 +123,12 @@ class LBFGSB(Optimiser):
                     .numpy()
                 )
                 self.loss.callback.log_c(c_full_now)
+
+            if i % log_every == 0 or i == n_iter - 1:
+                self.loss.callback.log(
+                    float(loss_value.detach().cpu()),
+                    self.loss._last_residuals,
+                )
 
             print(f"Iteration: {i}")
 
