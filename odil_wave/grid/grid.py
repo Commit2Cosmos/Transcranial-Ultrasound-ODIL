@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -25,12 +25,13 @@ class Grid:
         (-1.0, 1.0),
     )
     # TODO: enforce it is passed; no default
+    c_min: Optional[float] = None
     c_max: float = 1.5
     pml_width: int = 10  # extra cells per side wrapping the interior
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     # TODO: enforce it is passed; no default
-    t_max: float = field(init=None)  # specify based on forward wavefield observations
+    t_max: Optional[float] = None  # specify based on forward wavefield observations
     init_nt: Optional[int] = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
