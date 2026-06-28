@@ -31,7 +31,7 @@ class Grid:
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     # TODO: enforce it is passed; no default
-    t_max: Optional[float] = None  # specify based on forward wavefield observations
+    t_max: float = 1.0  # specify based on forward wavefield observations
     init_nt: Optional[int] = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32

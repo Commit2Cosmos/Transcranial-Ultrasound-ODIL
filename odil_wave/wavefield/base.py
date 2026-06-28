@@ -7,6 +7,29 @@ from matplotlib import animation
 from odil_wave.grid import Grid
 
 
+def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
+    """Rescale a wavefield array for plotting.
+
+    mode:
+      - None / "none": pass-through
+      - "global":     divide by global max-abs (whole volume / slice)
+      - "per_frame":  divide each leading-axis frame by its own max-abs
+    """
+    if mode is None or mode == "none":
+        return amp
+    if mode == "global":
+        scale = float(np.max(np.abs(amp)))
+        return amp / scale if scale > 0 else amp
+    if mode == "per_frame":
+        axes = tuple(range(1, amp.ndim))
+        scale = np.max(np.abs(amp), axis=axes, keepdims=True)
+        scale = np.where(scale > 0, scale, 1.0)
+        return amp / scale
+    raise ValueError(
+        f"Invalid normalize mode {mode!r}; expected one of None, 'global', 'per_frame'."
+    )
+
+
 @dataclass
 class Wavefield:
     grid: Grid
@@ -92,7 +115,13 @@ class Wavefield:
         wsp = torch.as_tensor(value, dtype=self.dtype, device=self.device)
         self._wavespeed = wsp.reshape(Nx, Ny)
 
-    def show(self, idx: int, title="Wavefield and model", view: str = "xy"):
+    def show(
+        self,
+        idx: int,
+        title="Wavefield and model",
+        view: str = "xy",
+        normalize: str | None = None,
+    ):
         assert view in [
             "xy",
             "ty",
@@ -112,6 +141,7 @@ class Wavefield:
         amp_data = np.take(
             self.amplitude.cpu().numpy(), idx, axis=axis
         )  # extract slice
+        amp_data = _normalize_amplitude(amp_data, normalize)
 
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
@@ -152,10 +182,21 @@ class Wavefield:
         fps: int = 20,
         cmap: str = "RdBu_r",
         title: str = "Wavefield history",
+        normalize: str | None = None,
     ) -> str:
-        """Render the amplitude field over all time steps to an animated GIF."""
+        """Render the amplitude field over all time steps to an animated GIF.
+
+        `normalize`:
+          - None (default): a single global colour scale (±max-abs over the
+            whole history) — physically faithful, but late-time wavefields
+            can look washed out if the early signal is much stronger.
+          - "global": same scale, but values rescaled to [-1, 1].
+          - "per_frame": each frame is rescaled to its own ±max-abs, which
+            keeps weak frames visible at the cost of comparability.
+        """
 
         amp = self.amplitude.cpu().numpy()  # (Nt, Nx, Ny)
+        amp = _normalize_amplitude(amp, normalize)
         Nt = self.grid.nt
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         t = self.grid.t.cpu().numpy()

@@ -24,8 +24,6 @@ class ForwardLoss(DiscreteLoss):
         L = w_pde * torch.stack([torch.mean(r**2) for r in residuals]).sum()
 
         self.evaluations += 1
-        if self.evaluations % self.callback.log_every == 0:
-            r_pde = torch.stack([r.detach() for r in residuals])
-            self.callback.log(L.item(), (r_pde,))
+        self._last_residuals = (torch.stack([r.detach() for r in residuals]),)
 
         return L

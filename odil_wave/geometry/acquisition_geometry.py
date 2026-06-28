@@ -11,6 +11,29 @@ from odil_wave.models import VelocityModel
 from odil_wave.source import SourceSignal
 
 
+def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
+    """Rescale a (NT, n_receivers) trace gather for plotting.
+
+    mode:
+      - None / "none":    pass-through
+      - "per_receiver":   divide each column (one receiver's trace) by its
+                          own max-abs — the standard seismic balancing.
+      - "global":         divide the whole gather by a single max-abs.
+    """
+    if mode is None or mode == "none":
+        return traces
+    if mode == "per_receiver":
+        scale = np.max(np.abs(traces), axis=0, keepdims=True)
+        scale = np.where(scale > 0, scale, 1.0)
+        return traces / scale
+    if mode == "global":
+        scale = float(np.max(np.abs(traces)))
+        return traces / scale if scale > 0 else traces
+    raise ValueError(
+        f"Invalid normalize mode {mode!r}; expected one of None, 'per_receiver', 'global'."
+    )
+
+
 class AcquisitionGeometry:
     """Elliptical array of transducers around the interior region.
 
@@ -87,6 +110,93 @@ class AcquisitionGeometry:
     def extract_observations(self, U: torch.Tensor) -> torch.Tensor:
         """Pull (NT, n_receivers) sensor data from a (NT, NX, NY) wavefield."""
         return U[:, self.recv_ij[:, 0], self.recv_ij[:, 1]]
+
+    def plot_traces(
+        self,
+        wavefield,
+        ax=None,
+        normalize: Optional[str] = "per_receiver",
+        cmap: str = "RdBu_r",
+        title: Optional[str] = None,
+    ):
+        """Plot recorded traces: receiver id (y) vs time (x), amplitude as colour.
+
+        Parameters
+        ----------
+        wavefield :
+            A `Wavefield`, a `(NT, NX, NY)` amplitude tensor/array, or a list
+            of either (one entry per shot). A list produces a subplot grid.
+        normalize : {"per_receiver", "global", None}, default "per_receiver"
+            Per-receiver max-abs balancing (default — emphasises weak
+            channels), single global max-abs, or no rescaling.
+        """
+        # Coerce input to a list and remember whether it was originally one.
+        is_list = isinstance(wavefield, (list, tuple))
+        items = list(wavefield) if is_list else [wavefield]
+
+        traces_per_shot = []
+        for item in items:
+            amp = (
+                item.amplitude if hasattr(item, "amplitude") else torch.as_tensor(item)
+            )
+            tr = self.extract_observations(amp).detach().cpu().numpy()
+            traces_per_shot.append(_normalize_traces(tr, normalize))
+
+        t = self.grid.t.cpu().numpy()
+        extent = (float(t[0]), float(t[-1]), -0.5, self.n_receivers - 0.5)
+        norm_tag = "" if normalize is None else f" ({normalize})"
+
+        if not is_list:
+            traces = traces_per_shot[0]
+            vmax = float(np.max(np.abs(traces))) or 1.0
+            if ax is None:
+                _, ax = plt.subplots(figsize=(7.5, 4.5))
+            im = ax.imshow(
+                traces.T,  # (n_rcv, NT) so time is along x
+                origin="lower",
+                aspect="auto",
+                extent=extent,
+                cmap=cmap,
+                vmin=-vmax,
+                vmax=vmax,
+            )
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel("receiver id")
+            ax.set_title(title or f"trace gather{norm_tag}")
+            plt.colorbar(im, ax=ax, shrink=0.85, label="amplitude")
+            return ax
+
+        n_shots = len(items)
+        ncols = min(n_shots, 2)
+        nrows = math.ceil(n_shots / ncols)
+        fig, axes = plt.subplots(
+            nrows, ncols, figsize=(6.5 * ncols, 3.5 * nrows), squeeze=False
+        )
+        global_vmax = max(float(np.max(np.abs(tr))) for tr in traces_per_shot) or 1.0
+        for k, (ax_k, traces) in enumerate(zip(axes.flat, traces_per_shot)):
+            vmax = (
+                global_vmax
+                if normalize == "global"
+                else (float(np.max(np.abs(traces))) or 1.0)
+            )
+            im = ax_k.imshow(
+                traces.T,
+                origin="lower",
+                aspect="auto",
+                extent=extent,
+                cmap=cmap,
+                vmin=-vmax,
+                vmax=vmax,
+            )
+            ax_k.set_xlabel("time [s]")
+            ax_k.set_ylabel("receiver id")
+            ax_k.set_title(f"shot {k}")
+            plt.colorbar(im, ax=ax_k, shrink=0.85, label="amplitude")
+        for ax_k in axes.flat[n_shots:]:
+            ax_k.set_axis_off()
+        fig.suptitle(title or f"trace gathers{norm_tag}")
+        fig.tight_layout()
+        return axes
 
     def plot_source_field(self, src_idx: int = 0, t_idx: Optional[int] = None, ax=None):
         """Plot a spatial snapshot of the source field s(x, y, t_idx).
