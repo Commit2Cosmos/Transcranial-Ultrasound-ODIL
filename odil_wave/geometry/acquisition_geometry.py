@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 from odil_wave.grid import Grid
 from odil_wave.models import VelocityModel
+from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
 
 
@@ -143,7 +144,13 @@ class AcquisitionGeometry:
             traces_per_shot.append(_normalize_traces(tr, normalize))
 
         t = self.grid.t.cpu().numpy()
-        extent = (float(t[0]), float(t[-1]), -0.5, self.n_receivers - 0.5)
+        t_mult, t_unit = time_scale(float(t[-1]) if t.size else 1.0)
+        extent = (
+            float(t[0]) * t_mult,
+            float(t[-1]) * t_mult,
+            -0.5,
+            self.n_receivers - 0.5,
+        )
         norm_tag = "" if normalize is None else f" ({normalize})"
 
         if not is_list:
@@ -160,7 +167,7 @@ class AcquisitionGeometry:
                 vmin=-vmax,
                 vmax=vmax,
             )
-            ax.set_xlabel("time [s]")
+            ax.set_xlabel(f"time [{t_unit}]")
             ax.set_ylabel("receiver id")
             ax.set_title(title or f"trace gather{norm_tag}")
             plt.colorbar(im, ax=ax, shrink=0.85, label="amplitude")
@@ -188,7 +195,7 @@ class AcquisitionGeometry:
                 vmin=-vmax,
                 vmax=vmax,
             )
-            ax_k.set_xlabel("time [s]")
+            ax_k.set_xlabel(f"time [{t_unit}]")
             ax_k.set_ylabel("receiver id")
             ax_k.set_title(f"shot {k}")
             plt.colorbar(im, ax=ax_k, shrink=0.85, label="amplitude")
@@ -211,20 +218,27 @@ class AcquisitionGeometry:
                 np.argmax(np.abs(self.source.waveform(self.grid.t).cpu().numpy()))
             )
         (xmin, xmax), (ymin, ymax) = self.grid.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
+        t_val = float(self.grid.t[t_idx].item())
+        t_mult, t_unit = time_scale(float(self.grid.t[-1].item()))
+
         vmax = float(np.max(np.abs(src))) * 1.05 + 1e-12
         im = ax.imshow(
             src[t_idx].T,
             origin="lower",
             aspect="equal",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap="RdBu_r",
             vmin=-vmax,
             vmax=vmax,
         )
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.set_title(f"source field s(x, y, t={self.grid.t[t_idx].item():.3f} s)")
-        plt.colorbar(im, ax=ax, shrink=0.85, label="amplitude [a.u.]")
+        ax.set_xlabel(f"x [{x_unit}]")
+        ax.set_ylabel(f"y [{x_unit}]")
+        ax.set_title(
+            f"source field (shot {src_idx}, t = {t_val * t_mult:.2f} {t_unit})",
+            pad=8,
+        )
+        plt.colorbar(im, ax=ax, shrink=0.85, pad=0.04, label="amplitude [a.u.]")
         return ax
 
     def show(self, velocity_model: VelocityModel, ax=None):
@@ -234,10 +248,13 @@ class AcquisitionGeometry:
             ax=ax, title=f"acquisition on {velocity_model.profile}", show_pml=True
         )
 
-        rx = self.grid.x[self.recv_ij[:, 0]].cpu().numpy()
-        ry = self.grid.y[self.recv_ij[:, 1]].cpu().numpy()
-        sx = self.grid.x[self.src_ij[:, 0]].cpu().numpy()
-        sy = self.grid.y[self.src_ij[:, 1]].cpu().numpy()
+        # Match the axis units chosen by VelocityModel.show.
+        (_, xmax), (_, ymax) = self.grid.extent
+        x_mult, _ = length_scale(max(abs(xmax), abs(ymax)))
+        rx = self.grid.x[self.recv_ij[:, 0]].cpu().numpy() * x_mult
+        ry = self.grid.y[self.recv_ij[:, 1]].cpu().numpy() * x_mult
+        sx = self.grid.x[self.src_ij[:, 0]].cpu().numpy() * x_mult
+        sy = self.grid.y[self.src_ij[:, 1]].cpu().numpy() * x_mult
         ax.scatter(
             rx,
             ry,

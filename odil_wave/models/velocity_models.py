@@ -13,6 +13,7 @@ from scipy import ndimage as ndi
 import numpy as np
 
 from odil_wave.grid import Grid
+from odil_wave.plot_utils import length_scale
 
 
 class VelocityModel:
@@ -154,16 +155,17 @@ class VelocityModel:
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         im = ax.imshow(
             self.c.cpu().numpy().T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap="viridis",
             vmin=vmin,
             vmax=vmax,
         )
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
+        ax.set_xlabel(f"x [{x_unit}]")
+        ax.set_ylabel(f"y [{x_unit}]")
         ax.set_aspect("equal")
         ax.set_title(title or f"c(x, y) [{self.profile}]")
         plt.colorbar(im, ax=ax, shrink=0.85, label="c [m/s]")
@@ -171,9 +173,9 @@ class VelocityModel:
             (ix0, ix1), (iy0, iy1) = self.grid.interior_extent
             ax.add_patch(
                 Rectangle(
-                    (ix0, iy0),
-                    ix1 - ix0,
-                    iy1 - iy0,
+                    (ix0 * x_mult, iy0 * x_mult),
+                    (ix1 - ix0) * x_mult,
+                    (iy1 - iy0) * x_mult,
                     fill=False,
                     edgecolor="white",
                     linestyle="--",

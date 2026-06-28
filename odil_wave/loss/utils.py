@@ -10,6 +10,7 @@ from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.models import VelocityModel
+from odil_wave.plot_utils import length_scale
 from .regulariser import Regulariser
 
 
@@ -135,6 +136,7 @@ class LossTape:
 
         stack = np.stack(history)  # (n_iter, NX, NY)
         (xmin, xmax), (ymin, ymax) = grid.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         vmin = float(stack.min())
         vmax = float(stack.max())
 
@@ -142,14 +144,14 @@ class LossTape:
         im = ax.imshow(
             stack[0].T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap=cmap,
             vmin=vmin,
             vmax=vmax,
             animated=True,
         )
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
+        ax.set_xlabel(f"x [{x_unit}]")
+        ax.set_ylabel(f"y [{x_unit}]")
         ttl = ax.set_title(f"{title}  (iter 0)")
         plt.colorbar(im, ax=ax, label="c [m/s]", shrink=0.85)
 
@@ -179,14 +181,15 @@ class LossTape:
         diff = c_final_np - c_true_np
 
         (xmin, xmax), (ymin, ymax) = grid.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         vmin = float(min(c_true_np.min(), c_final_np.min()))
         vmax = float(max(c_true_np.max(), c_final_np.max()))
         dmax = float(np.max(np.abs(diff))) * 1.05 + 1e-9
 
-        rx = grid.x[geom.recv_ij[:, 0]].cpu().numpy()
-        ry = grid.y[geom.recv_ij[:, 1]].cpu().numpy()
-        sx = grid.x[geom.src_ij[:, 0]].cpu().numpy()
-        sy = grid.y[geom.src_ij[:, 1]].cpu().numpy()
+        rx = grid.x[geom.recv_ij[:, 0]].cpu().numpy() * x_mult
+        ry = grid.y[geom.recv_ij[:, 1]].cpu().numpy() * x_mult
+        sx = grid.x[geom.src_ij[:, 0]].cpu().numpy() * x_mult
+        sy = grid.y[geom.src_ij[:, 1]].cpu().numpy() * x_mult
 
         fig, axes = plt.subplots(2, 2, figsize=(11, 9))
         panels = [
@@ -198,13 +201,13 @@ class LossTape:
             im = ax.imshow(
                 field_.T,
                 origin="lower",
-                extent=[xmin, xmax, ymin, ymax],
+                extent=[xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult],
                 cmap=cmap,
                 vmin=lo,
                 vmax=hi,
             )
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
+            ax.set_xlabel(f"x [{x_unit}]")
+            ax.set_ylabel(f"y [{x_unit}]")
             ax.set_aspect("equal")
             ax.set_title(t)
             ax.scatter(rx, ry, marker="v", c="lime", edgecolor="black", s=25, zorder=5)

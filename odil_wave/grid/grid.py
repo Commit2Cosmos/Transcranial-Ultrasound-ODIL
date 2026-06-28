@@ -1,11 +1,13 @@
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
 import torch
+
+from odil_wave.plot_utils import length_scale, time_scale
 
 
 @dataclass
@@ -143,7 +145,6 @@ class Grid:
         sigma_y = sigma_y_1d.view(1, -1).expand(self.nx, self.ny).contiguous()
         return sigma_x, sigma_y
 
-
     # Alternative constructor
     @classmethod
     def from_frequency(
@@ -158,7 +159,7 @@ class Grid:
         **kwargs,
     ) -> "Grid":
         """Construct a Grid with dx chosen from maximum source frequency.
-        
+
         Uses the points-per-wavelength (PPW) criterion:
             dx = c_min / (f_max * n_ppw)
 
@@ -180,7 +181,6 @@ class Grid:
             **kwargs,
         )
 
-
     def cfl(self, c_max: float) -> float:
         return c_max * self.dt * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
 
@@ -189,22 +189,23 @@ class Grid:
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         im = ax.imshow(
             (self.sigma_x + self.sigma_y).cpu().numpy().T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap="magma",
             aspect="equal",
         )
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
+        ax.set_xlabel(f"x [{x_unit}]")
+        ax.set_ylabel(f"y [{x_unit}]")
         ax.set_title(r"PML absorption $\sigma_x + \sigma_y$")
         (ix0, ix1), (iy0, iy1) = self.interior_extent
         ax.add_patch(
             Rectangle(
-                (ix0, iy0),
-                ix1 - ix0,
-                iy1 - iy0,
+                (ix0 * x_mult, iy0 * x_mult),
+                (ix1 - ix0) * x_mult,
+                (iy1 - iy0) * x_mult,
                 fill=False,
                 edgecolor="white",
                 linestyle="--",
@@ -219,13 +220,17 @@ class Grid:
     def summary(self) -> str:
         (ix0, ix1), (iy0, iy1) = self.interior_extent
         (xmin, xmax), (ymin, ymax) = self.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
+        t_mult, t_unit = time_scale(self.t_max)
         return (
             f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
             f"total {self.nx}x{self.ny} (PML p={self.pml_width}),"
-            f"\nnt={self.nt}, dx={self.dx:.4f}m, dy={self.dy:.4f}m,"
-            f"\ndt={self.dt:.4f} s, cfl@c_max={self.cfl(self.c_max):.3f},"
-            f"\ninterior x in [{ix0:.2f}, {ix1:.2f}]m,"
-            f"\ny in [{iy0:.2f}, {iy1:.2f}]m,"
-            f"\ntotal x in [{xmin:.2f}, {xmax:.2f}]m,"
-            f"\ntotal y in [{ymin:.2f}, {ymax:.2f}]m"
+            f"\nnt={self.nt}, dx={self.dx * x_mult:.3f} {x_unit}, "
+            f"dy={self.dy * x_mult:.3f} {x_unit},"
+            f"\ndt={self.dt * t_mult:.3f} {t_unit}, "
+            f"cfl@c_max={self.cfl(self.c_max):.3f},"
+            f"\ninterior x in [{ix0 * x_mult:.2f}, {ix1 * x_mult:.2f}] {x_unit},"
+            f"\ny in [{iy0 * x_mult:.2f}, {iy1 * x_mult:.2f}] {x_unit},"
+            f"\ntotal x in [{xmin * x_mult:.2f}, {xmax * x_mult:.2f}] {x_unit},"
+            f"\ntotal y in [{ymin * x_mult:.2f}, {ymax * x_mult:.2f}] {x_unit}"
         )

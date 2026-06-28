@@ -6,6 +6,7 @@ from matplotlib import animation
 
 from odil_wave.grid import Grid
 from odil_wave.models import VelocityModel
+from odil_wave.plot_utils import length_scale, time_scale
 
 
 def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
@@ -133,25 +134,27 @@ class Wavefield:
 
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
+        x_extent = (xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult)
 
         im1 = axs[0].imshow(
             amp_data.T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=x_extent,
             cmap="RdBu_r",
         )
 
         im2 = axs[1].imshow(
             self.wavespeed.cpu().numpy().T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=x_extent,
             cmap="viridis",
         )
 
         i, j = view[0], view[1]  # extract letters for labelling
         for ax in axs:
-            ax.set_xlabel(i)
-            ax.set_ylabel(j)
+            ax.set_xlabel(f"{i} [{x_unit}]")
+            ax.set_ylabel(f"{j} [{x_unit}]")
 
         slice_plane = ["t", "x", "y"][axis]
         axs[0].set_title(f"Amplitude field ({view} plane, {slice_plane} = {idx})")
@@ -189,6 +192,9 @@ class Wavefield:
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         t = self.grid.t.cpu().numpy()
 
+        x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
+        t_mult, t_unit = time_scale(float(t[-1]) if t.size else 1.0)
+
         # fixed colour scale
         vmax = float(np.abs(amp).max()) or 1.0
         vmin = -vmax
@@ -197,21 +203,21 @@ class Wavefield:
         im = ax.imshow(
             amp[0].T,
             origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
+            extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap=cmap,
             vmin=vmin,
             vmax=vmax,
             animated=True,
         )
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
-        ttl = ax.set_title(f"{title}  (t = {t[0]:.3f} s)")
-        plt.colorbar(im, ax=ax, label="Amplitude", shrink=0.85)
+        ax.set_xlabel(f"x [{x_unit}]")
+        ax.set_ylabel(f"y [{x_unit}]")
+        ttl = ax.set_title(f"{title}  (t = {t[0] * t_mult:.2f} {t_unit})")
+        plt.colorbar(im, ax=ax, label="amplitude", shrink=0.85)
 
         # update for drawing frames
         def update(frame: int):
             im.set_data(amp[frame].T)
-            ttl.set_text(f"{title}  (t = {t[frame]:.3f} s)")
+            ttl.set_text(f"{title}  (t = {t[frame] * t_mult:.2f} {t_unit})")
             return im, ttl
 
         anim = animation.FuncAnimation(

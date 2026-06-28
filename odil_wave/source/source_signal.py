@@ -7,6 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from odil_wave.grid import Grid
+from odil_wave.plot_utils import frequency_scale, time_scale
 
 
 class SourceSignal:
@@ -70,7 +71,7 @@ class SourceSignal:
 
         if self.envelope == "gaussian":
             window_x = np.linspace(-3.0, 3.0, n_tone)
-            window = np.exp(-(window_x ** 2) / 2)
+            window = np.exp(-(window_x**2) / 2)
         elif self.envelope == "rectangular":
             window = np.ones(n_tone)
         else:
@@ -101,7 +102,9 @@ class SourceSignal:
             return self._ricker(t)
         if self.kind == "tone_burst":
             return self._tone_burst_signal
-        raise ValueError(f"Unknown source kind '{self.kind}'. Use 'ricker' or 'tone_burst'.")
+        raise ValueError(
+            f"Unknown source kind '{self.kind}'. Use 'ricker' or 'tone_burst'."
+        )
 
     def __call__(self, t: torch.Tensor) -> torch.Tensor:
         return self.waveform(t)
@@ -111,20 +114,25 @@ class SourceSignal:
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 3.5))
         s = self.waveform(self.grid.t).cpu().numpy()
+        t = self.grid.t.cpu().numpy()
         peak_t = int(np.argmax(np.abs(s)))
-        ax.plot(self.grid.t.cpu().numpy(), s)
-        ax.axvline(self.grid.t[peak_t].item(), color="gray", ls=":", alpha=0.7)
-        ax.set_xlabel("t [s]")
+
+        t_mult, t_unit = time_scale(float(t[-1]) if t.size else 1.0)
+        f_mult, f_unit = frequency_scale(self.f0)
+
+        ax.plot(t * t_mult, s)
+        ax.axvline(self.grid.t[peak_t].item() * t_mult, color="gray", ls=":", alpha=0.7)
+        ax.set_xlabel(f"t [{t_unit}]")
         ax.set_ylabel("s(t) [a.u.]")
         if self.kind == "tone_burst":
             ax.set_title(
-                rf"tone_burst ($f_0$={self.f0} Hz, {self.n_cycles} cycles, "
-                rf"{self.envelope} env, A={self.amplitude:g})"
+                rf"tone_burst ($f_0$={self.f0 * f_mult:g} {f_unit}, "
+                rf"{self.n_cycles} cycles, {self.envelope} env, A={self.amplitude:g})"
             )
         else:
             ax.set_title(
-                rf"{self.kind} pulse ($f_0$={self.f0} Hz, $t_0$={self.t0:.3f} s, "
-                rf"A={self.amplitude:g})"
+                rf"{self.kind} pulse ($f_0$={self.f0 * f_mult:g} {f_unit}, "
+                rf"$t_0$={self.t0 * t_mult:.2f} {t_unit}, A={self.amplitude:g})"
             )
         ax.grid(alpha=0.3)
         return ax
