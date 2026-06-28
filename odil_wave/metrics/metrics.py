@@ -69,7 +69,7 @@ def ssim_map(
     pred: Union[np.ndarray, torch.Tensor],
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
-    title: str = "Per-pixel SSIM (1 = perfect recovery)",
+    title: str = "SSIM (1 = perfect recovery)",
     **kwargs,
 ) -> np.ndarray:
     """Per-pixel SSIM map between predicted and true. Plots and returns the map.
