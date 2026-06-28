@@ -10,7 +10,7 @@ from matplotlib import animation
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 from odil_wave.geometry import AcquisitionGeometry
-from odil_wave.models import VelocityModel
+from odil_wave.models import VelocityModel, velocity_norm
 from .regulariser import Regulariser
 
 
@@ -137,6 +137,7 @@ class LossTape:
         fps: int = 10,
         cmap: str = "viridis",
         title: str = "c(x, y) evolution",
+        norm=None,
     ) -> str:
         """Render the per-iteration c(x, y) snapshots to an animated GIF."""
         history = self.history["c_history"]
@@ -145,19 +146,26 @@ class LossTape:
 
         stack = np.stack(history)  # (n_iter, NX, NY)
         (xmin, xmax), (ymin, ymax) = grid.extent
-        vmin = float(stack.min())
-        vmax = float(stack.max())
+
+        if norm is None:
+            _vmin = float(stack.min())
+            _vmax = float(stack.max())
+            if _vmax > _vmin:
+                norm = velocity_norm(
+                    vmin=_vmin,
+                    vcenter=_vmin + 0.25 * (_vmax - _vmin),
+                    vmax=_vmax,
+                )
+
+        imshow_kw = dict(origin="lower", extent=(xmin, xmax, ymin, ymax), cmap=cmap, animated=True)
+        if norm is not None:
+            imshow_kw["norm"] = norm
+        else:
+            imshow_kw["vmin"] = _vmin
+            imshow_kw["vmax"] = _vmax
 
         fig, ax = plt.subplots(figsize=(6, 5))
-        im = ax.imshow(
-            stack[0].T,
-            origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            animated=True,
-        )
+        im = ax.imshow(stack[0].T, **imshow_kw)
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ttl = ax.set_title(f"{title}  (iter 0)")
@@ -181,6 +189,7 @@ class LossTape:
         recovered: VelocityModel,
         geom: AcquisitionGeometry,
         title: str = "Velocity recovery",
+        norm=None,
     ):
         """4-panel: truth | recovered | (recovered - truth) | ||c-c*||_rel vs iter."""
         grid = truth.grid
@@ -198,6 +207,14 @@ class LossTape:
         sx = grid.x[geom.src_ij[:, 0]].cpu().numpy()
         sy = grid.y[geom.src_ij[:, 1]].cpu().numpy()
 
+        if norm is None:
+            if vmax > vmin:
+                norm = velocity_norm(
+                    vmin=vmin,
+                    vcenter=vmin + 0.25 * (vmax - vmin),
+                    vmax=vmax,
+                )
+
         fig, axes = plt.subplots(2, 2, figsize=(11, 9))
         panels = [
             (axes[0, 0], c_true_np, "viridis", vmin, vmax, f"truth ({truth.profile})"),
@@ -205,14 +222,17 @@ class LossTape:
             (axes[1, 0], diff, "RdBu_r", -dmax, dmax, "recovered - truth"),
         ]
         for ax, field_, cmap, lo, hi, t in panels:
-            im = ax.imshow(
-                field_.T,
+            imshow_kw = dict(
                 origin="lower",
                 extent=[xmin, xmax, ymin, ymax],
                 cmap=cmap,
-                vmin=lo,
-                vmax=hi,
             )
+            if norm is not None and cmap == "viridis":
+                imshow_kw["norm"] = norm
+            else:
+                imshow_kw["vmin"] = lo
+                imshow_kw["vmax"] = hi
+            im = ax.imshow(field_.T, **imshow_kw)
             ax.set_xlabel("x")
             ax.set_ylabel("y")
             ax.set_aspect("equal")
