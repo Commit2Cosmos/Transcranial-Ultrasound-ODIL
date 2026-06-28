@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 
@@ -21,7 +21,7 @@ class Optimiser(ABC):
 
 
 class LBFGSB(Optimiser):
-    """`torch.optim.LBFGS`-based optimiser.
+    """`torch.optim.LBFGS`-based optimiser with optional velocity guards.
 
     Hard IC and frozen-PML c:
       - per-shot amplitudes are `(NT-1, NX, NY)` parameters; a zero row is
@@ -29,6 +29,11 @@ class LBFGSB(Optimiser):
       - the c parameter has interior shape `(interior_nx, interior_ny)`;
         `LossConfig.build_full_c` pads to `(NX, NY)` with `pml_c` on the
         PML ring.
+
+    Velocity guards (inverse problems only):
+      After every L-BFGS step the interior wavespeed parameter is projected
+      back onto [c_min, c_max] by clamping.  This
+      It guarantees physical velocities at every iteration.
     """
 
     _DEFAULT_OPTS = {
@@ -44,9 +49,13 @@ class LBFGSB(Optimiser):
         self,
         wavefield: Wavefield,
         loss: DiscreteLoss,
+        c_min: Optional[float] = None,
+        c_max: Optional[float] = None,
         **opts,
     ) -> None:
         super().__init__(wavefield, loss)
+        self.c_min = c_min
+        self.c_max = c_max
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
@@ -95,8 +104,16 @@ class LBFGSB(Optimiser):
 
         optimiser = torch.optim.LBFGS(params, **torch_opts)
 
+        # Capture guard values in local vars for use inside closure.
+        c_min, c_max = self.c_min, self.c_max
+
         def closure():
             optimiser.zero_grad()
+            # Project c into [c_min, c_max] before every loss evaluation so
+            # every step stays in bounds.
+            if c_interior_param is not None and (c_min is not None or c_max is not None):
+                with torch.no_grad():
+                    c_interior_param.data.clamp_(min=c_min, max=c_max)
             amps = torch.stack(
                 [
                     torch.cat([zero_row, u_inner_params[s]], dim=0)
@@ -116,6 +133,11 @@ class LBFGSB(Optimiser):
         for i in range(n_iter):
             loss_value = optimiser.step(closure)
             if isinstance(self.loss, InverseLoss):
+                # Final clamp after the full step.
+                if c_min is not None or c_max is not None:
+                    with torch.no_grad():
+                        c_interior_param.data.clamp_(min=c_min, max=c_max)
+
                 c_full_now = (
                     self.loss.config.build_full_c(c_interior_param)
                     .detach()
@@ -156,3 +178,4 @@ class LBFGSB(Optimiser):
             "n_outer_iter": n_iter,
         }
         return outputs, self.loss.callback
+    
