@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 
@@ -49,13 +49,13 @@ class LBFGSB(Optimiser):
         self,
         wavefield: Wavefield,
         loss: DiscreteLoss,
-        c_min: Optional[float] = None,
-        c_max: Optional[float] = None,
+        clamp: bool = False,
         **opts,
     ) -> None:
         super().__init__(wavefield, loss)
-        self.c_min = c_min
-        self.c_max = c_max
+        grid = wavefield.grid
+        self.c_min = grid.c_min if clamp else None
+        self.c_max = grid.c_max if clamp else None
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
