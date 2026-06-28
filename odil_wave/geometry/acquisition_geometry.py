@@ -227,11 +227,12 @@ class AcquisitionGeometry:
         plt.colorbar(im, ax=ax, shrink=0.85, label="amplitude [a.u.]")
         return ax
 
-    def show(self, velocity_model: VelocityModel, ax=None):
+    def show(self, velocity_model: VelocityModel, ax=None, norm=None):
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 5))
         velocity_model.show(
-            ax=ax, title=f"acquisition on {velocity_model.profile}", show_pml=True
+            ax=ax, title=f"acquisition on {velocity_model.profile}", show_pml=True,
+            norm=norm,
         )
 
         rx = self.grid.x[self.recv_ij[:, 0]].cpu().numpy()
