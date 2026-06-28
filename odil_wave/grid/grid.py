@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -25,12 +25,13 @@ class Grid:
         (-1.0, 1.0),
     )
     # TODO: enforce it is passed; no default
+    c_min: Optional[float] = None
     c_max: float = 1.5
     pml_width: int = 10  # extra cells per side wrapping the interior
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     # TODO: enforce it is passed; no default
-    t_max: float = field(init=None)  # specify based on forward wavefield observations
+    t_max: Optional[float] = None  # specify based on forward wavefield observations
     init_nt: Optional[int] = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
@@ -141,6 +142,44 @@ class Grid:
         sigma_x = sigma_x_1d.view(-1, 1).expand(self.nx, self.ny).contiguous()
         sigma_y = sigma_y_1d.view(1, -1).expand(self.nx, self.ny).contiguous()
         return sigma_x, sigma_y
+
+
+    # Alternative constructor
+    @classmethod
+    def from_frequency(
+        cls,
+        f_max: float,
+        c_min: float,
+        interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
+            (-1.0, 1.0),
+            (-1.0, 1.0),
+        ),
+        n_ppw: int = 10,
+        **kwargs,
+    ) -> "Grid":
+        """Construct a Grid with dx chosen from maximum source frequency.
+        
+        Uses the points-per-wavelength (PPW) criterion:
+            dx = c_min / (f_max * n_ppw)
+
+        """
+        if "init_nt" in kwargs:
+            raise ValueError(
+                "init_nt cannot be passed to Grid.from_frequency: the number "
+                "of timesteps must be determined by the CFL condition once dx "
+                "is set from frequency. Pass t_max instead."
+            )
+        dx = c_min / (f_max * n_ppw)
+        (ix_min, ix_max), (iy_min, iy_max) = interior_extent
+        nx = round((ix_max - ix_min) / dx) + 1
+        ny = round((iy_max - iy_min) / dx) + 1
+        return cls(
+            interior_shape=(nx, ny),
+            interior_extent=interior_extent,
+            c_min=c_min,
+            **kwargs,
+        )
+
 
     def cfl(self, c_max: float) -> float:
         return c_max * self.dt * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
