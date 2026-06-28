@@ -3,7 +3,6 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
@@ -25,15 +24,15 @@ class LossConfig:
     `w_pde * mean(r_pde**2) + w_data * mean(r_data**2) + w_reg * R(c_int)`.
     Missing keys default to 1.0.
 
-    The PML ring of c is frozen at `pml_c`, only the interior of c is the
-    optimisation variable.
+    The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
+    the interior of c is the optimisation variable. Pad with
+    `wavefield.velocity_model.build_full_c(c_interior)`.
     """
 
     wave_eq: WaveEquation
     geometry: AcquisitionGeometry
     weights: Optional[dict] = None
     regulariser: Optional[Regulariser] = None
-    pml_c: Optional[float] = None
 
     speed_offset: int = field(init=False)
     device: torch.device = field(init=False)
@@ -49,10 +48,6 @@ class LossConfig:
             merged.update(self.weights)
         self.weights = merged
 
-        # TODO: check what the init value should be
-        if self.pml_c is None:
-            self.pml_c = wf.init_wavespeed.min()
-
         # Hard zero IC at t=0 means amplitude has (NT-1, NX, NY) per shot.
         self.speed_offset = self.geometry.n_sources * (Nt - 1) * Nx * Ny
         self.device = wf.grid.device
@@ -61,11 +56,6 @@ class LossConfig:
     @property
     def wavefield(self) -> Wavefield:
         return self.wave_eq.wavefield
-
-    def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:
-        """Pad (interior_nx, interior_ny) c with `pml_c` to full grid shape."""
-        p = self.wavefield.grid.pml_width
-        return F.pad(c_interior, (p, p, p, p), mode="constant", value=self.pml_c)
 
 
 @dataclass

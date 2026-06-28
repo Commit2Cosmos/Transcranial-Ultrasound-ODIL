@@ -1,5 +1,6 @@
 from typing import Optional
 import torch
+import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -23,6 +24,7 @@ class VelocityModel:
         profile: str = "homogeneous",
         base: float = 1.0,
         contrast: float = 0.4,
+        pml_c: Optional[float] = None,
         **profile_kwargs,
     ):
         self.grid = grid
@@ -31,14 +33,33 @@ class VelocityModel:
         self.contrast = contrast
         self.profile_kwargs = profile_kwargs
         self.c = self._build()
+        self.pml_c = float(pml_c) if pml_c is not None else float(self.c.min())
+
+    @classmethod
+    def from_field(
+        cls,
+        grid: Grid,
+        c: torch.Tensor,
+        pml_c: Optional[float] = None,
+    ) -> "VelocityModel":
+        """Build a VelocityModel from an already-computed full-grid c tensor."""
+        vm = cls.__new__(cls)
+        vm.grid = grid
+        vm.profile = "custom"
+        vm.base = float("nan")
+        vm.contrast = float("nan")
+        vm.profile_kwargs = {}
+        vm.c = c.to(dtype=grid.dtype, device=grid.device).reshape(grid.shape)
+        vm.pml_c = float(pml_c) if pml_c is not None else float(vm.c.min())
+        return vm
+
+    def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:
+        """Pad `(interior_nx, interior_ny)` c with `pml_c` to full grid shape."""
+        p = self.grid.pml_width
+        return F.pad(c_interior, (p, p, p, p), mode="constant", value=self.pml_c)
 
     def _shepp_logan_embedded(self, scale: float) -> torch.Tensor:
-        """Resized, rotated, PML-padded Shepp-Logan phantom, values in [0, 1].
-
-        Shared by the `shepp_logan` truth profile and the `shepp_logan_skull`
-        warm-start init so the truth medium and the prior stay spatially
-        aligned.
-        """
+        """Resized, rotated, PML-padded Shepp-Logan phantom, values in [0, 1]."""
         g = self.grid
         s_nx = max(2, int(g.interior_nx * scale))
         s_ny = max(2, int(g.interior_ny * scale))

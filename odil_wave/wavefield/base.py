@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 
 from odil_wave.grid import Grid
+from odil_wave.models import VelocityModel
 
 
 def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
@@ -32,14 +33,15 @@ def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
 
 @dataclass
 class Wavefield:
+    """Wave solution u(x, y, t) on a `Grid`, bound to a shared `VelocityModel`."""
+
     grid: Grid
     _amplitude: torch.Tensor = field(init=False)
     init_amplitude: torch.Tensor | np.ndarray | None = (
         None  # optionally initialise field
     )
 
-    _wavespeed: torch.Tensor = field(init=False)
-    init_wavespeed: torch.Tensor | np.ndarray | None = None  # optional initialise speed
+    velocity_model: VelocityModel | None = None  # shared reference, not owned
 
     _init_ut: torch.Tensor = field(init=False)
     init_velocity: torch.Tensor | np.ndarray | None = (
@@ -68,16 +70,8 @@ class Wavefield:
             )
         )
 
-        # initialise wavespeed as Nx*Ny or provided values (flat 1D accepted, reshaped to (Nx, Ny))
-        if self.init_wavespeed is None:
-            self._wavespeed = torch.ones(
-                size=(Nx, Ny), dtype=self.dtype, device=self.device
-            )
-        else:
-            wsp = torch.as_tensor(
-                self.init_wavespeed, dtype=self.dtype, device=self.device
-            )
-            self._wavespeed = wsp.reshape(Nx, Ny)
+        if self.velocity_model is None:
+            self.velocity_model = VelocityModel(self.grid)
 
         self._init_ut = (
             torch.zeros(
@@ -107,13 +101,7 @@ class Wavefield:
 
     @property
     def wavespeed(self) -> torch.Tensor:
-        return self._wavespeed
-
-    @wavespeed.setter
-    def wavespeed(self, value) -> None:
-        Nx, Ny = self.grid.shape
-        wsp = torch.as_tensor(value, dtype=self.dtype, device=self.device)
-        self._wavespeed = wsp.reshape(Nx, Ny)
+        return self.velocity_model.c
 
     def show(
         self,

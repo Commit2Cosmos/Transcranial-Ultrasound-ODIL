@@ -5,6 +5,7 @@ import torch
 
 from odil_wave.loss import DiscreteLoss, ForwardLoss, InverseLoss
 from odil_wave.loss.utils import LossTape
+from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
 
 
@@ -93,8 +94,10 @@ class LBFGSB(Optimiser):
         )
         u_inner_params = [torch.nn.Parameter(amp_seed.clone()) for _ in range(n_shots)]
 
+        vm_in = self.wavefield.velocity_model
+
         if isinstance(self.loss, InverseLoss):
-            c0 = self.wavefield.wavespeed.detach().to(dtype=dtype, device=device)
+            c0 = vm_in.c.detach().to(dtype=dtype, device=device)
             c0_int = c0[grid.interior_slice].clone()
             c_interior_param = torch.nn.Parameter(c0_int)
             params = u_inner_params + [c_interior_param]
@@ -111,7 +114,9 @@ class LBFGSB(Optimiser):
             optimiser.zero_grad()
             # Project c into [c_min, c_max] before every loss evaluation so
             # every step stays in bounds.
-            if c_interior_param is not None and (c_min is not None or c_max is not None):
+            if c_interior_param is not None and (
+                c_min is not None or c_max is not None
+            ):
                 with torch.no_grad():
                     c_interior_param.data.clamp_(min=c_min, max=c_max)
             amps = torch.stack(
@@ -121,11 +126,10 @@ class LBFGSB(Optimiser):
                 ]
             )
             if isinstance(self.loss, InverseLoss):
-                c_full = self.loss.config.build_full_c(c_interior_param)
+                c_full = vm_in.build_full_c(c_interior_param)
                 L = self.loss.evaluate(amps, c_full, c_interior_param)
             else:
-                wsp = self.wavefield.wavespeed
-                L = self.loss.evaluate(amps, wsp)
+                L = self.loss.evaluate(amps, vm_in.c)
             L.backward()
             return L
 
@@ -138,12 +142,7 @@ class LBFGSB(Optimiser):
                     with torch.no_grad():
                         c_interior_param.data.clamp_(min=c_min, max=c_max)
 
-                c_full_now = (
-                    self.loss.config.build_full_c(c_interior_param)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
+                c_full_now = vm_in.build_full_c(c_interior_param).detach().cpu().numpy()
                 self.loss.callback.log_c(c_full_now)
 
             if i % log_every == 0 or i == n_iter - 1:
@@ -154,22 +153,20 @@ class LBFGSB(Optimiser):
 
             print(f"Iteration: {i}")
 
-        # Build returned wavefields with hard zero IC row and reshaped c.
-        outputs: List[Wavefield] = []
+        # Build returned wavefields with hard zero IC row, all sharing one
+        # VelocityModel reference so we don't carry n_shots copies of c.
         if isinstance(self.loss, ForwardLoss):
-            wsp_full = self.wavefield.wavespeed.detach()
-            for s in range(n_shots):
-                wf = Wavefield(grid=grid, init_wavespeed=wsp_full)
-                amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
-                wf.amplitude = amp_full
-                outputs.append(wf)
+            vm_out = vm_in  # medium was fixed; reuse the input model
         else:
-            c_full_final = self.loss.config.build_full_c(c_interior_param).detach()
-            for s in range(n_shots):
-                wf = Wavefield(grid=grid, init_wavespeed=c_full_final)
-                amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
-                wf.amplitude = amp_full
-                outputs.append(wf)
+            c_full_final = vm_in.build_full_c(c_interior_param).detach()
+            vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
+
+        outputs: List[Wavefield] = []
+        for s in range(n_shots):
+            wf = Wavefield(grid=grid, velocity_model=vm_out)
+            amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
+            wf.amplitude = amp_full
+            outputs.append(wf)
 
         self.loss.callback.result = {
             "loss": (
@@ -178,4 +175,3 @@ class LBFGSB(Optimiser):
             "n_outer_iter": n_iter,
         }
         return outputs, self.loss.callback
-    
