@@ -90,10 +90,12 @@ class LBFGSB(Optimiser):
         n_shots = self.loss.config.geometry.n_sources
 
         zero_row = torch.zeros(1, Nx, Ny, dtype=dtype, device=device)
+        init_ut = self.wavefield.init_ut.detach().to(dtype=dtype, device=device)
+        ic_row = (grid.dt * init_ut).unsqueeze(0)  # (1, Nx, Ny)
 
-        # per-shot amplitudes (NT-1, NX, NY), zero IC row spliced in closure
+        # per-shot amplitudes (NT-2, NX, NY), the two IC rows spliced in closure
         amp_seed = (
-            self.wavefield.amplitude[1:].detach().clone().to(dtype=dtype, device=device)
+            self.wavefield.amplitude[2:].detach().clone().to(dtype=dtype, device=device)
         )
         u_inner_params = [torch.nn.Parameter(amp_seed.clone()) for _ in range(n_shots)]
 
@@ -124,7 +126,7 @@ class LBFGSB(Optimiser):
                     c_interior_param.data.clamp_(min=c_min, max=c_max)
             amps = torch.stack(
                 [
-                    torch.cat([zero_row, u_inner_params[s]], dim=0)
+                    torch.cat([zero_row, ic_row, u_inner_params[s]], dim=0)
                     for s in range(n_shots)
                 ]
             )
@@ -172,7 +174,7 @@ class LBFGSB(Optimiser):
         outputs: List[Wavefield] = []
         for s in range(n_shots):
             wf = Wavefield(grid=grid, velocity_model=vm_out)
-            amp_full = torch.cat([zero_row, u_inner_params[s].detach()], dim=0)
+            amp_full = torch.cat([zero_row, ic_row, u_inner_params[s].detach()], dim=0)
             wf.amplitude = amp_full
             outputs.append(wf)
 
