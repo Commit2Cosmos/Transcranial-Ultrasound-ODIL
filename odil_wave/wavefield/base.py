@@ -121,6 +121,7 @@ class Wavefield:
         title="Wavefield and model",
         view: str = "xy",
         normalize: str | None = None,
+        norm=None,
     ):
         assert view in [
             "xy",
@@ -153,12 +154,25 @@ class Wavefield:
             cmap="RdBu_r",
         )
 
-        im2 = axs[1].imshow(
-            self.wavespeed.cpu().numpy().T,
-            origin="lower",
-            extent=(xmin, xmax, ymin, ymax),
-            cmap="viridis",
-        )
+        im2_kw = dict(origin="lower", extent=(xmin, xmax, ymin, ymax), cmap="viridis")
+        wsp_np = self.wavespeed.cpu().numpy()
+        if norm is None:
+            _vmin = float(wsp_np.min())
+            _vmax = float(wsp_np.max())
+            if _vmax > _vmin:
+                from odil_wave.models import velocity_norm
+                norm = velocity_norm(
+                    vmin=_vmin,
+                    vcenter=_vmin + 0.25 * (_vmax - _vmin),
+                    vmax=_vmax,
+                )
+                im2_kw["norm"] = norm
+            else:
+                im2_kw["vmin"] = _vmin
+                im2_kw["vmax"] = _vmax
+        else:
+            im2_kw["norm"] = norm
+        im2 = axs[1].imshow(wsp_np.T, **im2_kw)
 
         i, j = view[0], view[1]  # extract letters for labelling
         for ax in axs:
@@ -201,17 +215,14 @@ class Wavefield:
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         t = self.grid.t.cpu().numpy()
 
-        # fixed colour scale
         vmax = float(np.abs(amp).max()) or 1.0
-        vmin = -vmax
-
         fig, ax = plt.subplots(figsize=(6, 5))
         im = ax.imshow(
             amp[0].T,
             origin="lower",
             extent=(xmin, xmax, ymin, ymax),
             cmap=cmap,
-            vmin=vmin,
+            vmin=-vmax,
             vmax=vmax,
             animated=True,
         )
