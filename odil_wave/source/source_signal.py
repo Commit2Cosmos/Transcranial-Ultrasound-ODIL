@@ -40,12 +40,36 @@ class SourceSignal:
         n_cycles: float = 3.0,
         envelope: str = "gaussian",
         offset: int = 0,
+        dimensionless: bool = True,
     ):
+        """Build a source pulse on `grid`.
+
+        Parameters
+        ----------
+        amplitude
+            Peak of the waveform `s(t)`.
+        dimensionless
+            If True (default), ``amplitude`` is interpreted as the peak of
+            the *non-dimensional* source ``f' = t0**2 * f`` that the wave
+            equation actually consumes (see :class:`Grid`). Internally the
+            physical waveform is scaled by ``grid.natural_source_amplitude
+            = 1 / t0**2`` so passing ``amplitude=1.0`` always lands the
+            residual at O(1), independent of L0, c0, or f0.
+            If False, ``amplitude`` is the physical peak; the user is
+            responsible for choosing a value large enough that
+            ``t0**2 * amplitude`` is above the L-BFGS gradient tolerance.
+        """
         self.grid = grid
         self.kind = kind
         self.f0 = f0
         self.t0 = 1.0 / f0 if t0 is None else t0  # causal delay default for ricker
+        self.dimensionless = dimensionless
+        # User-facing amplitude (kept as-is so plot titles read naturally),
+        # and the internal physical amplitude actually fed to the waveform.
         self.amplitude = amplitude
+        self._amplitude_phys = (
+            amplitude * grid.natural_source_amplitude if dimensionless else amplitude
+        )
         self.n_cycles = n_cycles
         self.envelope = envelope
         self.offset = offset
@@ -56,7 +80,7 @@ class SourceSignal:
     # Ricker
     def _ricker(self, t: torch.Tensor) -> torch.Tensor:
         arg = (math.pi * self.f0 * (t - self.t0)) ** 2
-        return self.amplitude * (1.0 - 2.0 * arg) * torch.exp(-arg)
+        return self._amplitude_phys * (1.0 - 2.0 * arg) * torch.exp(-arg)
 
     # Tone burst (Stride)
     def _tone_burst(self) -> torch.Tensor:
@@ -91,7 +115,7 @@ class SourceSignal:
             constant_values=0.0,
         )
         return torch.tensor(
-            signal * self.amplitude,
+            signal * self._amplitude_phys,
             dtype=self.grid.dtype,
             device=self.grid.device,
         )

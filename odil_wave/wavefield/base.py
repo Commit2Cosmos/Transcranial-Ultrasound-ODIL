@@ -89,6 +89,11 @@ class Wavefield:
         return self._init_ut
 
     @property
+    def init_ut_nd(self) -> torch.Tensor:
+        """Initial velocity IC expressed in dimensionless time: u_{t'} = u_t * t0."""
+        return self._init_ut * self.grid.t0
+
+    @property
     def amplitude(self) -> torch.Tensor:
         return self._amplitude
 

@@ -73,8 +73,9 @@ class Laplacian2ndOrder(SpatialOperator):
         uxm, uxp, uym, uyp = bc.patch_spatial_neighbors(
             uxm, uxp, uym, uyp, utm
         )  # replace teh wrong periodic roll with the mirrored interior values
-        dx = self.wavefield.grid.dx
-        dy = self.wavefield.grid.dy
+        # Non-dimensional spacings: this returns L0^2 * (u_xx + u_yy).
+        dx = self.wavefield.grid.dx_nd
+        dy = self.wavefield.grid.dy_nd
         return _laplacian_5pt(utm, uxm, uxp, uym, uyp, dx, dy)
 
 
@@ -107,8 +108,9 @@ class Laplacian4thOrder(SpatialOperator):
             uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2, utm
         )
         uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = neighbours
-        dx = self.wavefield.grid.dx
-        dy = self.wavefield.grid.dy
+        # Non-dimensional spacings: this returns L0^2 * (u_xx + u_yy).
+        dx = self.wavefield.grid.dx_nd
+        dy = self.wavefield.grid.dy_nd
         u_xx = _fourth_derivative_1d(uxm2, uxm, utm, uxp, uxp2) / dx**2
         u_yy = _fourth_derivative_1d(uym2, uym, utm, uyp, uyp2) / dy**2
         return u_xx + u_yy

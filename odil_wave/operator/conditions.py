@@ -91,22 +91,28 @@ class NeumannMirrorBC4th(Conditions):
 
 
 class PML(Conditions):
-    """Absorbing layer enforced as a damping term"""
+    """Absorbing layer enforced as a damping term.
+
+    Operates on the dimensionless residual: the precomputed
+    ``sigma_sum`` and ``sigma_prod`` use ``grid.sigma_*_nd`` (i.e.
+    physical sigma multiplied by ``t0``), and the time derivative is
+    taken with respect to ``t' = t / t0``.
+    """
 
     def __init__(self, wavefield: Wavefield, weight: float = 1.0) -> None:
         self.wavefield = wavefield
         self.weight = weight
         grid = wavefield.grid
 
-        # precompute pml
-        self.sigma_sum = grid.sigma_x + grid.sigma_y
-        self.sigma_prod = grid.sigma_x * grid.sigma_y
+        # precompute pml in non-dimensional form (sigma * t0)
+        self.sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
+        self.sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
 
     def apply_residual(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
         from .temporal import _first_time_derivative  # avoid circular import
 
-        dt = self.wavefield.grid.dt
-        u_t = _first_time_derivative(u, dt, self.wavefield.init_ut)
+        dt_nd = self.wavefield.grid.dt_nd
+        u_t = _first_time_derivative(u, dt_nd, self.wavefield.init_ut_nd)
         return fu + self.weight * (self.sigma_sum * u_t + self.sigma_prod * u)
 
     def apply(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:

@@ -18,6 +18,21 @@ class Grid:
     The PML adds `pml_width` extra cells per side, extending the total grid
     (and total physical box) by `pml_width * dx` per side. The wavefield
     optimization variable lives on the full extended grid `(NT, NX, NY)`.
+
+    Non-dimensionalisation
+    ----------------------
+    Characteristic scales `L0` (length) and `c0` (velocity) define a time
+    scale ``t0 = L0 / c0``. Dimensionless coordinates are
+    ``x' = x / L0``, ``t' = t / t0``, ``c' = c / c0``. The PDE
+    ``u_tt - c^2 (u_xx + u_yy) = f`` becomes (multiplying by ``t0**2``)::
+
+        u_t't' - c'**2 (u_x'x' + u_y'y') = t0**2 * f
+
+    Physical attributes (`dx`, `dy`, `dt`, `sigma_x`, `sigma_y`) are kept
+    for plotting and indexing. The wave-equation operators consume the
+    matching non-dimensional companions (`dx_nd`, `dy_nd`, `dt_nd`,
+    `sigma_x_nd`, `sigma_y_nd`) so the discrete residual is dimensionless.
+    Defaults: ``c0 = c_max`` and ``L0 = max(interior extents)``.
     """
 
     # TODO: enforce it is passed; no default
@@ -35,6 +50,10 @@ class Grid:
     # TODO: enforce it is passed; no default
     t_max: float = 1.0  # specify based on forward wavefield observations
     init_nt: Optional[int] = None
+    # characteristic scales for non-dimensionalisation; None -> sensible defaults
+    L0: Optional[float] = None
+    c0: Optional[float] = None
+    # TODO: make settable
     device: torch.device = field(init=False)
     dtype: torch.dtype = torch.float32
 
@@ -48,6 +67,10 @@ class Grid:
     dx: float = field(init=False)
     dy: float = field(init=False)
     dt: float = field(init=False)
+    t0: float = field(init=False)  # = L0 / c0
+    dx_nd: float = field(init=False)
+    dy_nd: float = field(init=False)
+    dt_nd: float = field(init=False)
     x: torch.Tensor = field(init=False, repr=False)
     y: torch.Tensor = field(init=False, repr=False)
     t: torch.Tensor = field(init=False, repr=False)
@@ -55,11 +78,15 @@ class Grid:
     Y: torch.Tensor = field(init=False, repr=False)
     sigma_x: torch.Tensor = field(init=False, repr=False)
     sigma_y: torch.Tensor = field(init=False, repr=False)
+    sigma_x_nd: torch.Tensor = field(init=False, repr=False)
+    sigma_y_nd: torch.Tensor = field(init=False, repr=False)
 
     def __post_init__(self):
         self.interior_nx, self.interior_ny = self.interior_shape
         (ix_min, ix_max), (iy_min, iy_max) = self.interior_extent
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # TODO: add mps support∑
+        # self.device = torch.device("mps" if torch.mps.is_available() else "cpu")
+        self.device = torch.device("cpu")
 
         self.dx = (ix_max - ix_min) / (self.interior_nx - 1)
         self.dy = (iy_max - iy_min) / (self.interior_ny - 1)
@@ -93,10 +120,36 @@ class Grid:
 
         self.sigma_x, self.sigma_y = self._build_pml_profiles()
 
+        # Characteristic scales for non-dimensionalisation.
+        # Default L0 to the larger interior side, c0 to c_max.
+        if self.L0 is None:
+            self.L0 = float(max(ix_max - ix_min, iy_max - iy_min))
+        else:
+            self.L0 = float(self.L0)
+        if self.c0 is None:
+            self.c0 = float(self.c_max)
+        else:
+            self.c0 = float(self.c0)
+        if self.L0 <= 0 or self.c0 <= 0:
+            raise ValueError("L0 and c0 must be positive.")
+        self.t0 = self.L0 / self.c0
+
+        self.dx_nd = self.dx / self.L0
+        self.dy_nd = self.dy / self.L0
+        self.dt_nd = self.dt / self.t0
+        # sigma has units of 1/s; sigma * t0 is dimensionless.
+        self.sigma_x_nd = self.sigma_x * self.t0
+        self.sigma_y_nd = self.sigma_y * self.t0
+
     @property
     def shape(self) -> Tuple[int, int]:
         """Total grid shape (interior + PML)."""
         return (self.nx, self.ny)
+
+    @property
+    def natural_source_amplitude(self) -> float:
+        """Physical source amplitude whose non-dimensional form has unit peak."""
+        return 1.0 / self.t0**2
 
     @property
     def interior_slice(self) -> Tuple[slice, slice]:
@@ -146,6 +199,7 @@ class Grid:
         return sigma_x, sigma_y
 
     # Alternative constructor
+    # TODO: don't allow to set interior_shape
     @classmethod
     def from_frequency(
         cls,
@@ -155,7 +209,7 @@ class Grid:
             (-1.0, 1.0),
             (-1.0, 1.0),
         ),
-        n_ppw: int = 10,
+        n_ppw: int = 5,
         **kwargs,
     ) -> "Grid":
         """Construct a Grid with dx chosen from maximum source frequency.
@@ -222,6 +276,8 @@ class Grid:
         (xmin, xmax), (ymin, ymax) = self.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         t_mult, t_unit = time_scale(self.t_max)
+        L_mult, L_unit = length_scale(self.L0)
+        t0_mult, t0_unit = time_scale(self.t0)
         return (
             f"Grid interior {self.interior_nx}x{self.interior_ny} -> "
             f"total {self.nx}x{self.ny} (PML p={self.pml_width}),"
@@ -232,5 +288,9 @@ class Grid:
             f"\ninterior x in [{ix0 * x_mult:.2f}, {ix1 * x_mult:.2f}] {x_unit},"
             f"\ny in [{iy0 * x_mult:.2f}, {iy1 * x_mult:.2f}] {x_unit},"
             f"\ntotal x in [{xmin * x_mult:.2f}, {xmax * x_mult:.2f}] {x_unit},"
-            f"\ntotal y in [{ymin * x_mult:.2f}, {ymax * x_mult:.2f}] {x_unit}"
+            f"\ntotal y in [{ymin * x_mult:.2f}, {ymax * x_mult:.2f}] {x_unit},"
+            f"\nL0={self.L0 * L_mult:.3f} {L_unit}, c0={self.c0:.1f} m/s, "
+            f"t0={self.t0 * t0_mult:.3f} {t0_unit},"
+            f"\ndx_nd={self.dx_nd:.4f}, dt_nd={self.dt_nd:.4f}, "
+            f"t_max_nd={self.t_max / self.t0:.3f}"
         )

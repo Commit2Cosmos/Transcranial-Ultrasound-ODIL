@@ -16,6 +16,13 @@ from .conditions import (
 class WaveEquation:
     """Discrete acoustic wave equation u_tt - c^2*lap(u) = f.
 
+    Internally non-dimensional: the residual returned is
+    ``u_{t't'} - (c/c0)^2 * L0^2 * lap(u) - t0^2 * f`` evaluated with
+    the grid's ``dx_nd, dy_nd, dt_nd`` and ``sigma_*_nd`` (see
+    :class:`Grid` for the scaling derivation). Callers pass the physical
+    wavespeed ``wsp`` (m/s) and a *pre-scaled* dimensionless ``source``
+    (``DiscreteLoss`` precomputes ``t0**2 * f`` once).
+
     Initial conditions (u(0,x,y)=0 and u_t(0,x,y)=init_ut) are hard-
     constrained.
     """
@@ -53,8 +60,15 @@ class WaveEquation:
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:
-        """u_tt - c^2*(u_xx + u_yy) - f with PML damping."""
+        """Dimensionless residual u_{t't'} - c'^2 * lap'(u) - f' with PML damping.
+
+        ``wsp`` is the physical wavespeed (m/s); it is normalised by
+        ``grid.c0`` here so the optimiser can keep operating in physical
+        units. ``source`` is expected pre-scaled by ``t0**2``.
+        """
+        c0 = self.wavefield.grid.c0
+        wsp_nd = wsp / c0
         utt = self._time_op.apply(amp)
         lap = self._lap.apply(amp, bc=self._bc)
-        r = utt - wsp**2 * lap - source
+        r = utt - wsp_nd**2 * lap - source
         return self._pml.apply(r, amp)

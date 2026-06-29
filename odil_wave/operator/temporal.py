@@ -32,10 +32,21 @@ def _time_stencil_2point(
     dt: float,
     init_ut: torch.Tensor,
 ) -> torch.Tensor:
-    """dt^2 * u_tt."""
+    """u_tt at every t via the backward 3-point stencil.
+
+    At t=0 and t=1 the stencil would otherwise read wrapped values
+    ``u[Nt-1]``, ``u[Nt-2]`` introduced by ``torch.roll``. We patch
+    those slices using the soft IC ``u_t(0) = init_ut`` so the residual
+    at t=0 does not couple the hard zero IC to the final time samples
+    (a wraparound that otherwise drags late-time amplitudes to zero).
+    """
     u_t_tm = u - utm  # u^t - u^{t-1}
     u_t_tmm = utm - utmm  # u^{t-1} - u^{t-2}
+    u_t_tm = u_t_tm.clone()
     u_t_tmm = u_t_tmm.clone()
+    # IC patch at t=0: u^0 - u^{-1} = dt * init_ut and u^{-1} - u^{-2} = dt * init_ut
+    u_t_tm[0, :, :] = dt * init_ut
+    u_t_tmm[0, :, :] = dt * init_ut
     u_t_tmm[1, :, :] = dt * init_ut  # IC patch at t=1
     return (u_t_tm - u_t_tmm) / dt**2  # u_tt
 
@@ -83,7 +94,7 @@ def _time_stencil_4th(
     init_ut: torch.Tensor,
 ) -> torch.Tensor:
     # Compute 4th-order u_tt everywhere
-    u_tt = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2)/dt**2
+    u_tt = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2) / dt**2
     # Compute 2nd-order u_tt (IC-safe)
     # near the start not enough values, so use 2nd-order u_tt
     u_t_tm = u - utm1
@@ -113,10 +124,11 @@ class TimeOperator2ndOrder(TemporalOperator):
     wavefield: Wavefield
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        init_ut = self.wavefield.init_ut
+        # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
+        init_ut = self.wavefield.init_ut_nd
         utm = torch.roll(u, 1, dims=0)
         utmm = torch.roll(u, 2, dims=0)
-        return _time_stencil_2point(u, utm, utmm, self.wavefield.grid.dt, init_ut)
+        return _time_stencil_2point(u, utm, utmm, self.wavefield.grid.dt_nd, init_ut)
 
 
 @dataclass
@@ -126,11 +138,11 @@ class TimeOperator4thOrder(TemporalOperator):
     wavefield: Wavefield
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        init_ut = self.wavefield.init_ut
+        # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
+        init_ut = self.wavefield.init_ut_nd
+        dt_nd = self.wavefield.grid.dt_nd
         utm2, utm1, utp1, utp2 = _roll_time_4th(u)
         utm2, utm1, utp1, utp2 = _patch_time_neighbors_4th(
-            u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
+            u, utm2, utm1, utp1, utp2, dt_nd, init_ut
         )
-        return _time_stencil_4th(
-            u, utm2, utm1, utp1, utp2, self.wavefield.grid.dt, init_ut
-        )
+        return _time_stencil_4th(u, utm2, utm1, utp1, utp2, dt_nd, init_ut)
