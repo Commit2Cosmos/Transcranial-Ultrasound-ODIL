@@ -16,6 +16,19 @@ from odil_wave.grid import Grid
 from odil_wave.plot_utils import length_scale
 
 
+def velocity_norm(vmin: float, vcenter: float, vmax: float):
+    """Non-linear colorbar normalisation for velocity fields.
+
+    Maps half the colormap to [vmin, vcenter] and the other half to
+    [vcenter, vmax]. (e.g. water at 1500 m/s vs skull at 3000 m/s), so
+    low-velocity contrast is not visually crushed by the high-velocity range.
+
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    return TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+
+
 class VelocityModel:
     """2D velocity field c(x, y) attached to a Grid (full extended grid)."""
 
@@ -151,6 +164,7 @@ class VelocityModel:
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
         show_pml: bool = True,
+        norm=None,
     ):
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))

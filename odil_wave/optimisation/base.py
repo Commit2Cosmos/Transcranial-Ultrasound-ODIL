@@ -76,7 +76,10 @@ class LBFGSB(Optimiser):
         torch_opts = {k: v for k, v in opts.items() if k in allowed}
         return n_iter, torch_opts
 
-    def minimise(self, **overrides) -> Tuple[List[Wavefield], LossTape]:
+    def minimise(
+        self, on_iteration=None, **overrides
+    ) -> Tuple[List[Wavefield], LossTape]:
+        """Run the optimisation loop."""
         self.opts.update(overrides)
         n_iter, torch_opts = self._split_opts()
 
@@ -144,6 +147,11 @@ class LBFGSB(Optimiser):
 
                 c_full_now = vm_in.build_full_c(c_interior_param).detach().cpu().numpy()
                 self.loss.callback.log_c(c_full_now)
+            else:
+                c_full_now = None
+
+            if on_iteration is not None:
+                on_iteration(i, c_full_now)
 
             if i % log_every == 0 or i == n_iter - 1:
                 self.loss.callback.log(
