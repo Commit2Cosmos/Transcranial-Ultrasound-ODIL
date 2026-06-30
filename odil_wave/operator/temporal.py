@@ -30,16 +30,18 @@ def _time_stencil_2point(
     dt: float,
     init_ut: torch.Tensor,
 ) -> torch.Tensor:
-    """Centred leapfrog second derivative u_tt = (u^{t+1} - 2 u^t + u^{t-1})/dt^2."""
     utm = torch.roll(u, 1, dims=0)
     utp = torch.roll(u, -1, dims=0)
+
     utm = utm.clone()
-    utp = utp.clone()
     utm[0, :, :] = u[0, :, :] - dt * init_ut
-    utp[-1, :, :] = u[-1, :, :]
-    u_tt = (utp - 2.0 * u + utm) / dt**2
-    u_tt = u_tt.clone()
-    u_tt[-1, :, :] = (u[-1, :, :] - 2.0 * u[-2, :, :] + u[-3, :, :]) / dt**2
+
+    u_tt = ((utp - 2.0 * u + utm) / dt**2).clone()
+
+    u_tt[-1, :, :] = (
+        2.0 * u[-1, :, :] - 5.0 * u[-2, :, :] + 4.0 * u[-3, :, :] - u[-4, :, :]
+    ) / dt**2
+
     return u_tt
 
 
@@ -83,20 +85,43 @@ def _time_stencil_4th(
     utp1: torch.Tensor,
     utp2: torch.Tensor,
     dt: float,
-    init_ut: torch.Tensor,
 ) -> torch.Tensor:
-    # Compute 4th-order u_tt everywhere
-    u_tt = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2) / dt**2
-    # Compute 2nd-order u_tt (IC-safe)
-    # near the start not enough values, so use 2nd-order u_tt
-    u_t_tm = u - utm1
-    u_t_tmm = utm1 - utm2
-    u_t_tmm = u_t_tmm.clone()
-    u_t_tmm[1, :, :] = dt * init_ut
-    u_tt_2pt = (u_t_tm - u_t_tmm) / dt**2
-    u_tt = u_tt.clone()
-    u_tt[1, :, :] = u_tt_2pt[1, :, :]
-    u_tt[2, :, :] = u_tt_2pt[2, :, :]
+    u_tt = (_fourth_derivative_1d(utm2, utm1, u, utp1, utp2) / dt**2).clone()
+
+    # left boundary
+    u_tt[0, :, :] = (
+        35.0 * u[0, :, :]
+        - 104.0 * u[1, :, :]
+        + 114.0 * u[2, :, :]
+        - 56.0 * u[3, :, :]
+        + 11.0 * u[4, :, :]
+    ) / (12.0 * dt**2)
+
+    u_tt[1, :, :] = (
+        11.0 * u[0, :, :]
+        - 20.0 * u[1, :, :]
+        + 6.0 * u[2, :, :]
+        + 4.0 * u[3, :, :]
+        - 1.0 * u[4, :, :]
+    ) / (12.0 * dt**2)
+
+    # right boundary: mirror of the left boundary
+    u_tt[-2, :, :] = (
+        -1.0 * u[-5, :, :]
+        + 4.0 * u[-4, :, :]
+        + 6.0 * u[-3, :, :]
+        - 20.0 * u[-2, :, :]
+        + 11.0 * u[-1, :, :]
+    ) / (12.0 * dt**2)
+
+    u_tt[-1, :, :] = (
+        11.0 * u[-5, :, :]
+        - 56.0 * u[-4, :, :]
+        + 114.0 * u[-3, :, :]
+        - 104.0 * u[-2, :, :]
+        + 35.0 * u[-1, :, :]
+    ) / (12.0 * dt**2)
+
     return u_tt
 
 
@@ -135,4 +160,4 @@ class TimeOperator4thOrder(TemporalOperator):
         utm2, utm1, utp1, utp2 = _patch_time_neighbors_4th(
             u, utm2, utm1, utp1, utp2, dt_nd, init_ut
         )
-        return _time_stencil_4th(u, utm2, utm1, utp1, utp2, dt_nd, init_ut)
+        return _time_stencil_4th(u, utm2, utm1, utp1, utp2, dt_nd)
