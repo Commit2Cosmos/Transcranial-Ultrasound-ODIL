@@ -101,9 +101,16 @@ class Wavefield:
     def amplitude(self, value: np.ndarray | torch.Tensor) -> None:
         Nt = self.grid.nt
         Nx, Ny = self.grid.shape
-        self._amplitude = torch.as_tensor(
-            np.asarray(value).reshape(Nt, Nx, Ny), dtype=self.dtype, device=self.device
-        )
+        if isinstance(value, torch.Tensor):
+            self._amplitude = value.to(dtype=self.dtype, device=self.device).reshape(
+                Nt, Nx, Ny
+            )
+        else:
+            self._amplitude = torch.as_tensor(
+                np.asarray(value).reshape(Nt, Nx, Ny),
+                dtype=self.dtype,
+                device=self.device,
+            )
 
     @property
     def wavespeed(self) -> torch.Tensor:
