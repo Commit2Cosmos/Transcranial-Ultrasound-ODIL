@@ -17,9 +17,21 @@ class Conditions(ABC):
 class NeumannMirrorBC2nd(Conditions):
     """Mirror ghost neighbours for 2nd-order spatial stencils
     (zero normal derivative).
-    Has the effect of undoing the periodicity introduced by .roll,
-    but is a valid BC
     """
+
+    @staticmethod
+    def _patch_first(neighbour: torch.Tensor, replacement: torch.Tensor, axis: int):
+        # Replace the ``axis=0`` slice along the given spatial axis (1 or 2).
+        if axis == 1:
+            return torch.cat([replacement.unsqueeze(1), neighbour[:, 1:, :]], dim=1)
+        return torch.cat([replacement.unsqueeze(2), neighbour[:, :, 1:]], dim=2)
+
+    @staticmethod
+    def _patch_last(neighbour: torch.Tensor, replacement: torch.Tensor, axis: int):
+        # Replace the ``axis=-1`` slice along the given spatial axis (1 or 2).
+        if axis == 1:
+            return torch.cat([neighbour[:, :-1, :], replacement.unsqueeze(1)], dim=1)
+        return torch.cat([neighbour[:, :, :-1], replacement.unsqueeze(2)], dim=2)
 
     def patch_spatial_neighbors(
         self,
@@ -29,14 +41,10 @@ class NeumannMirrorBC2nd(Conditions):
         uyp: torch.Tensor,
         utm: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        uxm = uxm.clone()
-        uxp = uxp.clone()
-        uym = uym.clone()
-        uyp = uyp.clone()
-        uxm[:, 0, :] = utm[:, 1, :]  # left edge: ghost left  <- copy cell 1
-        uxp[:, -1, :] = utm[:, -2, :]  # right edge: ghost right <- copy cell nx-2
-        uym[:, :, 0] = utm[:, :, 1]  # bottom
-        uyp[:, :, -1] = utm[:, :, -2]  # top
+        uxm = self._patch_first(uxm, utm[:, 1, :], axis=1)
+        uxp = self._patch_last(uxp, utm[:, -2, :], axis=1)
+        uym = self._patch_first(uym, utm[:, :, 1], axis=2)
+        uyp = self._patch_last(uyp, utm[:, :, -2], axis=2)
         return uxm, uxp, uym, uyp
 
     def apply(self, *args, **kwargs):
@@ -48,6 +56,24 @@ class NeumannMirrorBC4th(Conditions):
     Has the effect of undoing the periodicity introduced by .roll,
     but is a valid BC
     """
+
+    @staticmethod
+    def _replace_x_front(n: torch.Tensor, r0: torch.Tensor, r1: torch.Tensor):
+        # Override n[:, 0, :] with r0 and n[:, 1, :] with r1 (out-of-place).
+        return torch.cat([r0.unsqueeze(1), r1.unsqueeze(1), n[:, 2:, :]], dim=1)
+
+    @staticmethod
+    def _replace_x_back(n: torch.Tensor, rm2: torch.Tensor, rm1: torch.Tensor):
+        # Override n[:, -2, :] with rm2 and n[:, -1, :] with rm1.
+        return torch.cat([n[:, :-2, :], rm2.unsqueeze(1), rm1.unsqueeze(1)], dim=1)
+
+    @staticmethod
+    def _replace_y_front(n: torch.Tensor, r0: torch.Tensor, r1: torch.Tensor):
+        return torch.cat([r0.unsqueeze(2), r1.unsqueeze(2), n[:, :, 2:]], dim=2)
+
+    @staticmethod
+    def _replace_y_back(n: torch.Tensor, rm2: torch.Tensor, rm1: torch.Tensor):
+        return torch.cat([n[:, :, :-2], rm2.unsqueeze(2), rm1.unsqueeze(2)], dim=2)
 
     def patch_spatial_neighbors(
         self,
@@ -61,28 +87,16 @@ class NeumannMirrorBC4th(Conditions):
         uyp2: torch.Tensor,
         utm: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        uxm2 = uxm2.clone()
-        uxm = uxm.clone()
-        uxp = uxp.clone()
-        uxp2 = uxp2.clone()
-        uym2 = uym2.clone()
-        uym = uym.clone()
-        uyp = uyp.clone()
-        uyp2 = uyp2.clone()
+        # Mirror ghosts: same semantics as the original in-place patcher.
+        uxm = torch.cat([utm[:, 1:2, :], uxm[:, 1:, :]], dim=1)  # uxm[0] <- u[1]
+        uxp = torch.cat([uxp[:, :-1, :], utm[:, -2:-1, :]], dim=1)  # uxp[-1] <- u[-2]
+        uxm2 = self._replace_x_front(uxm2, utm[:, 2, :], utm[:, 1, :])
+        uxp2 = self._replace_x_back(uxp2, utm[:, -2, :], utm[:, -3, :])
 
-        uxm[:, 0, :] = utm[:, 1, :]  # fix at i=0 using u1
-        uxp[:, -1, :] = utm[:, -2, :]  # at the last cell, use u_{nx-2}
-        uxm2[:, 0, :] = utm[:, 2, :]  # fix at i=0 using u2
-        uxm2[:, 1, :] = utm[:, 1, :]  # fix at i=1 using u1
-        uxp2[:, -1, :] = utm[:, -3, :]  # at the last cell, use u_{nx-3}
-        uxp2[:, -2, :] = utm[:, -2, :]  # at the second last cell, use u_{nx-2}
-        # same pattern for the y-direction
-        uym[:, :, 0] = utm[:, :, 1]
-        uyp[:, :, -1] = utm[:, :, -2]
-        uym2[:, :, 0] = utm[:, :, 2]
-        uym2[:, :, 1] = utm[:, :, 1]
-        uyp2[:, :, -1] = utm[:, :, -3]
-        uyp2[:, :, -2] = utm[:, :, -2]
+        uym = torch.cat([utm[:, :, 1:2], uym[:, :, 1:]], dim=2)
+        uyp = torch.cat([uyp[:, :, :-1], utm[:, :, -2:-1]], dim=2)
+        uym2 = self._replace_y_front(uym2, utm[:, :, 2], utm[:, :, 1])
+        uyp2 = self._replace_y_back(uyp2, utm[:, :, -2], utm[:, :, -3])
 
         return uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2
 
