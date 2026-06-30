@@ -53,8 +53,7 @@ class Grid:
     # characteristic scales for non-dimensionalisation; None -> sensible defaults
     L0: Optional[float] = None
     c0: Optional[float] = None
-    # TODO: make settable
-    device: torch.device = field(init=False)
+    device: torch.device = torch.device("cpu")
     dtype: torch.dtype = torch.float32
 
     # derived
@@ -84,9 +83,25 @@ class Grid:
     def __post_init__(self):
         self.interior_nx, self.interior_ny = self.interior_shape
         (ix_min, ix_max), (iy_min, iy_max) = self.interior_extent
-        # TODO: add mps support∑
-        # self.device = torch.device("mps" if torch.mps.is_available() else "cpu")
-        self.device = torch.device("cpu")
+
+        if self.device.type == "mps":
+            mps_backend = getattr(torch.backends, "mps", None)
+            if mps_backend is None or not mps_backend.is_available():
+                import warnings
+
+                warnings.warn(
+                    "MPS requested but not available; falling back to CPU.",
+                    RuntimeWarning,
+                )
+                self.device = torch.device("cpu")
+        elif self.device.type == "cuda" and not torch.cuda.is_available():
+            import warnings
+
+            warnings.warn(
+                "CUDA requested but not available; falling back to CPU.",
+                RuntimeWarning,
+            )
+            self.device = torch.device("cpu")
 
         self.dx = (ix_max - ix_min) / (self.interior_nx - 1)
         self.dy = (iy_max - iy_min) / (self.interior_ny - 1)
