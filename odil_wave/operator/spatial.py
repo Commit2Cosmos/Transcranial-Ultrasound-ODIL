@@ -1,29 +1,16 @@
-"""Spatial finite-difference operators (Laplacian)."""
+"""Spatial finite-difference operators (Laplacian).
+"""
 
 from abc import abstractmethod
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 
 from .base import DenseOperator
-from .conditions import NeumannMirrorBC2nd, NeumannMirrorBC4th
 from odil_wave.wavefield import Wavefield
 
 
-# second-order 5 point Laplacian
-def _laplacian_5pt(
-    utm: torch.Tensor,
-    uxm: torch.Tensor,
-    uxp: torch.Tensor,
-    uym: torch.Tensor,
-    uyp: torch.Tensor,
-    dx: float,
-    dy: float,
-) -> torch.Tensor:
-    return (uxm - 2.0 * utm + uxp) / dx**2 + (uym - 2.0 * utm + uyp) / dy**2
-
-
-# fourth-order uxx or uyy
 def _fourth_derivative_1d(
     um2: torch.Tensor,
     um1: torch.Tensor,
@@ -35,12 +22,24 @@ def _fourth_derivative_1d(
     return (-um2 + 16.0 * um1 - 30.0 * u + 16.0 * up1 - up2) / 12.0
 
 
+def _apply_conv_laplacian(
+    utm: torch.Tensor, kernel: torch.Tensor, pad: int
+) -> torch.Tensor:
+    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror).
+
+    Handles arbitrary leading batch dims by collapsing them into the conv
+    batch dimension.
+    """
+    spatial = utm.shape[-2:]
+    leading = utm.shape[:-2]
+    x = utm.reshape(-1, 1, *spatial)
+    x = F.pad(x, (pad, pad, pad, pad), mode="reflect")
+    out = F.conv2d(x, kernel)
+    return out.reshape(*leading, *spatial)
+
+
 class SpatialOperator(DenseOperator):
     """Spatial Laplacian on the t-1 field, cell-centred grid."""
-
-    @abstractmethod
-    def gather_neighbors(self, utm: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        raise NotImplementedError
 
     @abstractmethod
     def apply(self, utm: torch.Tensor, bc=None, **kwargs) -> torch.Tensor:
@@ -50,67 +49,52 @@ class SpatialOperator(DenseOperator):
 
 @dataclass
 class Laplacian2ndOrder(SpatialOperator):
-    """2nd-order 5-point Laplacian."""
+    """2nd-order 5-point Laplacian via ``F.conv2d`` + reflect padding."""
 
     def __init__(self, wavefield: Wavefield):
         super().__init__(wavefield)
+        g = wavefield.grid
+        dx, dy = g.dx_nd, g.dy_nd
+        # Kernel laid out as (1, 1, H=NX-stencil, W=NY-stencil).
+        K = torch.zeros(1, 1, 3, 3, dtype=g.dtype, device=g.device)
+        K[0, 0, 0, 1] = 1.0 / dx**2  # uxm (h-1, w)
+        K[0, 0, 2, 1] = 1.0 / dx**2  # uxp (h+1, w)
+        K[0, 0, 1, 0] = 1.0 / dy**2  # uym (h, w-1)
+        K[0, 0, 1, 2] = 1.0 / dy**2  # uyp (h, w+1)
+        K[0, 0, 1, 1] = -2.0 / dx**2 - 2.0 / dy**2
+        self._kernel = K
 
-    # collects the four spatial neighbors of the t-1 field
-    def gather_neighbors(
-        self, utm: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        uxm = torch.roll(utm, 1, dims=1)  # neigbor to the left
-        uxp = torch.roll(utm, -1, dims=1)  # neigbor to the right
-        uym = torch.roll(utm, 1, dims=2)  # neigbor below
-        uyp = torch.roll(utm, -1, dims=2)  # neigbor above
-        return uxm, uxp, uym, uyp
-
-    def apply(
-        self, utm: torch.Tensor, bc: NeumannMirrorBC2nd | None = None
-    ) -> torch.Tensor:
-        bc = bc or NeumannMirrorBC2nd()
-        uxm, uxp, uym, uyp = self.gather_neighbors(utm)  # collect the neigbors
-        uxm, uxp, uym, uyp = bc.patch_spatial_neighbors(
-            uxm, uxp, uym, uyp, utm
-        )  # replace teh wrong periodic roll with the mirrored interior values
-        # Non-dimensional spacings: this returns L0^2 * (u_xx + u_yy).
-        dx = self.wavefield.grid.dx_nd
-        dy = self.wavefield.grid.dy_nd
-        return _laplacian_5pt(utm, uxm, uxp, uym, uyp, dx, dy)
+    def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
+        # ``bc`` kept for API compatibility; reflect padding *is* the Neumann
+        # mirror BC, so the explicit BC argument is redundant.
+        return _apply_conv_laplacian(utm, self._kernel, pad=1)
 
 
 @dataclass
 class Laplacian4thOrder(SpatialOperator):
-    """4th-order 9-point Laplacian."""
+    """4th-order 9-point Laplacian via ``F.conv2d`` + reflect padding."""
 
     def __init__(self, wavefield: Wavefield):
         super().__init__(wavefield)
+        g = wavefield.grid
+        dx, dy = g.dx_nd, g.dy_nd
+        # 5x5 cross kernel matching the original 1D 4th-order central stencil.
+        K = torch.zeros(1, 1, 5, 5, dtype=g.dtype, device=g.device)
+        cx = 1.0 / dx**2
+        cy = 1.0 / dy**2
+        # u_xx column at w=2
+        K[0, 0, 0, 2] = -1.0 / 12.0 * cx
+        K[0, 0, 1, 2] = 16.0 / 12.0 * cx
+        K[0, 0, 3, 2] = 16.0 / 12.0 * cx
+        K[0, 0, 4, 2] = -1.0 / 12.0 * cx
+        # u_yy row at h=2
+        K[0, 0, 2, 0] = -1.0 / 12.0 * cy
+        K[0, 0, 2, 1] = 16.0 / 12.0 * cy
+        K[0, 0, 2, 3] = 16.0 / 12.0 * cy
+        K[0, 0, 2, 4] = -1.0 / 12.0 * cy
+        # center contributes both -30/12 / dx^2 and -30/12 / dy^2
+        K[0, 0, 2, 2] = -30.0 / 12.0 * (cx + cy)
+        self._kernel = K
 
-    def gather_neighbors(self, utm: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        uxm2 = torch.roll(utm, 2, dims=1)  # two cells left(i-2,j)
-        uxm = torch.roll(utm, 1, dims=1)  # one cell left(i-1,j)
-        uxp = torch.roll(utm, -1, dims=1)  # one cell right(i+1,j)
-        uxp2 = torch.roll(utm, -2, dims=1)  # two cells right(i+2,j)
-        uym2 = torch.roll(utm, 2, dims=2)  # two cells down(i,j-2)
-        uym = torch.roll(utm, 1, dims=2)  # one cell down(i,j-1)
-        uyp = torch.roll(utm, -1, dims=2)  # one cell up(i,j+1)
-        uyp2 = torch.roll(utm, -2, dims=2)
-        return uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2
-
-    def apply(
-        self,
-        utm: torch.Tensor,
-        bc: NeumannMirrorBC4th | None = None,
-    ) -> torch.Tensor:
-        bc = bc or NeumannMirrorBC4th()
-        uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = self.gather_neighbors(utm)
-        neighbours = bc.patch_spatial_neighbors(
-            uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2, utm
-        )
-        uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = neighbours
-        # Non-dimensional spacings: this returns L0^2 * (u_xx + u_yy).
-        dx = self.wavefield.grid.dx_nd
-        dy = self.wavefield.grid.dy_nd
-        u_xx = _fourth_derivative_1d(uxm2, uxm, utm, uxp, uxp2) / dx**2
-        u_yy = _fourth_derivative_1d(uym2, uym, utm, uyp, uyp2) / dy**2
-        return u_xx + u_yy
+    def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
+        return _apply_conv_laplacian(utm, self._kernel, pad=2)
