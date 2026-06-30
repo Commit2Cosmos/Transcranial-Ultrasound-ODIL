@@ -48,16 +48,6 @@ class SourceSignal:
         ----------
         amplitude
             Peak of the waveform `s(t)`.
-        dimensionless
-            If True (default), ``amplitude`` is interpreted as the peak of
-            the *non-dimensional* source ``f' = t0**2 * f`` that the wave
-            equation actually consumes (see :class:`Grid`). Internally the
-            physical waveform is scaled by ``grid.natural_source_amplitude
-            = 1 / t0**2`` so passing ``amplitude=1.0`` always lands the
-            residual at O(1), independent of L0, c0, or f0.
-            If False, ``amplitude`` is the physical peak; the user is
-            responsible for choosing a value large enough that
-            ``t0**2 * amplitude`` is above the L-BFGS gradient tolerance.
         """
         self.grid = grid
         self.kind = kind
@@ -68,7 +58,9 @@ class SourceSignal:
         # and the internal physical amplitude actually fed to the waveform.
         self.amplitude = amplitude
         self._amplitude_phys = (
-            amplitude * grid.natural_source_amplitude if dimensionless else amplitude
+            amplitude * grid.natural_source_amplitude(f0)
+            if dimensionless
+            else amplitude
         )
         self.n_cycles = n_cycles
         self.envelope = envelope

@@ -146,10 +146,11 @@ class Grid:
         """Total grid shape (interior + PML)."""
         return (self.nx, self.ny)
 
-    @property
-    def natural_source_amplitude(self) -> float:
-        """Physical source amplitude whose non-dimensional form has unit peak."""
-        return 1.0 / self.t0**2
+    def natural_source_amplitude(self, f0: float) -> float:
+        """Physical source amplitude that lands the wavefield near O(1)."""
+        if f0 <= 0:
+            raise ValueError("f0 must be positive.")
+        return 2.0 * f0**2
 
     @property
     def interior_slice(self) -> Tuple[slice, slice]:
