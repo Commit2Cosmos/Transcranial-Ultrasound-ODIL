@@ -122,11 +122,22 @@ class PML(Conditions):
         self.sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
         self.sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
 
+        # Endpoint masks for the time derivative used in the damping term.
+        from .temporal import _make_endpoint_masks  # avoid circular import
+
+        self._mask_first, self._mask_last = _make_endpoint_masks(grid.nt, grid.device)
+
     def apply_residual(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
         from .temporal import _first_time_derivative  # avoid circular import
 
         dt_nd = self.wavefield.grid.dt_nd
-        u_t = _first_time_derivative(u, dt_nd, self.wavefield.init_ut_nd)
+        u_t = _first_time_derivative(
+            u,
+            dt_nd,
+            self.wavefield.init_ut_nd,
+            self._mask_first,
+            self._mask_last,
+        )
         return fu + self.weight * (self.sigma_sum * u_t + self.sigma_prod * u)
 
     def apply(self, fu: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
