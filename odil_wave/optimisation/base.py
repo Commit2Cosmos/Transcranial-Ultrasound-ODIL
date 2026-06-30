@@ -77,7 +77,9 @@ class LBFGSB(Optimiser):
         return n_iter, torch_opts
 
     def minimise(
-        self, on_iteration=None, **overrides
+        self,
+        on_iteration=None,
+        **overrides,
     ) -> Tuple[List[Wavefield], LossTape]:
         """Run the optimisation loop."""
         self.opts.update(overrides)
@@ -140,29 +142,35 @@ class LBFGSB(Optimiser):
             return L
 
         log_every = max(1, int(self.loss.callback.log_every))
-        for i in range(n_iter):
-            loss_value = optimiser.step(closure)
-            if isinstance(self.loss, InverseLoss):
-                # Final clamp after the full step.
-                if c_min is not None or c_max is not None:
-                    with torch.no_grad():
-                        c_interior_param.data.clamp_(min=c_min, max=c_max)
+        is_inverse = isinstance(self.loss, InverseLoss)
 
-                c_full_now = vm_in.build_full_c(c_interior_param).detach().cpu().numpy()
-                self.loss.callback.log_c(c_full_now)
-            else:
-                c_full_now = None
+        for i in range(n_iter):
+
+            loss_value = optimiser.step(closure)
+
+            if is_inverse and (c_min is not None or c_max is not None):
+                # Final clamp after the full step.
+                with torch.no_grad():
+                    c_interior_param.data.clamp_(min=c_min, max=c_max)
+
+            should_log = (i % log_every == 0) or (i == n_iter - 1)
+
+            # Build the on-device c_full only when something will read it.
+            # When neither log_c nor on_iteration needs it, skip the work.
+            c_full_now = None
+            if is_inverse and (should_log or on_iteration is not None):
+                c_full_now = vm_in.build_full_c(c_interior_param).detach()
 
             if on_iteration is not None:
                 on_iteration(i, c_full_now)
 
-            if i % log_every == 0 or i == n_iter - 1:
-                self.loss.callback.log(
-                    float(loss_value.detach().cpu()),
-                    self.loss._last_residuals,
-                )
-
-            print(f"Iteration: {i}")
+            if should_log:
+                # Single device->host sync per logging step.
+                loss_scalar = float(loss_value.detach().cpu())
+                self.loss.callback.log(loss_scalar, self.loss._last_residuals)
+                if c_full_now is not None:
+                    self.loss.callback.log_c(c_full_now.cpu().numpy())
+                print(f"Iteration: {i} | loss = {loss_scalar:.6e}")
 
         # Build returned wavefields with hard zero IC row, all sharing one
         # VelocityModel reference so we don't carry n_shots copies of c.
