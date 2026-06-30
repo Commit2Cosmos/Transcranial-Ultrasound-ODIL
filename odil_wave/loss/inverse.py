@@ -15,7 +15,7 @@ class InverseLoss(DiscreteLoss):
       + w_data * sum_s mean(r_data_s ** 2)
       + w_reg  * R(c_interior)            (if a Regulariser is attached)
 
-    `normalize_data` rescales the receiver traces that enter the data
+    ``normalize_data`` rescales the receiver traces that enter the data
     residual (the only place the wavefield meets observations in a
     loss-relevant way). Modes:
       - None / "none":   off — raw amplitudes (default, unchanged).
@@ -26,8 +26,6 @@ class InverseLoss(DiscreteLoss):
                          every channel equal weight regardless of natural
                          amplitude.
       - "global":        per-shot global max-abs (one scalar per shot).
-    Note: enabling normalisation changes the magnitude of the data term, so
-    the `w_data` weight typically needs re-tuning relative to `w_pde`.
     """
 
     def __init__(
@@ -62,13 +60,7 @@ class InverseLoss(DiscreteLoss):
         return observed_wavefield
 
     def _compute_trace_scale(self) -> torch.Tensor | None:
-        """Per-shot/-receiver scale factor derived from `d_obs` (or None).
-
-        Shape is broadcastable against an extracted trace tensor `(NT, n_rcv)`:
-          - per_receiver -> (n_shots, 1, n_rcv)
-          - global       -> (n_shots, 1, 1)
-        Returned detached so the constant doesn't drag gradients.
-        """
+        """Per-shot/-receiver scale factor derived from `d_obs` (or None)."""
         if self.normalize_data is None or self.normalize_data == "none":
             return None
         i = self.config.geometry.recv_ij[:, 0]
@@ -85,29 +77,21 @@ class InverseLoss(DiscreteLoss):
             )
         return scale.clamp(min=1e-12).detach()
 
-    def _eval_pde_loss(
-        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int
-    ) -> torch.Tensor:
-        return self.config.wave_eq.residual(amp, wsp, self.sources[shot_idx])
+    def _residuals(
+        self, amp: torch.Tensor, wsp: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # amp, sources: (n_shots, NT, NX, NY)
+        pde = self.config.wave_eq.residual(amp, wsp, self.sources)
 
-    def _eval_data_loss(self, d_syn: torch.Tensor, shot_idx: int) -> torch.Tensor:
         i = self.config.geometry.recv_ij[:, 0]
         j = self.config.geometry.recv_ij[:, 1]
-        syn_tr = d_syn[:, i, j]
-        obs_tr = self.d_obs[shot_idx, :, i, j]
+        syn_tr = amp[:, :, i, j]  # (n_shots, NT, n_rcv)
+        obs_tr = self.d_obs[:, :, i, j]  # (n_shots, NT, n_rcv)
         if self._trace_scale is not None:
-            scale = self._trace_scale[shot_idx]  # (1, n_rcv) or (1, 1)
-            syn_tr = syn_tr / scale
-            obs_tr = obs_tr / scale
-        return syn_tr - obs_tr
-
-    def _residuals(
-        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int = 0
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return (
-            self._eval_pde_loss(amp, wsp, shot_idx),
-            self._eval_data_loss(amp, shot_idx),
-        )
+            syn_tr = syn_tr / self._trace_scale
+            obs_tr = obs_tr / self._trace_scale
+        data = syn_tr - obs_tr
+        return pde, data
 
     def evaluate(
         self,
@@ -115,21 +99,17 @@ class InverseLoss(DiscreteLoss):
         c_full: torch.Tensor,
         c_interior: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        n_shots = amp.shape[0]
-        residuals = [self._residuals(amp[s], c_full, s) for s in range(n_shots)]
+        r_pde, r_data = self._residuals(amp, c_full)
 
         w = self.config.weights
-        pde_terms = torch.stack([torch.mean(r[0] ** 2) for r in residuals]).sum()
-        data_terms = torch.stack([torch.mean(r[1] ** 2) for r in residuals]).sum()
+        pde_terms = (r_pde**2).mean(dim=(1, 2, 3)).sum()
+        data_terms = (r_data**2).mean(dim=(1, 2)).sum()
         L = w["pde"] * pde_terms + w["data"] * data_terms
 
         if self.config.regulariser is not None and c_interior is not None:
             L = L + w["reg"] * self.config.regulariser(c_interior)
 
         self.evaluations += 1
-        self._last_residuals = (
-            torch.stack([r[0].detach() for r in residuals]),
-            torch.stack([r[1].detach() for r in residuals]),
-        )
+        self._last_residuals = (r_pde.detach(), r_data.detach())
 
         return L

@@ -41,7 +41,6 @@ class DiscreteLoss(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _residuals(
-        self, amp: torch.Tensor, wsp: torch.Tensor, shot_idx: int
-    ) -> torch.Tensor:
+    def _residuals(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
+        """Vectorised residual on shot-batched inputs (``amp.shape[0] == n_shots``)."""
         raise NotImplementedError
