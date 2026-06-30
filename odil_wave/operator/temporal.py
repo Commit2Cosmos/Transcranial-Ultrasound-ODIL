@@ -2,13 +2,33 @@
 """
 
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
 from .base import DenseOperator
 from .spatial import _fourth_derivative_1d
 from odil_wave.wavefield import Wavefield
+
+
+def _make_endpoint_masks(
+    NT: int,
+    device: torch.device,
+    *,
+    second_layer: bool = False,
+):
+    """Boolean masks of shape ``(NT, 1, 1)`` that select endpoint time rows."""
+    mask_first = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
+    mask_first[0] = True
+    mask_last = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
+    mask_last[-1] = True
+    if not second_layer:
+        return mask_first, mask_last
+    mask_first2 = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
+    mask_first2[1] = True
+    mask_last2 = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
+    mask_last2[-2] = True
+    return mask_first, mask_first2, mask_last, mask_last2
 
 
 def _ic_ghost_row(u: torch.Tensor, dt: float, init_ut: torch.Tensor, k: float):
@@ -18,14 +38,20 @@ def _ic_ghost_row(u: torch.Tensor, dt: float, init_ut: torch.Tensor, k: float):
 
 
 def _first_time_derivative(
-    u: torch.Tensor, dt: float, init_ut: torch.Tensor
+    u: torch.Tensor,
+    dt: float,
+    init_ut: torch.Tensor,
+    mask_first: torch.Tensor,
+    mask_last: torch.Tensor,
 ) -> torch.Tensor:
     """Centered du/dt on the full field, IC-consistent at the ends."""
     utm1 = torch.roll(u, 1, dims=-3)
     utp1 = torch.roll(u, -1, dims=-3)
-    utm1 = torch.cat([_ic_ghost_row(u, dt, init_ut, 1.0), utm1[..., 1:, :, :]], dim=-3)
-    # One-sided at the final step (no future sample) -> reuse u[-1].
-    utp1 = torch.cat([utp1[..., :-1, :, :], u[..., -1:, :, :]], dim=-3)
+    # IC: at t=0, the rolled-in value should be u[0] - dt*init_ut, not u[-1].
+    ghost_m1 = _ic_ghost_row(u, dt, init_ut, 1.0)
+    utm1 = torch.where(mask_first, ghost_m1, utm1)
+    # No future sample at the last step: reuse u[-1] (one-sided).
+    utp1 = torch.where(mask_last, u[..., -1:, :, :], utp1)
     return (utp1 - utm1) / (2.0 * dt)
 
 
@@ -33,39 +59,42 @@ def _time_stencil_2point(
     u: torch.Tensor,
     dt: float,
     init_ut: torch.Tensor,
+    mask_first: torch.Tensor,
+    mask_last: torch.Tensor,
 ) -> torch.Tensor:
     """Centred leapfrog u_tt in the interior; one-sided 4-point at endpoints."""
     utm = torch.roll(u, 1, dims=-3)
     utp = torch.roll(u, -1, dims=-3)
-    u_tt_centered = (utp - 2.0 * u + utm) / dt**2
+    u_tt_centered = (utp - 2.0 * u + utm) / dt**2  # wrong at t=0 and t=-1; masked below
 
     u_tt_first = (
         2.0 * u[..., 0, :, :]
         - 5.0 * u[..., 1, :, :]
         + 4.0 * u[..., 2, :, :]
         - u[..., 3, :, :]
-    ) / dt**2
+    ).unsqueeze(-3) / dt**2
     u_tt_last = (
         2.0 * u[..., -1, :, :]
         - 5.0 * u[..., -2, :, :]
         + 4.0 * u[..., -3, :, :]
         - u[..., -4, :, :]
-    ) / dt**2
+    ).unsqueeze(-3) / dt**2
 
-    return torch.cat(
-        [
-            u_tt_first.unsqueeze(-3),
-            u_tt_centered[..., 1:-1, :, :],
-            u_tt_last.unsqueeze(-3),
-        ],
-        dim=-3,
-    )
+    u_tt = torch.where(mask_first, u_tt_first, u_tt_centered)
+    u_tt = torch.where(mask_last, u_tt_last, u_tt)
+    return u_tt
 
 
 def _build_time_neighbors_4th(
-    u: torch.Tensor, dt: float, init_ut: torch.Tensor
+    u: torch.Tensor,
+    dt: float,
+    init_ut: torch.Tensor,
+    mask_first: torch.Tensor,
+    mask_first2: torch.Tensor,
+    mask_last: torch.Tensor,
+    mask_last2: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Assemble (utm2, utm1, utp1, utp2) with IC + endpoint patches, out-of-place."""
+    """Assemble (utm2, utm1, utp1, utp2) with IC + endpoint patches via where."""
     utm2 = torch.roll(u, 2, dims=-3)
     utm1 = torch.roll(u, 1, dims=-3)
     utp1 = torch.roll(u, -1, dims=-3)
@@ -74,17 +103,16 @@ def _build_time_neighbors_4th(
     ghost_m1 = _ic_ghost_row(u, dt, init_ut, 1.0)  # u_{-1} = u[0] - dt*init_ut
     ghost_m2 = _ic_ghost_row(u, dt, init_ut, 2.0)  # u_{-2} = u[0] - 2*dt*init_ut
 
-    # utm1[0] <- ghost_m1
-    utm1 = torch.cat([ghost_m1, utm1[..., 1:, :, :]], dim=-3)
-    # utm2[0] <- ghost_m2, utm2[1] <- ghost_m1
-    utm2 = torch.cat([ghost_m2, ghost_m1, utm2[..., 2:, :, :]], dim=-3)
+    # Front: utm1[0] <- ghost_m1; utm2[0] <- ghost_m2; utm2[1] <- ghost_m1.
+    utm1 = torch.where(mask_first, ghost_m1, utm1)
+    utm2 = torch.where(mask_first, ghost_m2, utm2)
+    utm2 = torch.where(mask_first2, ghost_m1, utm2)
 
-    # utp1[-1] <- u[-2]
-    utp1 = torch.cat([utp1[..., :-1, :, :], u[..., -2:-1, :, :]], dim=-3)
-    # utp2[-1] <- u[-3], utp2[-2] <- u[-1]
-    utp2 = torch.cat(
-        [utp2[..., :-2, :, :], u[..., -1:, :, :], u[..., -3:-2, :, :]], dim=-3
-    )
+    # Back: utp1[-1] <- u[-2]; utp2[-1] <- u[-3]; utp2[-2] <- u[-1].
+    utp1 = torch.where(mask_last, u[..., -2:-1, :, :], utp1)
+    utp2 = torch.where(mask_last, u[..., -3:-2, :, :], utp2)
+    utp2 = torch.where(mask_last2, u[..., -1:, :, :], utp2)
+
     return utm2, utm1, utp1, utp2
 
 
@@ -96,8 +124,10 @@ def _time_stencil_4th(
     utp2: torch.Tensor,
     dt: float,
     init_ut: torch.Tensor,
+    mask_first: torch.Tensor,
+    mask_first2: torch.Tensor,
 ) -> torch.Tensor:
-    """4th-order centred u_tt with one-sided 5-point stencils at t=0 and t=1."""
+    """4th-order centred u_tt; rows 0 and 1 replaced by one-sided 5-point stencils."""
     u_tt_centered = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2) / dt**2
 
     u_tt_0 = (
@@ -106,23 +136,18 @@ def _time_stencil_4th(
         + 114.0 * u[..., 2, :, :]
         - 56.0 * u[..., 3, :, :]
         + 11.0 * u[..., 4, :, :]
-    ) / (12.0 * dt**2)
+    ).unsqueeze(-3) / (12.0 * dt**2)
     u_tt_1 = (
         11.0 * u[..., 0, :, :]
         - 20.0 * u[..., 1, :, :]
         + 6.0 * u[..., 2, :, :]
         + 4.0 * u[..., 3, :, :]
         - u[..., 4, :, :]
-    ) / (12.0 * dt**2)
+    ).unsqueeze(-3) / (12.0 * dt**2)
 
-    return torch.cat(
-        [
-            u_tt_0.unsqueeze(-3),
-            u_tt_1.unsqueeze(-3),
-            u_tt_centered[..., 2:, :, :],
-        ],
-        dim=-3,
-    )
+    u_tt = torch.where(mask_first, u_tt_0, u_tt_centered)
+    u_tt = torch.where(mask_first2, u_tt_1, u_tt)
+    return u_tt
 
 
 class TemporalOperator(DenseOperator):
@@ -139,11 +164,23 @@ class TimeOperator2ndOrder(TemporalOperator):
     """2nd-order time stencil."""
 
     wavefield: Wavefield
+    _mask_first: torch.Tensor = field(init=False, repr=False)
+    _mask_last: torch.Tensor = field(init=False, repr=False)
+
+    def __post_init__(self):
+        g = self.wavefield.grid
+        self._mask_first, self._mask_last = _make_endpoint_masks(g.nt, g.device)
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
         # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
         init_ut = self.wavefield.init_ut_nd
-        return _time_stencil_2point(u, self.wavefield.grid.dt_nd, init_ut)
+        return _time_stencil_2point(
+            u,
+            self.wavefield.grid.dt_nd,
+            init_ut,
+            self._mask_first,
+            self._mask_last,
+        )
 
 
 @dataclass
@@ -151,10 +188,41 @@ class TimeOperator4thOrder(TemporalOperator):
     """4th-order time stencil."""
 
     wavefield: Wavefield
+    _mask_first: torch.Tensor = field(init=False, repr=False)
+    _mask_first2: torch.Tensor = field(init=False, repr=False)
+    _mask_last: torch.Tensor = field(init=False, repr=False)
+    _mask_last2: torch.Tensor = field(init=False, repr=False)
+
+    def __post_init__(self):
+        g = self.wavefield.grid
+        (
+            self._mask_first,
+            self._mask_first2,
+            self._mask_last,
+            self._mask_last2,
+        ) = _make_endpoint_masks(g.nt, g.device, second_layer=True)
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
         # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
         init_ut = self.wavefield.init_ut_nd
         dt_nd = self.wavefield.grid.dt_nd
-        utm2, utm1, utp1, utp2 = _build_time_neighbors_4th(u, dt_nd, init_ut)
-        return _time_stencil_4th(u, utm2, utm1, utp1, utp2, dt_nd, init_ut)
+        utm2, utm1, utp1, utp2 = _build_time_neighbors_4th(
+            u,
+            dt_nd,
+            init_ut,
+            self._mask_first,
+            self._mask_first2,
+            self._mask_last,
+            self._mask_last2,
+        )
+        return _time_stencil_4th(
+            u,
+            utm2,
+            utm1,
+            utp1,
+            utp2,
+            dt_nd,
+            init_ut,
+            self._mask_first,
+            self._mask_first2,
+        )
