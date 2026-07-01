@@ -62,7 +62,9 @@ class AcquisitionGeometry:
 
         self.n_receivers = n_receivers
         self.n_sources = n_receivers if n_sources is None else n_sources
-        self.sigma_s = 1.5 * max(grid.dx, grid.dy) if sigma_s is None else sigma_s
+        self.sigma_s = (
+            self._default_sigma_s(grid, source) if sigma_s is None else sigma_s
+        )
         self.a_frac = a_frac
         self.b_frac = b_frac
         self.ring_center = ring_center
@@ -70,6 +72,15 @@ class AcquisitionGeometry:
         self.recv_ij = self._place_ellipse(self.n_receivers)
         step = max(1, self.n_receivers // self.n_sources)
         self.src_ij = self.recv_ij[::step][: self.n_sources]
+
+    @staticmethod
+    def _default_sigma_s(grid: Grid, source: SourceSignal) -> float:
+        """Gaussian source width."""
+        h = max(grid.dx, grid.dy)
+        c_ref = grid.c_min if grid.c_min is not None else grid.c_max
+        f_max = 2.5 * source.f0
+        lambda_min = c_ref / f_max
+        return max(1.5 * h, lambda_min / (2.0 * math.pi))
 
     def _place_ellipse(self, n: int) -> torch.Tensor:
         """Return (n, 2) integer full-grid indices on an ellipse inside the interior."""
