@@ -6,6 +6,7 @@ from .conditions import (
 from .spatial import Laplacian2ndOrder, Laplacian4thOrder
 from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .utils import WaveEquation
+from .leapfrog import LeapfrogSolver
 
 __all__ = [
     "SparseOperator",
@@ -17,4 +18,5 @@ __all__ = [
     "TimeOperator2ndOrder",
     "TimeOperator4thOrder",
     "WaveEquation",
+    "LeapfrogSolver",
 ]
