@@ -38,9 +38,9 @@ def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
 class AcquisitionGeometry:
     """Elliptical array of transducers around the interior region.
 
-    `n_receivers` transducer positions record every shot. A subset
-    (`n_sources`, evenly spaced) act as shot sources. The temporal
-    source waveform is supplied by an injected `SourceSignal`.
+    `source_spatial` selects the spatial injection profile:
+      - ``"gaussian"`` (default): Gaussian blob of width `sigma_s`
+      - ``"point"``: unit Kronecker delta at the source grid node
     """
 
     def __init__(
@@ -53,6 +53,7 @@ class AcquisitionGeometry:
         a_frac: float = 0.55,
         b_frac: float = 0.70,
         ring_center: Tuple[float, float] = (0.0, 0.0),
+        source_spatial: str = "gaussian",
     ):
         self.grid = grid
         self.source = source
@@ -68,6 +69,7 @@ class AcquisitionGeometry:
         self.a_frac = a_frac
         self.b_frac = b_frac
         self.ring_center = ring_center
+        self.source_spatial = source_spatial
 
         self.recv_ij = self._place_ellipse(self.n_receivers)
         step = max(1, self.n_receivers // self.n_sources)
@@ -108,14 +110,21 @@ class AcquisitionGeometry:
         return float(self.grid.x[i]), float(self.grid.y[j])
 
     def source_field(self, src_idx: int) -> torch.Tensor:
-        """(NT, NX, NY) Gaussian-in-space, SourceSignal-in-time source field."""
-        x_src, y_src = self.src_position(src_idx)
-        spatial = torch.exp(
-            -(
-                ((self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2)
-                / self.sigma_s**2
+        """(NT, NX, NY) source field: SourceSignal in time, `source_spatial`
+        profile ('gaussian' blob or single-node 'point') in space."""
+        if self.source_spatial == "point":
+            i = int(self.src_ij[src_idx, 0])
+            j = int(self.src_ij[src_idx, 1])
+            spatial = torch.zeros(self.grid.shape, dtype=self.dtype, device=self.device)
+            spatial[i, j] = 1.0
+        else:
+            x_src, y_src = self.src_position(src_idx)
+            spatial = torch.exp(
+                -(
+                    ((self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2)
+                    / self.sigma_s**2
+                )
             )
-        )
         temporal = self.source.waveform(self.grid.t)
         return temporal.view(-1, 1, 1) * spatial.view(1, *self.grid.shape)
 
