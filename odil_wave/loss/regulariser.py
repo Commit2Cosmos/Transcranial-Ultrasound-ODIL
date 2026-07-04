@@ -32,7 +32,5 @@ class Regulariser:
         if self.kind == "tv_aniso":
             return torch.sum(torch.abs(dx_c)) + torch.sum(torch.abs(dy_c))
 
-        # TODO: implement the isotropic TV branch.
         if self.kind == "tv_iso":
-            eps = 1e-8
-            return torch.sum(torch.sqrt(dx_c**2 + dy_c**2 + eps))
+            return torch.sum(torch.sqrt(dx_c**2 + dy_c**2 + self.eps))
