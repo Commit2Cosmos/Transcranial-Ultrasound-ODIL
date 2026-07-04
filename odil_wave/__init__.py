@@ -3,7 +3,7 @@ from odil_wave.source import SourceSignal
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
-from odil_wave.operator import WaveEquation
+from odil_wave.operator import WaveEquation, LeapfrogSolver
 from odil_wave.loss import (
     LossConfig,
     LossTape,
@@ -20,6 +20,7 @@ __all__ = [
     "VelocityModel",
     "Wavefield",
     "WaveEquation",
+    "LeapfrogSolver",
     "LossConfig",
     "LossTape",
     "ForwardLoss",
