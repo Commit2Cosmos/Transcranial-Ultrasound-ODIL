@@ -71,6 +71,7 @@ class LossTape:
             "pde_residuals": [],
             "data_residuals": [],
             "c_history": [],
+            "pde_src_ratio": [],
         }
     )
     _norm_cache: dict = field(default_factory=lambda: {"pde": [], "data": []})
@@ -83,11 +84,18 @@ class LossTape:
             cache.append(float(np.linalg.norm(r)))
         return cache
 
-    def log(self, loss: float, residuals: Tuple[torch.Tensor, ...]) -> None:
+    def log(
+        self,
+        loss: float,
+        residuals: Tuple[torch.Tensor, ...],
+        pde_src_ratio: float | None = None,
+    ) -> None:
         self.history["loss"].append(loss)
         self.history["pde_residuals"].append(residuals[0].detach().cpu().numpy())
         if len(residuals) > 1:
             self.history["data_residuals"].append(residuals[1].detach().cpu().numpy())
+        if pde_src_ratio is not None:
+            self.history["pde_src_ratio"].append(pde_src_ratio)
 
     def log_c(self, c_arr: np.ndarray) -> None:
         """Record a snapshot of the full-grid velocity field at one outer step."""

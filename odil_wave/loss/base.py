@@ -33,7 +33,16 @@ class DiscreteLoss(ABC):
             * t0**2
         )
 
+        # RMS of the (pre-scaled) sources: reference scale for judging how
+        # converged a solve is via |r_pde| / |src|.
+        self.src_rms = float(self.sources.pow(2).mean().sqrt())
+
         self.evaluations = 0
+
+    def pde_src_ratio(self) -> float:
+        """|r_pde|_rms / |src|_rms of the last evaluation (1.0 ~ u = 0)."""
+        r_pde = self._last_residuals[0]
+        return float(r_pde.pow(2).mean().sqrt()) / max(self.src_rms, 1e-30)
 
     @abstractmethod
     def evaluate(self, *args, **kwargs) -> torch.Tensor:
