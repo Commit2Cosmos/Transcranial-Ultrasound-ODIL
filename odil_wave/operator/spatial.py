@@ -11,6 +11,11 @@ from .base import DenseOperator
 from odil_wave.wavefield import Wavefield
 
 
+# 10th-order 1D central FD coefficients for d²u/dx²
+_C10 = [5.0 / 3.0, -5.0 / 21.0, 5.0 / 126.0, -5.0 / 1008.0, 1.0 / 3150.0]
+_C10_CENTER = -5269.0 / 1800.0
+
+
 def _fourth_derivative_1d(
     um2: torch.Tensor,
     um1: torch.Tensor,
@@ -25,11 +30,7 @@ def _fourth_derivative_1d(
 def _apply_conv_laplacian(
     utm: torch.Tensor, kernel: torch.Tensor, pad: int
 ) -> torch.Tensor:
-    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror).
-
-    Handles arbitrary leading batch dims by collapsing them into the conv
-    batch dimension.
-    """
+    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror)."""
     spatial = utm.shape[-2:]
     leading = utm.shape[:-2]
     x = utm.reshape(-1, 1, *spatial)
@@ -65,8 +66,6 @@ class Laplacian2ndOrder(SpatialOperator):
         self._kernel = K
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
-        # ``bc`` kept for API compatibility; reflect padding *is* the Neumann
-        # mirror BC, so the explicit BC argument is redundant.
         return _apply_conv_laplacian(utm, self._kernel, pad=1)
 
 
@@ -98,3 +97,32 @@ class Laplacian4thOrder(SpatialOperator):
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
         return _apply_conv_laplacian(utm, self._kernel, pad=2)
+
+
+@dataclass
+class Laplacian10thOrder(SpatialOperator):
+    """10th-order 11-point Laplacian via ``F.conv2d`` + reflect padding."""
+
+    def __init__(self, wavefield: Wavefield):
+        super().__init__(wavefield)
+        g = wavefield.grid
+        dx, dy = g.dx_nd, g.dy_nd
+        cx = 1.0 / dx**2
+        cy = 1.0 / dy**2
+        K = torch.zeros(1, 1, 11, 11, dtype=g.dtype, device=g.device)
+        # u_xx: column at w=5 (spatial-x axis varies along dim-2 of the field).
+        for k, ck in enumerate(_C10):
+            offset = k + 1
+            K[0, 0, 5 - offset, 5] = ck * cx
+            K[0, 0, 5 + offset, 5] = ck * cx
+        K[0, 0, 5, 5] += _C10_CENTER * cx
+        # u_yy: row at h=5 (spatial-y axis varies along dim-3 of the field).
+        for k, ck in enumerate(_C10):
+            offset = k + 1
+            K[0, 0, 5, 5 - offset] = ck * cy
+            K[0, 0, 5, 5 + offset] = ck * cy
+        K[0, 0, 5, 5] += _C10_CENTER * cy
+        self._kernel = K
+
+    def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
+        return _apply_conv_laplacian(utm, self._kernel, pad=5)

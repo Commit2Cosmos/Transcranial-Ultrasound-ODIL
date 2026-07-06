@@ -8,7 +8,7 @@ from typing import List, Optional
 import torch
 
 from odil_wave.wavefield import Wavefield
-from .spatial import Laplacian2ndOrder, Laplacian4thOrder
+from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
 from .utils import WaveEquation
 
 
@@ -26,6 +26,8 @@ class LeapfrogSolver:
             lap_cls = Laplacian2ndOrder
         elif space_order == 4:
             lap_cls = Laplacian4thOrder
+        elif space_order == 10:
+            lap_cls = Laplacian10thOrder
         else:
             raise ValueError(f"Invalid space order: {space_order}")
 
@@ -42,7 +44,16 @@ class LeapfrogSolver:
         # Leapfrog limit: dt^2 * lambda_max(-c^2 lap_h) <= 4. The 2nd-order
         # Laplacian has max eigenvalue 4/h^2 per axis -> cfl <= 1; the
         # 4th-order stencil reaches (16/3)/h^2 -> cfl <= sqrt(3)/2.
-        cfl_limit = 1.0 if space_order == 2 else math.sqrt(3.0) / 2.0
+        if space_order == 2:
+            cfl_limit = 1.0
+        elif space_order == 4:
+            cfl_limit = math.sqrt(3.0) / 2.0
+        elif space_order == 10:
+            # 10th-order 1D second-derivative stencil has max eigenvalue
+            # approximately 6.8267 / h^2, so the 2D CFL limit is 2/sqrt(6.8267).
+            cfl_limit = 2.0 / math.sqrt(6.826666666666667)
+        else:
+            raise ValueError(f"Invalid space order: {space_order}")
         if cfl >= cfl_limit:
             raise ValueError(
                 f"CFL number {cfl:.3f} >= {cfl_limit:.3f} (space_order="
