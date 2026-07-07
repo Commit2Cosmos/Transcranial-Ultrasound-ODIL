@@ -3,7 +3,7 @@ import torch
 from odil_wave.wavefield import Wavefield
 from .base import DenseOperator
 from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
-from .spatial import Laplacian2ndOrder, Laplacian4thOrder
+from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
 from .conditions import (
     Conditions,
     NeumannMirrorBC2nd,
@@ -42,12 +42,17 @@ class WaveEquation:
             self._lap = Laplacian2ndOrder(self.wavefield)
         elif self.space_order == 4:
             self._lap = Laplacian4thOrder(self.wavefield)
+        elif self.space_order == 10:
+            self._lap = Laplacian10thOrder(self.wavefield)  
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
 
-        self._bc = (
-            NeumannMirrorBC2nd() if self.space_order == 2 else NeumannMirrorBC4th()
-        )
+        if self.space_order == 2:
+            self._bc = NeumannMirrorBC2nd()
+        elif self.space_order in (4, 10):
+            self._bc = NeumannMirrorBC4th()
+        else:
+            raise ValueError(f"Invalid space order: {self.space_order}")
         self._pml = PML(self.wavefield, self.pml_weight)
 
     def residual(

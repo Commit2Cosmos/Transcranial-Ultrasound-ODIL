@@ -281,22 +281,21 @@ class LBFGSB(Optimiser):
 class FirstOrderOptimiser(Optimiser):
     """Shared minimise loop for first-order optimisers (Adam, GD).
 
-    Matches :class:`LBFGSB` setup: batched ``(n_shots, NT-2, NX, NY)`` amplitudes,
-    hard zero + velocity IC rows, and periodic closed-form c-updates for inverse
-    problems (c is never a gradient variable).
+    Matches :class:`LBFGSB` setup: batched ``(n_shots, NT-2, NX, NY)`` amplitudes
+    and hard zero + velocity IC rows. For inverse problems, ``u`` and ``c`` are
+    updated alternately with separate PyTorch optimisers (block coordinate descent).
     """
 
     _TORCH_OPTIM_CLS: Optional[Type[torch.optim.Optimizer]] = None
     _DEFAULT_OPTS: dict = {}
     _TORCH_OPT_KEYS: frozenset = frozenset()
+    _SCHEDULE_KEYS = frozenset({"u_steps", "c_steps", "c_lr", "c_max_grad_norm"})
 
     def __init__(
         self,
         wavefield: Wavefield,
         loss: DiscreteLoss,
         clamp: bool = False,
-        c_update_every: int = 300,
-        c_update_alpha: float = 1.0,
         u_init=None,
         **opts,
     ) -> None:
@@ -304,21 +303,24 @@ class FirstOrderOptimiser(Optimiser):
         grid = wavefield.grid
         self.c_min = grid.c_min if clamp else None
         self.c_max = grid.c_max if clamp else None
-        self.c_update_every = int(c_update_every)
-        self.c_update_alpha = float(c_update_alpha)
         self.u_init = u_init
 
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
-    def _split_opts(self) -> Tuple[int, dict, Optional[float]]:
+    def _split_opts(self) -> Tuple[int, dict, Optional[float], Optional[float]]:
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
         max_grad_norm = opts.pop("max_grad_norm", None)
         if max_grad_norm is not None:
             max_grad_norm = float(max_grad_norm)
+        c_max_grad_norm = opts.pop("c_max_grad_norm", None)
+        if c_max_grad_norm is not None:
+            c_max_grad_norm = float(c_max_grad_norm)
+        for key in self._SCHEDULE_KEYS:
+            opts.pop(key, None)
         torch_opts = {k: v for k, v in opts.items() if k in self._TORCH_OPT_KEYS}
-        return n_iter, torch_opts, max_grad_norm
+        return n_iter, torch_opts, max_grad_norm, c_max_grad_norm
 
     def _seed_amplitudes(self, n_shots, dtype, device) -> torch.Tensor:
         """(n_shots, NT-2, NX, NY) initial inner rows from u_init/wavefield."""
@@ -346,32 +348,6 @@ class FirstOrderOptimiser(Optimiser):
             )
         return stack[:, 2:].contiguous()
 
-    def _prox_regularise(
-        self, c_star: torch.Tensor, illum: torch.Tensor
-    ) -> torch.Tensor:
-        """Solves ``min_c 0.5 * sum(w * (c - c*)**2) + lam * R(c)`` on the
-        interior map with ``w = illum / mean(illum)``
-        """
-        reg = self.loss.config.regulariser
-        lam = float(self.loss.config.weights.get("reg", 0.0))
-        if reg is None or lam <= 0.0:
-            return c_star
-        w = illum / illum.mean().clamp(min=1e-30)
-        c = c_star.detach().clone().requires_grad_(True)
-        prox_opt = torch.optim.LBFGS(
-            [c], max_iter=50, history_size=10, line_search_fn="strong_wolfe"
-        )
-
-        def prox_closure():
-            with torch.enable_grad():
-                prox_opt.zero_grad()
-                F = 0.5 * (w * (c - c_star) ** 2).sum() + lam * reg(c)
-                F.backward()
-            return F
-
-        prox_opt.step(prox_closure)
-        return c.detach()
-
     def minimise(
         self,
         on_iteration=None,
@@ -383,7 +359,13 @@ class FirstOrderOptimiser(Optimiser):
             )
 
         self.opts.update(overrides)
-        n_iter, torch_opts, max_grad_norm = self._split_opts()
+        n_iter, torch_opts, max_grad_norm, c_max_grad_norm = self._split_opts()
+
+        u_steps = int(self.opts.get("u_steps", 1))
+        c_steps = int(self.opts.get("c_steps", 1))
+        c_lr = float(self.opts.get("c_lr", torch_opts.get("lr", 1e-4)))
+        if c_max_grad_norm is None:
+            c_max_grad_norm = max_grad_norm
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -407,70 +389,74 @@ class FirstOrderOptimiser(Optimiser):
 
         is_inverse = isinstance(self.loss, InverseLoss)
         if is_inverse:
-            c_interior = vm_c_const[grid.interior_slice].clone()
+            c_interior_param = torch.nn.Parameter(
+                vm_c_const[grid.interior_slice].detach().clone()
+            )
         else:
-            c_interior = None
+            c_interior_param = None
 
-        optimiser = self._TORCH_OPTIM_CLS([u_inner_param], **torch_opts)
+        u_optimiser = self._TORCH_OPTIM_CLS([u_inner_param], **torch_opts)
+
+        if is_inverse:
+            c_torch_opts = dict(torch_opts)
+            c_torch_opts["lr"] = c_lr
+            c_optimiser = self._TORCH_OPTIM_CLS([c_interior_param], **c_torch_opts)
+        else:
+            c_optimiser = None
+
         c_min, c_max = self.c_min, self.c_max
-        alpha = self.c_update_alpha
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
 
         for i in range(n_iter):
-            optimiser.zero_grad()
-            amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
-            if is_inverse:
-                c_full = vm_in.build_full_c(c_interior)
-                L = self.loss.evaluate(amps, c_full, c_interior)
-            else:
-                L = self.loss.evaluate(amps, vm_c_const)
-            L.backward()
-            if max_grad_norm is not None and max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_([u_inner_param], max_norm=max_grad_norm)
-            optimiser.step()
-            loss_value = L
+            for _ in range(u_steps):
+                u_optimiser.zero_grad()
+                amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
+                if is_inverse:
+                    c_fixed = c_interior_param.detach()
+                    c_full = vm_in.build_full_c(c_fixed)
+                    L_u = self.loss.evaluate(amps, c_full, c_fixed)
+                else:
+                    L_u = self.loss.evaluate(amps, vm_c_const)
+                L_u.backward()
+                if max_grad_norm is not None and max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        [u_inner_param],
+                        max_norm=max_grad_norm,
+                    )
+                u_optimiser.step()
+                loss_value = L_u
 
-            if (
-                is_inverse
-                and self.c_update_every > 0
-                and (i + 1) % self.c_update_every == 0
-            ):
-                with torch.no_grad():
-                    amps = torch.cat(
-                        [zero_row_S, ic_row_S, u_inner_param.detach()], dim=1
+            if is_inverse and c_steps > 0:
+                for _ in range(c_steps):
+                    c_optimiser.zero_grad()
+                    amps_fixed = torch.cat(
+                        [zero_row_S, ic_row_S, u_inner_param.detach()],
+                        dim=1,
                     )
-                    c_star_full, illum_full = self.loss.config.wave_eq.c_closed_form(
-                        amps,
-                        self.loss.sources,
-                        c_current=vm_in.build_full_c(c_interior),
+                    c_full = vm_in.build_full_c(c_interior_param)
+                    L_c = self.loss.evaluate(
+                        amps_fixed,
+                        c_full,
+                        c_interior_param,
                     )
-                    c_star = c_star_full[grid.interior_slice]
-                    c_star = self._prox_regularise(
-                        c_star, illum_full[grid.interior_slice]
-                    )
-                    dc_rms = float((c_star - c_interior).pow(2).mean().sqrt())
-                    ratio_pre = self.loss.pde_src_ratio()
-                    c_interior.mul_(1.0 - alpha).add_(alpha * c_star)
-                    if c_min is not None or c_max is not None:
-                        c_interior.clamp_(min=c_min, max=c_max)
-                    r_post = self.loss.config.wave_eq.residual(
-                        amps, vm_in.build_full_c(c_interior), self.loss.sources
-                    )
-                    ratio_post = float(r_post.pow(2).mean().sqrt()) / max(
-                        self.loss.src_rms, 1e-30
-                    )
-                print(
-                    f"Iteration: {i} | closed-form c-update "
-                    f"(alpha={alpha:g}, |c* - c|_rms = {dc_rms:.3e}, "
-                    f"|r_pde|/|src| {ratio_pre:.3e} -> {ratio_post:.3e})"
-                )
+                    L_c.backward()
+                    if c_max_grad_norm is not None and c_max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            [c_interior_param],
+                            max_norm=c_max_grad_norm,
+                        )
+                    c_optimiser.step()
+                    with torch.no_grad():
+                        if c_min is not None or c_max is not None:
+                            c_interior_param.clamp_(min=c_min, max=c_max)
+                    loss_value = L_c
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
 
             c_full_now = None
             if is_inverse and (should_log or on_iteration is not None):
-                c_full_now = vm_in.build_full_c(c_interior).detach()
+                c_full_now = vm_in.build_full_c(c_interior_param.detach())
 
             if on_iteration is not None:
                 on_iteration(i, c_full_now)
@@ -491,7 +477,7 @@ class FirstOrderOptimiser(Optimiser):
         if isinstance(self.loss, ForwardLoss):
             vm_out = vm_in
         else:
-            c_full_final = vm_in.build_full_c(c_interior).detach()
+            c_full_final = vm_in.build_full_c(c_interior_param.detach())
             vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
 
         u_inner_final = u_inner_param.detach()
@@ -514,19 +500,24 @@ class FirstOrderOptimiser(Optimiser):
 class AdamOptimiser(FirstOrderOptimiser):
     """Adam optimiser for forward and inverse ODIL problems.
 
-    Uses the same nested c-update scheme as :class:`LBFGSB`. Each step is
-    cheaper than L-BFGS (one gradient evaluation, no line search) but
-    typically needs more outer iterations.
+    Inverse problems alternate Adam steps on the wavefield ``u`` and velocity
+    ``c`` with separate learning rates. Each outer step is cheaper than
+    L-BFGS but typically needs more iterations.
     """
 
     _TORCH_OPTIM_CLS = torch.optim.Adam
     _TORCH_OPT_KEYS = frozenset({"lr", "betas", "eps", "weight_decay", "amsgrad"})
     _DEFAULT_OPTS = {
-        "n_iter": 2000,
+        "n_iter": 200,
         "lr": 1e-3,
+        "c_lr": 1e-4,
+        "u_steps": 1,
+        "c_steps": 1,
         "betas": (0.9, 0.999),
         "eps": 1e-8,
         "weight_decay": 0.0,
+        "max_grad_norm": None,
+        "c_max_grad_norm": None,
     }
 
 
@@ -540,8 +531,13 @@ class GradientDescent(FirstOrderOptimiser):
         {"lr", "momentum", "dampening", "weight_decay", "nesterov"}
     )
     _DEFAULT_OPTS = {
-        "n_iter": 5000,
+        "n_iter": 100,
         "lr": 1e-4,
+        "c_lr": 1e-5,
+        "u_steps": 1,
+        "c_steps": 1,
         "momentum": 0.0,
         "weight_decay": 0.0,
+        "max_grad_norm": None,
+        "c_max_grad_norm": None,
     }
