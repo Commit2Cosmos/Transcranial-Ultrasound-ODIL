@@ -40,9 +40,20 @@ class DiscreteLoss(ABC):
         self.evaluations = 0
 
     def pde_src_ratio(self) -> float:
-        """|r_pde|_rms / |src|_rms of the last evaluation (1.0 ~ u = 0)."""
-        r_pde = self._last_residuals[0]
-        return float(r_pde.pow(2).mean().sqrt()) / max(self.src_rms, 1e-30)
+        """|r_pde|_rms / |src|_rms of the last evaluation."""
+
+        residuals = self._last_residuals
+
+        # New memory-safe format: scalar dictionary
+        if isinstance(residuals, dict):
+            if "pde_src_ratio" in residuals:
+                return float(residuals["pde_src_ratio"])
+            if "pde_rms" in residuals:
+                return float(residuals["pde_rms"]) / max(self.src_rms, 1e-30)
+
+        # Old format: tuple of full residual tensors
+        r_pde = residuals[0]
+        return float(r_pde.detach().pow(2).mean().sqrt().cpu()) / max(self.src_rms, 1e-30)
 
     @abstractmethod
     def evaluate(self, *args, **kwargs) -> torch.Tensor:
