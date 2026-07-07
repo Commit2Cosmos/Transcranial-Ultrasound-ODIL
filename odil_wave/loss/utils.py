@@ -61,69 +61,109 @@ class LossConfig:
 
 @dataclass
 class LossTape:
-    """Tape to store the loss + residuals + c-history during optimisation."""
+    """Tape to store scalar loss/residual diagnostics + optional c-history.
+
+    Important: this does NOT store full PDE/data residual tensors, because those
+    are huge and can make Jupyter memory grow until the kernel crashes.
+    """
 
     name: str = "Default LossTape"
     log_every: int = 1
+    store_c_history: bool = True
+    c_history_every: int = 1
+
     history: dict = field(
         default_factory=lambda: {
             "loss": [],
-            "pde_residuals": [],
-            "data_residuals": [],
-            "c_history": [],
+            "pde_rms": [],
+            "data_rms": [],
+            "pde_loss": [],
+            "data_loss": [],
             "pde_src_ratio": [],
+            "c_history": [],
         }
     )
-    _norm_cache: dict = field(default_factory=lambda: {"pde": [], "data": []})
     _result: object = field(init=False, default=None)
-
-    def _norms(self, key: str, cache_key: str) -> list:
-        residuals = self.history[key]
-        cache = self._norm_cache[cache_key]
-        for r in residuals[len(cache) :]:
-            cache.append(float(np.linalg.norm(r)))
-        return cache
 
     def log(
         self,
         loss: float,
-        residuals: Tuple[torch.Tensor, ...],
+        residuals,
         pde_src_ratio: float | None = None,
     ) -> None:
-        self.history["loss"].append(loss)
-        self.history["pde_residuals"].append(residuals[0].detach().cpu().numpy())
-        if len(residuals) > 1:
-            self.history["data_residuals"].append(residuals[1].detach().cpu().numpy())
+        """Log only scalar diagnostics.
+
+        Accepts either:
+          - residuals as dict, e.g. {"pde_rms": ..., "data_rms": ...}
+          - residuals as tuple of tensors, e.g. (r_pde, r_data)
+
+        In both cases, only floats are stored.
+        """
+        self.history["loss"].append(float(loss))
+
+        if isinstance(residuals, dict):
+            for key, value in residuals.items():
+                self.history.setdefault(key, []).append(float(value))
+
+        else:
+            r_pde = residuals[0]
+            with torch.no_grad():
+                self.history["pde_rms"].append(
+                    float(r_pde.detach().pow(2).mean().sqrt().cpu())
+                )
+                self.history["pde_loss"].append(
+                    float(r_pde.detach().pow(2).mean().cpu())
+                )
+
+                if len(residuals) > 1:
+                    r_data = residuals[1]
+                    self.history["data_rms"].append(
+                        float(r_data.detach().pow(2).mean().sqrt().cpu())
+                    )
+                    self.history["data_loss"].append(
+                        float(r_data.detach().pow(2).mean().cpu())
+                    )
+
         if pde_src_ratio is not None:
-            self.history["pde_src_ratio"].append(pde_src_ratio)
+            self.history["pde_src_ratio"].append(float(pde_src_ratio))
 
     def log_c(self, c_arr: np.ndarray) -> None:
-        """Record a snapshot of the full-grid velocity field at one outer step."""
-        self.history["c_history"].append(np.asarray(c_arr).copy())
+        """Record a snapshot of the full-grid velocity field.
+
+        This is much smaller than storing PDE residuals, but can still grow
+        if logged every iteration on a fine grid.
+        """
+        if not self.store_c_history:
+            return
+
+        n_logged = len(self.history["loss"])
+        if n_logged % self.c_history_every != 0:
+            return
+
+        self.history["c_history"].append(np.asarray(c_arr, dtype=np.float32).copy())
 
     def show(self, title: str = "Loss History"):
         assert len(self.history["loss"]) > 0, "No loss history to show."
-        ncols = 3 if len(self.history["data_residuals"]) > 0 else 2
-        fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
-        pde_norms = self._norms("pde_residuals", "pde")
+        has_data = len(self.history.get("data_rms", [])) > 0
+        ncols = 3 if has_data else 2
+        fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
         axs[0].semilogy(self.history["loss"])
         axs[0].set_title("Loss")
         axs[0].set_xlabel("Iteration")
         axs[0].set_ylabel("Loss Value")
 
-        axs[1].semilogy(pde_norms)
-        axs[1].set_title("PDE Residual Norms")
+        axs[1].semilogy(self.history["pde_rms"])
+        axs[1].set_title("PDE RMS Residual")
         axs[1].set_xlabel("Iteration")
-        axs[1].set_ylabel("Residual Norm")
+        axs[1].set_ylabel("RMS")
 
-        if ncols == 3:
-            data_norms = self._norms("data_residuals", "data")
-            axs[2].semilogy(data_norms)
-            axs[2].set_title("Data Residual Norms")
+        if has_data:
+            axs[2].semilogy(self.history["data_rms"])
+            axs[2].set_title("Data RMS Residual")
             axs[2].set_xlabel("Iteration")
-            axs[2].set_ylabel("Residual Norm")
+            axs[2].set_ylabel("RMS")
 
         fig.suptitle(title)
         plt.tight_layout()
@@ -156,6 +196,9 @@ class LossTape:
                     vcenter=_vmin + 0.25 * (_vmax - _vmin),
                     vmax=_vmax,
                 )
+        else:
+            _vmin = None
+            _vmax = None
 
         imshow_kw = dict(
             origin="lower",
@@ -163,6 +206,7 @@ class LossTape:
             cmap=cmap,
             animated=True,
         )
+
         if norm is not None:
             imshow_kw["norm"] = norm
         else:
@@ -173,16 +217,20 @@ class LossTape:
         im = ax.imshow(stack[0].T, **imshow_kw)
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
-        ttl = ax.set_title(f"{title}  (iter 0)")
+        ttl = ax.set_title(f"{title}  (frame 0)")
         plt.colorbar(im, ax=ax, label="c [m/s]", shrink=0.85)
 
         def update(frame: int):
             im.set_data(stack[frame].T)
-            ttl.set_text(f"{title}  (iter {frame})")
+            ttl.set_text(f"{title}  (frame {frame})")
             return im, ttl
 
         anim = animation.FuncAnimation(
-            fig, update, frames=stack.shape[0], interval=1000 / fps, blit=False
+            fig,
+            update,
+            frames=stack.shape[0],
+            interval=1000 / fps,
+            blit=False,
         )
         anim.save(filename, writer=animation.PillowWriter(fps=fps))
         plt.close(fig)
@@ -196,10 +244,10 @@ class LossTape:
         title: str = "Velocity recovery",
         norm=None,
     ):
-        """4-panel: truth | recovered | (recovered - truth) | ||c-c*||_rel vs iter."""
+        """4-panel: truth | recovered | recovered-truth | c-history error."""
         grid = truth.grid
-        c_true_np = truth.c.cpu().numpy()
-        c_final_np = recovered.c.cpu().numpy()
+        c_true_np = truth.c.detach().cpu().numpy()
+        c_final_np = recovered.c.detach().cpu().numpy()
         diff = c_final_np - c_true_np
 
         (xmin, xmax), (ymin, ymax) = grid.extent
@@ -208,18 +256,17 @@ class LossTape:
         vmax = float(max(c_true_np.max(), c_final_np.max()))
         dmax = float(np.max(np.abs(diff))) * 1.05 + 1e-9
 
-        rx = grid.x[geom.recv_ij[:, 0]].cpu().numpy() * x_mult
-        ry = grid.y[geom.recv_ij[:, 1]].cpu().numpy() * x_mult
-        sx = grid.x[geom.src_ij[:, 0]].cpu().numpy() * x_mult
-        sy = grid.y[geom.src_ij[:, 1]].cpu().numpy() * x_mult
+        rx = grid.x[geom.recv_ij[:, 0]].detach().cpu().numpy() * x_mult
+        ry = grid.y[geom.recv_ij[:, 1]].detach().cpu().numpy() * x_mult
+        sx = grid.x[geom.src_ij[:, 0]].detach().cpu().numpy() * x_mult
+        sy = grid.y[geom.src_ij[:, 1]].detach().cpu().numpy() * x_mult
 
-        if norm is None:
-            if vmax > vmin:
-                norm = velocity_norm(
-                    vmin=vmin,
-                    vcenter=vmin + 0.25 * (vmax - vmin),
-                    vmax=vmax,
-                )
+        if norm is None and vmax > vmin:
+            norm = velocity_norm(
+                vmin=vmin,
+                vcenter=vmin + 0.25 * (vmax - vmin),
+                vmax=vmax,
+            )
 
         fig, axes = plt.subplots(2, 2, figsize=(11, 9))
         panels = [
@@ -227,22 +274,25 @@ class LossTape:
             (axes[0, 1], c_final_np, "viridis", vmin, vmax, "recovered"),
             (axes[1, 0], diff, "RdBu_r", -dmax, dmax, "recovered - truth"),
         ]
-        for ax, field_, cmap, lo, hi, t in panels:
+
+        for ax, field_, cmap_, lo, hi, panel_title in panels:
             imshow_kw = dict(
                 origin="lower",
                 extent=[xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult],
-                cmap=cmap,
+                cmap=cmap_,
             )
-            if norm is not None and cmap == "viridis":
+
+            if norm is not None and cmap_ == "viridis":
                 imshow_kw["norm"] = norm
             else:
                 imshow_kw["vmin"] = lo
                 imshow_kw["vmax"] = hi
+
             im = ax.imshow(field_.T, **imshow_kw)
             ax.set_xlabel(f"x [{x_unit}]")
             ax.set_ylabel(f"y [{x_unit}]")
             ax.set_aspect("equal")
-            ax.set_title(t)
+            ax.set_title(panel_title)
             ax.scatter(rx, ry, marker="v", c="lime", edgecolor="black", s=25, zorder=5)
             ax.scatter(sx, sy, marker="*", c="red", edgecolor="black", s=80, zorder=6)
             plt.colorbar(im, ax=ax, shrink=0.85)
@@ -255,7 +305,7 @@ class LossTape:
                 for c in self.history["c_history"]
             ]
             ax_err.semilogy(err_hist, color="tab:red")
-            ax_err.set_xlabel("iteration")
+            ax_err.set_xlabel("logged c snapshot")
             ax_err.set_ylabel(r"$\|c-c^*\|_\mathrm{rel}$")
             ax_err.set_title("c recovery error")
             ax_err.grid(alpha=0.3)
