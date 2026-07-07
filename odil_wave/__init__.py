@@ -11,7 +11,7 @@ from odil_wave.loss import (
     InverseLoss,
     Regulariser,
 )
-from odil_wave.optimisation import LBFGSB
+from odil_wave.optimisation import LBFGSB, AdamOptimiser, GradientDescent
 
 __all__ = [
     "Grid",
@@ -27,4 +27,6 @@ __all__ = [
     "InverseLoss",
     "Regulariser",
     "LBFGSB",
+    "AdamOptimiser",
+    "GradientDescent"
 ]
