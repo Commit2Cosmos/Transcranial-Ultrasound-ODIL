@@ -22,24 +22,47 @@ class Optimiser(ABC):
 
 
 class LBFGSB(Optimiser):
-    """`torch.optim.LBFGS`-based optimiser with a nested c-update scheme."""
+    """`torch.optim.LBFGS`-based optimiser with separate u and c LBFGS phases.
+
+    Each
+    outer iteration runs ``u_steps`` LBFGS steps on the wavefield (c detached)
+    followed by ``c_steps`` LBFGS steps on the velocity interior (u detached).
+    After every c phase the u curvature history is reset, because the Hessian
+    approximation built for the old c is stale for the new one.
+
+    Tip: LBFGS builds its curvature history across consecutive calls.  Setting
+    ``u_steps > 1`` (default 1) with ``c_steps=0`` is therefore much more
+    efficient for forward problems, while small ``c_steps`` (e.g. 1 every few
+    outer iterations via on_iteration) suit inverse problems.
+    """
 
     _DEFAULT_OPTS = {
         "n_iter": 100,
+        "u_steps": 1,
+        "c_steps": 1,
+        # u-LBFGS knobs
         "max_iter": 4,
         "history_size": 10,
         "line_search_fn": "strong_wolfe",
         "tolerance_grad": 1e-7,
         "tolerance_change": 1e-9,
+        # c-LBFGS knobs (independent from u-phase)
+        "c_lr": 1.0,
+        "c_max_iter": 4,
+        "c_history_size": 10,
     }
+    _LBFGS_KEYS = frozenset({
+        "lr", "max_iter", "max_eval",
+        "tolerance_grad", "tolerance_change",
+        "history_size", "line_search_fn",
+    })
+    _SCHEDULE_KEYS = frozenset({"u_steps", "c_steps", "c_lr", "c_max_iter", "c_history_size"})
 
     def __init__(
         self,
         wavefield: Wavefield,
         loss: DiscreteLoss,
         clamp: bool = False,
-        c_update_every: int = 300,
-        c_update_alpha: float = 1.0,
         u_init=None,
         **opts,
     ) -> None:
@@ -47,28 +70,28 @@ class LBFGSB(Optimiser):
         grid = wavefield.grid
         self.c_min = grid.c_min if clamp else None
         self.c_max = grid.c_max if clamp else None
-        self.c_update_every = int(c_update_every)
-        self.c_update_alpha = float(c_update_alpha)
         self.u_init = u_init
 
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
-    def _split_opts(self) -> Tuple[int, dict]:
+    def _split_opts(self) -> Tuple[int, int, int, dict, dict]:
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
-        # Only forward keys that torch.optim.LBFGS accepts.
-        allowed = {
-            "lr",
-            "max_iter",
-            "max_eval",
-            "tolerance_grad",
-            "tolerance_change",
-            "history_size",
-            "line_search_fn",
-        }
-        torch_opts = {k: v for k, v in opts.items() if k in allowed}
-        return n_iter, torch_opts
+        u_steps = int(opts.pop("u_steps", 1))
+        c_steps = int(opts.pop("c_steps", 1))
+        c_lr = float(opts.pop("c_lr", 1.0))
+        c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
+        c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
+
+        u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
+
+        c_torch_opts = dict(u_torch_opts)
+        c_torch_opts["lr"] = c_lr
+        c_torch_opts["max_iter"] = c_max_iter
+        c_torch_opts["history_size"] = c_history_size
+
+        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts
 
     def _seed_amplitudes(self, n_shots, dtype, device) -> torch.Tensor:
         """(n_shots, NT-2, NX, NY) initial inner rows from u_init/wavefield."""
@@ -96,42 +119,14 @@ class LBFGSB(Optimiser):
             )
         return stack[:, 2:].contiguous()
 
-    def _prox_regularise(
-        self, c_star: torch.Tensor, illum: torch.Tensor
-    ) -> torch.Tensor:
-        """Solves ``min_c 0.5 * sum(w * (c - c*)**2) + lam * R(c)`` on the
-        interior map with ``w = illum / mean(illum)``
-        """
-        reg = self.loss.config.regulariser
-        lam = float(self.loss.config.weights.get("reg", 0.0))
-        if reg is None or lam <= 0.0:
-            return c_star
-        w = illum / illum.mean().clamp(min=1e-30)
-        c = c_star.detach().clone().requires_grad_(True)
-        prox_opt = torch.optim.LBFGS(
-            [c], max_iter=50, history_size=10, line_search_fn="strong_wolfe"
-        )
-
-        def prox_closure():
-            # minimise() calls this under no_grad; the prox solve needs
-            # its own (tiny) graph on the 2D map.
-            with torch.enable_grad():
-                prox_opt.zero_grad()
-                F = 0.5 * (w * (c - c_star) ** 2).sum() + lam * reg(c)
-                F.backward()
-            return F
-
-        prox_opt.step(prox_closure)
-        return c.detach()
-
     def minimise(
         self,
         on_iteration=None,
         **overrides,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Run the optimisation loop."""
+        """Run the block-coordinate LBFGS optimisation loop."""
         self.opts.update(overrides)
-        n_iter, torch_opts = self._split_opts()
+        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts = self._split_opts()
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -141,106 +136,98 @@ class LBFGSB(Optimiser):
 
         zero_row = torch.zeros(1, Nx, Ny, dtype=dtype, device=device)
         init_ut = self.wavefield.init_ut.detach().to(dtype=dtype, device=device)
-        ic_row = (grid.dt * init_ut).unsqueeze(0)  # (1, Nx, Ny)
+        ic_row = (grid.dt * init_ut).unsqueeze(0)
 
         zero_row_S = zero_row.unsqueeze(0).expand(n_shots, -1, -1, -1)
         ic_row_S = ic_row.unsqueeze(0).expand(n_shots, -1, -1, -1)
 
-        # Single (n_shots, NT-2, NX, NY) Parameter — the only L-BFGS variable.
         u_inner_param = torch.nn.Parameter(
             self._seed_amplitudes(n_shots, dtype, device)
         )
 
         vm_in = self.wavefield.velocity_model
-        # Detach c once for the forward path so the closure can't accidentally
-        # carry a stale subgraph through vm_in.c if it were ever requires_grad.
         vm_c_const = vm_in.c.detach().to(dtype=dtype, device=device)
 
         is_inverse = isinstance(self.loss, InverseLoss)
         if is_inverse:
-            # Plain tensor: c is updated in closed form, never by L-BFGS.
-            c_interior = vm_c_const[grid.interior_slice].clone()
+            c0_int = vm_c_const[grid.interior_slice].detach().clone()
+            # Reparameterise: optimise ĉ = c / c_ref (dimensionless, order ~1).
+            # This brings the c gradient into the same order of magnitude as u,
+            # which is required for LBFGS/GD line searches to succeed.
+            c_ref = float(c0_int.mean().item())
+            c_interior_param = torch.nn.Parameter(c0_int / c_ref)
         else:
-            c_interior = None
+            c_ref = None
+            c_interior_param = None
 
-        def make_optimiser():
-            return torch.optim.LBFGS([u_inner_param], **torch_opts)
+        def make_u_optimiser():
+            return torch.optim.LBFGS([u_inner_param], **u_torch_opts)
 
-        optimiser = make_optimiser()
-        c_min, c_max = self.c_min, self.c_max
-        alpha = self.c_update_alpha
+        def make_c_optimiser():
+            return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
-        def closure():
-            optimiser.zero_grad()
-            amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
-            if is_inverse:
-                c_full = vm_in.build_full_c(c_interior)
-                L = self.loss.evaluate(amps, c_full, c_interior)
-            else:
-                L = self.loss.evaluate(amps, vm_c_const)
-            L.backward()
-            return L
+        u_optimiser = make_u_optimiser()
+        c_optimiser = make_c_optimiser() if (is_inverse and c_steps > 0) else None
 
+        c_min = self.c_min / c_ref if (self.c_min is not None and c_ref is not None) else None
+        c_max = self.c_max / c_ref if (self.c_max is not None and c_ref is not None) else None
         log_every = max(1, int(self.loss.callback.log_every))
+        loss_value = None
 
         for i in range(n_iter):
 
-            loss_value = optimiser.step(closure)
+            for _ in range(u_steps):
+                def u_closure():
+                    u_optimiser.zero_grad()
+                    amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
+                    if is_inverse:
+                        c_fixed_phys = c_interior_param.detach() * c_ref
+                        c_full = vm_in.build_full_c(c_fixed_phys)
+                        L = self.loss.evaluate(amps, c_full, c_fixed_phys)
+                    else:
+                        L = self.loss.evaluate(amps, vm_c_const)
+                    L.backward()
+                    return L
+                loss_value = u_optimiser.step(u_closure)
 
-            if (
-                is_inverse
-                and self.c_update_every > 0
-                and (i + 1) % self.c_update_every == 0
-            ):
-                with torch.no_grad():
-                    amps = torch.cat(
-                        [zero_row_S, ic_row_S, u_inner_param.detach()], dim=1
-                    )
-                    c_star_full, illum_full = self.loss.config.wave_eq.c_closed_form(
-                        amps,
-                        self.loss.sources,
-                        c_current=vm_in.build_full_c(c_interior),
-                    )
-                    c_star = c_star_full[grid.interior_slice]
-                    c_star = self._prox_regularise(
-                        c_star, illum_full[grid.interior_slice]
-                    )
-                    dc_rms = float((c_star - c_interior).pow(2).mean().sqrt())
-                    ratio_pre = self.loss.pde_src_ratio()
-                    c_interior.mul_(1.0 - alpha).add_(alpha * c_star)
-                    if c_min is not None or c_max is not None:
-                        c_interior.clamp_(min=c_min, max=c_max)
-                    # Same u, new c, before the optimiser reacts. With
-                    # alpha=1 and no clamp/prox this can only drop (c* is
-                    # the argmin given u); the size of the drop measures
-                    # how much c-signal the u-phase accumulated.
-                    r_post = self.loss.config.wave_eq.residual(
-                        amps, vm_in.build_full_c(c_interior), self.loss.sources
-                    )
-                    ratio_post = float(r_post.pow(2).mean().sqrt()) / max(
-                        self.loss.src_rms, 1e-30
-                    )
-                # The L-BFGS curvature history refers to the old c: reset it.
-                optimiser = make_optimiser()
-                print(
-                    f"Iteration: {i} | closed-form c-update "
-                    f"(alpha={alpha:g}, |c* - c|_rms = {dc_rms:.3e}, "
-                    f"|r_pde|/|src| {ratio_pre:.3e} -> {ratio_post:.3e})"
-                )
+            if is_inverse and c_steps > 0:
+                for _ in range(c_steps):
+                    def c_closure():
+                        c_optimiser.zero_grad()
+                        amps_fixed = torch.cat(
+                            [zero_row_S, ic_row_S, u_inner_param.detach()], dim=1
+                        )
+                        c_phys = c_interior_param * c_ref
+                        c_full = vm_in.build_full_c(c_phys)
+                        L_c = self.loss.evaluate(
+                            amps_fixed, c_full, c_phys
+                        )
+                        L_c.backward()
+                        with torch.no_grad():
+                            print(
+                                "c loss", float(L_c.detach().cpu()),
+                                "c grad is None?", c_interior_param.grad is None,
+                                "c grad norm", None if c_interior_param.grad is None else float(c_interior_param.grad.norm().detach().cpu()),
+                                "c min/max", float(c_phys.min().detach().cpu()), float(c_phys.max().detach().cpu()),
+                            )
+                        return L_c
+                    loss_value = c_optimiser.step(c_closure)
+                    with torch.no_grad():
+                        if c_min is not None or c_max is not None:
+                            c_interior_param.clamp_(min=c_min, max=c_max)
+                # u curvature history is stale after c changes — reset.
+                u_optimiser = make_u_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
 
-            # Build the on-device c_full only when something will read it.
-            # When neither log_c nor on_iteration needs it, skip the work.
             c_full_now = None
             if is_inverse and (should_log or on_iteration is not None):
-                c_full_now = vm_in.build_full_c(c_interior).detach()
+                c_full_now = vm_in.build_full_c(c_interior_param.detach() * c_ref)
 
             if on_iteration is not None:
                 on_iteration(i, c_full_now)
 
             if should_log:
-                # Single device->host sync per logging step.
                 loss_scalar = float(loss_value.detach().cpu())
                 ratio = self.loss.pde_src_ratio()
                 self.loss.callback.log(
@@ -253,12 +240,10 @@ class LBFGSB(Optimiser):
                     f"|r_pde|/|src| = {ratio:.3e}"
                 )
 
-        # Build returned wavefields with hard zero IC row, all sharing one
-        # VelocityModel reference so we don't carry n_shots copies of c.
         if isinstance(self.loss, ForwardLoss):
-            vm_out = vm_in  # medium was fixed; reuse the input model
+            vm_out = vm_in
         else:
-            c_full_final = vm_in.build_full_c(c_interior).detach()
+            c_full_final = vm_in.build_full_c(c_interior_param.detach() * c_ref)
             vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
 
         u_inner_final = u_inner_param.detach()
@@ -276,7 +261,7 @@ class LBFGSB(Optimiser):
             "n_outer_iter": n_iter,
         }
         return outputs, self.loss.callback
-
+    
 
 class FirstOrderOptimiser(Optimiser):
     """Shared minimise loop for first-order optimisers (Adam, GD).
@@ -428,6 +413,11 @@ class FirstOrderOptimiser(Optimiser):
                 loss_value = L_u
 
             if is_inverse and c_steps > 0:
+                # u just changed — reset c-optimiser so stale momentum
+                # from the previous u does not bias the c update.
+                c_optimiser = self._TORCH_OPTIM_CLS(
+                    [c_interior_param], **{**torch_opts, "lr": c_lr}
+                )
                 for _ in range(c_steps):
                     c_optimiser.zero_grad()
                     amps_fixed = torch.cat(
