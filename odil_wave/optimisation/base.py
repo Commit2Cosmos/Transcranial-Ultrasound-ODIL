@@ -24,8 +24,7 @@ class Optimiser(ABC):
 class LBFGSB(Optimiser):
     """`torch.optim.LBFGS`-based optimiser with separate u and c LBFGS phases.
 
-    Each
-    outer iteration runs ``u_steps`` LBFGS steps on the wavefield (c detached)
+    Each outer iteration runs ``u_steps`` LBFGS steps on the wavefield (c detached)
     followed by ``c_steps`` LBFGS steps on the velocity interior (u detached).
     After every c phase the u curvature history is reset, because the Hessian
     approximation built for the old c is stale for the new one.
@@ -191,6 +190,8 @@ class LBFGSB(Optimiser):
                 loss_value = u_optimiser.step(u_closure)
 
             if is_inverse and c_steps > 0:
+                # u just changed — c's curvature history is stale, reset it.
+                c_optimiser = make_c_optimiser()
                 for _ in range(c_steps):
                     def c_closure():
                         c_optimiser.zero_grad()
@@ -203,19 +204,12 @@ class LBFGSB(Optimiser):
                             amps_fixed, c_full, c_phys
                         )
                         L_c.backward()
-                        with torch.no_grad():
-                            print(
-                                "c loss", float(L_c.detach().cpu()),
-                                "c grad is None?", c_interior_param.grad is None,
-                                "c grad norm", None if c_interior_param.grad is None else float(c_interior_param.grad.norm().detach().cpu()),
-                                "c min/max", float(c_phys.min().detach().cpu()), float(c_phys.max().detach().cpu()),
-                            )
                         return L_c
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
                         if c_min is not None or c_max is not None:
                             c_interior_param.clamp_(min=c_min, max=c_max)
-                # u curvature history is stale after c changes — reset.
+                # c just changed — u's curvature history is stale, reset it.
                 u_optimiser = make_u_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
