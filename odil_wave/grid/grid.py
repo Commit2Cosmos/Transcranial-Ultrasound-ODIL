@@ -50,6 +50,7 @@ class Grid:
     # TODO: enforce it is passed; no default
     t_max: float = 1.0  # specify based on forward wavefield observations
     init_nt: Optional[int] = None
+    cfl_safety: float = 0.9
     # characteristic scales for non-dimensionalisation; None -> sensible defaults
     L0: Optional[float] = None
     c0: Optional[float] = None
@@ -116,7 +117,7 @@ class Grid:
         self.extent = ((x_min, x_max), (y_min, y_max))
 
         if self.init_nt is None:
-            dt_cfl = 1.0 / (self.c_max * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
+            dt_cfl = self.cfl_safety / (self.c_max * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2))
             self.nt = int(math.ceil(self.t_max / dt_cfl)) + 1
         else:
             self.nt = self.init_nt
@@ -300,7 +301,7 @@ class Grid:
             f"\nnt={self.nt}, dx={self.dx * x_mult:.3f} {x_unit}, "
             f"dy={self.dy * x_mult:.3f} {x_unit},"
             f"\ndt={self.dt * t_mult:.3f} {t_unit}, "
-            f"cfl@c_max={self.cfl(self.c_max):.3f},"
+            f"cfl@c_max={self.cfl(self.c_max):.3f} (safety={self.cfl_safety}),"
             f"\ninterior x in [{ix0 * x_mult:.2f}, {ix1 * x_mult:.2f}] {x_unit},"
             f"\ny in [{iy0 * x_mult:.2f}, {iy1 * x_mult:.2f}] {x_unit},"
             f"\ntotal x in [{xmin * x_mult:.2f}, {xmax * x_mult:.2f}] {x_unit},"
