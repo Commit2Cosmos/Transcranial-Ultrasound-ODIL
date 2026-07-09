@@ -49,13 +49,19 @@ class LBFGSB(Optimiser):
         "c_lr": 1.0,
         "c_max_iter": 4,
         "c_history_size": 10,
+        # c-gradient preconditioning: divide grad_c by (mean u^2 energy + stab * max)
+        "c_precond": False,
+        "c_precond_stab": 1e-2,
     }
     _LBFGS_KEYS = frozenset({
         "lr", "max_iter", "max_eval",
         "tolerance_grad", "tolerance_change",
         "history_size", "line_search_fn",
     })
-    _SCHEDULE_KEYS = frozenset({"u_steps", "c_steps", "c_lr", "c_max_iter", "c_history_size"})
+    _SCHEDULE_KEYS = frozenset({
+        "u_steps", "c_steps", "c_lr", "c_max_iter", "c_history_size",
+        "c_precond", "c_precond_stab",
+    })
 
     def __init__(
         self,
@@ -74,7 +80,7 @@ class LBFGSB(Optimiser):
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
-    def _split_opts(self) -> Tuple[int, int, int, dict, dict]:
+    def _split_opts(self) -> Tuple[int, int, int, dict, dict, bool, float]:
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
         u_steps = int(opts.pop("u_steps", 1))
@@ -82,6 +88,8 @@ class LBFGSB(Optimiser):
         c_lr = float(opts.pop("c_lr", 1.0))
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
         c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
+        c_precond = bool(opts.pop("c_precond", False))
+        c_precond_stab = float(opts.pop("c_precond_stab", 1e-2))
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
 
@@ -90,7 +98,7 @@ class LBFGSB(Optimiser):
         c_torch_opts["max_iter"] = c_max_iter
         c_torch_opts["history_size"] = c_history_size
 
-        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts
+        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab
 
     def _seed_amplitudes(self, n_shots, dtype, device) -> torch.Tensor:
         """(n_shots, NT-2, NX, NY) initial inner rows from u_init/wavefield."""
@@ -125,7 +133,7 @@ class LBFGSB(Optimiser):
     ) -> Tuple[List[Wavefield], LossTape]:
         """Run the block-coordinate LBFGS optimisation loop."""
         self.opts.update(overrides)
-        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts = self._split_opts()
+        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab = self._split_opts()
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -172,6 +180,8 @@ class LBFGSB(Optimiser):
         c_max = self.c_max / c_ref if (self.c_max is not None and c_ref is not None) else None
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
+        _prec: Optional[torch.Tensor] = None
+        _eps_prec: float = 0.0
 
         for i in range(n_iter):
 
@@ -190,6 +200,17 @@ class LBFGSB(Optimiser):
                 loss_value = u_optimiser.step(u_closure)
 
             if is_inverse and c_steps > 0:
+                # Wavefield-energy preconditioner: prec[x,y] = mean over shots
+                # and time of u^2.  Dividing grad_c by this dampens updates in
+                # well-illuminated regions and amplifies them where energy is low.
+                if c_precond:
+                    with torch.no_grad():
+                        u_sq = u_inner_param.detach().pow(2).mean(dim=(0, 1))  # (NX, NY)
+                        _prec = u_sq[grid.interior_slice]
+                        _eps_prec = c_precond_stab * float(
+                            _prec.max().clamp(min=1e-30)
+                        )
+
                 # u just changed — c's curvature history is stale, reset it.
                 c_optimiser = make_c_optimiser()
                 for _ in range(c_steps):
@@ -204,13 +225,20 @@ class LBFGSB(Optimiser):
                             amps_fixed, c_full, c_phys
                         )
                         L_c.backward()
+                        if (
+                            c_precond
+                            and _prec is not None
+                            and c_interior_param.grad is not None
+                        ):
+                            with torch.no_grad():
+                                c_interior_param.grad.div_(_prec + _eps_prec)
                         return L_c
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
                         if c_min is not None or c_max is not None:
                             c_interior_param.clamp_(min=c_min, max=c_max)
                 # c just changed — u's curvature history is stale, reset it.
-                u_optimiser = make_u_optimiser()
+                #u_optimiser = make_u_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
 
@@ -255,7 +283,7 @@ class LBFGSB(Optimiser):
             "n_outer_iter": n_iter,
         }
         return outputs, self.loss.callback
-    
+
 
 class FirstOrderOptimiser(Optimiser):
     """Shared minimise loop for first-order optimisers (Adam, GD).
