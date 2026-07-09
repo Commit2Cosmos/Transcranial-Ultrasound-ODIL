@@ -158,7 +158,7 @@ class LBFGSB(Optimiser):
         is_inverse = isinstance(self.loss, InverseLoss)
         if is_inverse:
             c0_int = vm_c_const[grid.interior_slice].detach().clone()
-            # Reparameterise: optimise ĉ = c / c_ref (dimensionless, order ~1).
+            # Reparameterise: optimise c new = c / c_ref (dimensionless, order 1).
             # This brings the c gradient into the same order of magnitude as u,
             # which is required for LBFGS/GD line searches to succeed.
             c_ref = float(c0_int.mean().item())
@@ -296,7 +296,10 @@ class FirstOrderOptimiser(Optimiser):
     _TORCH_OPTIM_CLS: Optional[Type[torch.optim.Optimizer]] = None
     _DEFAULT_OPTS: dict = {}
     _TORCH_OPT_KEYS: frozenset = frozenset()
-    _SCHEDULE_KEYS = frozenset({"u_steps", "c_steps", "c_lr", "c_max_grad_norm"})
+    _SCHEDULE_KEYS = frozenset({
+        "u_steps", "c_steps", "c_lr", "c_max_grad_norm",
+        "c_precond", "c_precond_stab",
+    })
 
     def __init__(
         self,
@@ -373,6 +376,8 @@ class FirstOrderOptimiser(Optimiser):
         c_lr = float(self.opts.get("c_lr", torch_opts.get("lr", 1e-4)))
         if c_max_grad_norm is None:
             c_max_grad_norm = max_grad_norm
+        c_precond = bool(self.opts.get("c_precond", False))
+        c_precond_stab = float(self.opts.get("c_precond_stab", 1e-2))
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -396,10 +401,12 @@ class FirstOrderOptimiser(Optimiser):
 
         is_inverse = isinstance(self.loss, InverseLoss)
         if is_inverse:
-            c_interior_param = torch.nn.Parameter(
-                vm_c_const[grid.interior_slice].detach().clone()
-            )
+            c0_int = vm_c_const[grid.interior_slice].detach().clone()
+            # Reparameterise: optimise c_new = c / c_ref (dimensionless, order 1).
+            c_ref = float(c0_int.mean().item())
+            c_interior_param = torch.nn.Parameter(c0_int / c_ref)
         else:
+            c_ref = None
             c_interior_param = None
 
         u_optimiser = self._TORCH_OPTIM_CLS([u_inner_param], **torch_opts)
@@ -411,18 +418,21 @@ class FirstOrderOptimiser(Optimiser):
         else:
             c_optimiser = None
 
-        c_min, c_max = self.c_min, self.c_max
+        c_min = self.c_min / c_ref if (self.c_min is not None and c_ref is not None) else None
+        c_max = self.c_max / c_ref if (self.c_max is not None and c_ref is not None) else None
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
+        _prec: Optional[torch.Tensor] = None
+        _eps_prec: float = 0.0
 
         for i in range(n_iter):
             for _ in range(u_steps):
                 u_optimiser.zero_grad()
                 amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
                 if is_inverse:
-                    c_fixed = c_interior_param.detach()
-                    c_full = vm_in.build_full_c(c_fixed)
-                    L_u = self.loss.evaluate(amps, c_full, c_fixed)
+                    c_fixed_phys = c_interior_param.detach() * c_ref
+                    c_full = vm_in.build_full_c(c_fixed_phys)
+                    L_u = self.loss.evaluate(amps, c_full, c_fixed_phys)
                 else:
                     L_u = self.loss.evaluate(amps, vm_c_const)
                 L_u.backward()
@@ -435,6 +445,14 @@ class FirstOrderOptimiser(Optimiser):
                 loss_value = L_u
 
             if is_inverse and c_steps > 0:
+                if c_precond:
+                    with torch.no_grad():
+                        u_sq = u_inner_param.detach().pow(2).mean(dim=(0, 1))  # (NX, NY)
+                        _prec = u_sq[grid.interior_slice]
+                        _eps_prec = c_precond_stab * float(
+                            _prec.max().clamp(min=1e-30)
+                        )
+
                 # u just changed — reset c-optimiser so stale momentum
                 # from the previous u does not bias the c update.
                 c_optimiser = self._TORCH_OPTIM_CLS(
@@ -446,13 +464,21 @@ class FirstOrderOptimiser(Optimiser):
                         [zero_row_S, ic_row_S, u_inner_param.detach()],
                         dim=1,
                     )
-                    c_full = vm_in.build_full_c(c_interior_param)
+                    c_phys = c_interior_param * c_ref
+                    c_full = vm_in.build_full_c(c_phys)
                     L_c = self.loss.evaluate(
                         amps_fixed,
                         c_full,
-                        c_interior_param,
+                        c_phys,
                     )
                     L_c.backward()
+                    if (
+                        c_precond
+                        and _prec is not None
+                        and c_interior_param.grad is not None
+                    ):
+                        with torch.no_grad():
+                            c_interior_param.grad.div_(_prec + _eps_prec)
                     if c_max_grad_norm is not None and c_max_grad_norm > 0:
                         torch.nn.utils.clip_grad_norm_(
                             [c_interior_param],
@@ -468,7 +494,7 @@ class FirstOrderOptimiser(Optimiser):
 
             c_full_now = None
             if is_inverse and (should_log or on_iteration is not None):
-                c_full_now = vm_in.build_full_c(c_interior_param.detach())
+                c_full_now = vm_in.build_full_c(c_interior_param.detach() * c_ref)
 
             if on_iteration is not None:
                 on_iteration(i, c_full_now)
@@ -489,7 +515,7 @@ class FirstOrderOptimiser(Optimiser):
         if isinstance(self.loss, ForwardLoss):
             vm_out = vm_in
         else:
-            c_full_final = vm_in.build_full_c(c_interior_param.detach())
+            c_full_final = vm_in.build_full_c(c_interior_param.detach() * c_ref)
             vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
 
         u_inner_final = u_inner_param.detach()
@@ -530,6 +556,8 @@ class AdamOptimiser(FirstOrderOptimiser):
         "weight_decay": 0.0,
         "max_grad_norm": None,
         "c_max_grad_norm": None,
+        "c_precond": False,
+        "c_precond_stab": 1e-2,
     }
 
 
@@ -552,4 +580,6 @@ class GradientDescent(FirstOrderOptimiser):
         "weight_decay": 0.0,
         "max_grad_norm": None,
         "c_max_grad_norm": None,
+        "c_precond": False,
+        "c_precond_stab": 1e-2,
     }
