@@ -7,6 +7,7 @@ from odil_wave.loss import DiscreteLoss, ForwardLoss, InverseLoss
 from odil_wave.loss.utils import LossTape
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
+from .preconditioner import TimeStepUTransform
 
 
 class Optimiser(ABC):
@@ -52,6 +53,9 @@ class LBFGSB(Optimiser):
         # c-gradient preconditioning: divide grad_c by (mean u^2 energy + stab * max)
         "c_precond": False,
         "c_precond_stab": 1e-2,
+        # u-block preconditioning: reparameterise u = A^{-1} z (leapfrog transform)
+        "u_precond": False,
+        "reset_c_history": True,
     }
     _LBFGS_KEYS = frozenset({
         "lr", "max_iter", "max_eval",
@@ -60,7 +64,7 @@ class LBFGSB(Optimiser):
     })
     _SCHEDULE_KEYS = frozenset({
         "u_steps", "c_steps", "c_lr", "c_max_iter", "c_history_size",
-        "c_precond", "c_precond_stab",
+        "c_precond", "c_precond_stab", "u_precond", "reset_c_history",
     })
 
     def __init__(
@@ -80,16 +84,18 @@ class LBFGSB(Optimiser):
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
-    def _split_opts(self) -> Tuple[int, int, int, dict, dict, bool, float]:
+    def _split_opts(self) -> Tuple[int, int, int, dict, dict, bool, float, bool, bool]:
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
         u_steps = int(opts.pop("u_steps", 1))
-        c_steps = int(opts.pop("c_steps", 1))
+        c_steps = int(opts.popx("c_steps", 1))
         c_lr = float(opts.pop("c_lr", 1.0))
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
         c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
         c_precond = bool(opts.pop("c_precond", False))
         c_precond_stab = float(opts.pop("c_precond_stab", 1e-2))
+        u_precond = bool(opts.pop("u_precond", False))
+        reset_c_history = bool(opts.pop("reset_c_history", True))
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
 
@@ -98,7 +104,7 @@ class LBFGSB(Optimiser):
         c_torch_opts["max_iter"] = c_max_iter
         c_torch_opts["history_size"] = c_history_size
 
-        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab
+        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab, u_precond, reset_c_history
 
     def _seed_amplitudes(self, n_shots, dtype, device) -> torch.Tensor:
         """(n_shots, NT-2, NX, NY) initial inner rows from u_init/wavefield."""
@@ -131,9 +137,18 @@ class LBFGSB(Optimiser):
         on_iteration=None,
         **overrides,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Run the block-coordinate LBFGS optimisation loop."""
+        """Run the block-coordinate LBFGS optimisation loop.
+
+        When ``u_precond=True`` the wavefield is reparameterised as
+        ``u = A^{-1} z`` (one leapfrog sweep per closure call).  L-BFGS
+        then optimises ``z``; the transformed Hessian block is
+        ``A^{-T} H_u A^{-1} = a I + (data term)``, which is much better
+        conditioned than the raw ``H_u``.  Seeding is exact:
+        ``z_0 = A u_0``.  After each c-update the transform is rebuilt and
+        ``z`` is re-seeded from the current ``u``.
+        """
         self.opts.update(overrides)
-        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab = self._split_opts()
+        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab, u_precond, reset_c_history = self._split_opts()
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -148,9 +163,7 @@ class LBFGSB(Optimiser):
         zero_row_S = zero_row.unsqueeze(0).expand(n_shots, -1, -1, -1)
         ic_row_S = ic_row.unsqueeze(0).expand(n_shots, -1, -1, -1)
 
-        u_inner_param = torch.nn.Parameter(
-            self._seed_amplitudes(n_shots, dtype, device)
-        )
+        u_seed = self._seed_amplitudes(n_shots, dtype, device)
 
         vm_in = self.wavefield.velocity_model
         vm_c_const = vm_in.c.detach().to(dtype=dtype, device=device)
@@ -167,8 +180,40 @@ class LBFGSB(Optimiser):
             c_ref = None
             c_interior_param = None
 
+        # u parameterisation: direct (u_inner_param) or transformed (z_param)
+        if u_precond:
+            c_full_init = (
+                vm_in.build_full_c(c0_int) if is_inverse else vm_c_const
+            )
+            u_transform = TimeStepUTransform(self.loss, c_full_init)
+            z_seed = u_transform.inverse(u_seed)
+            z_param = torch.nn.Parameter(z_seed)
+            u_inner_param = None  # computed on-the-fly via transform
+
+            def get_u_inner() -> torch.Tensor:
+                return u_transform.apply(z_param)
+
+            def get_u_inner_detached() -> torch.Tensor:
+                with torch.no_grad():
+                    return u_transform.apply(z_param.detach())
+
+            def optim_param():
+                return z_param
+        else:
+            u_transform = None
+            u_inner_param = torch.nn.Parameter(u_seed)
+
+            def get_u_inner() -> torch.Tensor:
+                return u_inner_param
+
+            def get_u_inner_detached() -> torch.Tensor:
+                return u_inner_param.detach()
+
+            def optim_param():
+                return u_inner_param
+
         def make_u_optimiser():
-            return torch.optim.LBFGS([u_inner_param], **u_torch_opts)
+            return torch.optim.LBFGS([optim_param()], **u_torch_opts)
 
         def make_c_optimiser():
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
@@ -188,7 +233,7 @@ class LBFGSB(Optimiser):
             for _ in range(u_steps):
                 def u_closure():
                     u_optimiser.zero_grad()
-                    amps = torch.cat([zero_row_S, ic_row_S, u_inner_param], dim=1)
+                    amps = torch.cat([zero_row_S, ic_row_S, get_u_inner()], dim=1)
                     if is_inverse:
                         c_fixed_phys = c_interior_param.detach() * c_ref
                         c_full = vm_in.build_full_c(c_fixed_phys)
@@ -205,66 +250,88 @@ class LBFGSB(Optimiser):
                 # well-illuminated regions and amplifies them where energy is low.
                 if c_precond:
                     with torch.no_grad():
-                        u_sq = u_inner_param.detach().pow(2).mean(dim=(0, 1))  # (NX, NY)
+                        u_sq = get_u_inner_detached().pow(2).mean(dim=(0, 1))  # (NX, NY)
                         _prec = u_sq[grid.interior_slice]
                         _eps_prec = c_precond_stab * float(
                             _prec.max().clamp(min=1e-30)
                         )
 
-                # u just changed — c's curvature history is stale, reset it.
-                c_optimiser = make_c_optimiser()
+                # u just changed — reset c's curvature history unless the caller
+                # explicitly asked to carry it across outer iterations.
+                if reset_c_history:
+                    c_optimiser = make_c_optimiser()
                 for _ in range(c_steps):
                     def c_closure():
                         c_optimiser.zero_grad()
                         amps_fixed = torch.cat(
-                            [zero_row_S, ic_row_S, u_inner_param.detach()], dim=1
+                            [zero_row_S, ic_row_S, get_u_inner_detached()], dim=1
                         )
                         c_phys = c_interior_param * c_ref
                         c_full = vm_in.build_full_c(c_phys)
                         L_c = self.loss.evaluate(
                             amps_fixed, c_full, c_phys
                         )
-                        #L_c.backward()
-                        #if (
-                        #    c_precond
-                        #    and c_interior_param.grad is not None
-                        #    and _prec is not None
-                        #):
-                        #    with torch.no_grad():
-                        #        c_interior_param.grad.div_(_prec + _eps_prec)
-                        #return L_c
                         L_c.backward()
-
-                        # Debug c-gradient BEFORE preconditioning
                         if c_interior_param.grad is not None:
                             with torch.no_grad():
-                                g = c_interior_param.grad
-
-                                print("raw c grad norm:", g.norm().item())
-                                print("raw c grad min/max:", g.min().item(), g.max().item())
-                                print("raw c grad RMS:", g.pow(2).mean().sqrt().item())
-
+                                g_raw = c_interior_param.grad
+                                _n = g_raw.numel()
+                                _pct_pos = 100.0 * float((g_raw > 0).sum()) / _n
+                                _pct_neg = 100.0 * float((g_raw < 0).sum()) / _n
+                                print(
+                                    f"    [grad_c RAW]    "
+                                    f"mean={g_raw.mean():+.3e}  "
+                                    f"min={g_raw.min():+.3e}  "
+                                    f"max={g_raw.max():+.3e}  "
+                                    f"pos={_pct_pos:.1f}%  neg={_pct_neg:.1f}%"
+                                )
                         if (
                             c_precond
                             and _prec is not None
                             and c_interior_param.grad is not None
                         ):
                             with torch.no_grad():
+                                print(
+                                    f"    [prec energy]   "
+                                    f"min={_prec.min():.3e}  "
+                                    f"mean={_prec.mean():.3e}  "
+                                    f"max={_prec.max():.3e}  "
+                                    f"eps={_eps_prec:.3e}"
+                                )
                                 c_interior_param.grad.div_(_prec + _eps_prec)
-
-                                # Debug c-gradient AFTER preconditioning
-                                g = c_interior_param.grad
-                                print("precond c grad norm:", g.norm().item())
-                                print("precond c grad min/max:", g.min().item(), g.max().item())
-                                print("precond c grad RMS:", g.pow(2).mean().sqrt().item())
-
+                                g_pre = c_interior_param.grad
+                                _np = g_pre.numel()
+                                _pct_pos_p = 100.0 * float((g_pre > 0).sum()) / _np
+                                _pct_neg_p = 100.0 * float((g_pre < 0).sum()) / _np
+                                print(
+                                    f"    [grad_c PRECOND] "
+                                    f"mean={g_pre.mean():+.3e}  "
+                                    f"min={g_pre.min():+.3e}  "
+                                    f"max={g_pre.max():+.3e}  "
+                                    f"pos={_pct_pos_p:.1f}%  neg={_pct_neg_p:.1f}%"
+                                )
                         return L_c
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
                         if c_min is not None or c_max is not None:
+                            c_at_min = (c_interior_param <= c_min + 1e-8).float().mean().item() if c_min is not None else 0.0
+                            c_at_max = (c_interior_param >= c_max - 1e-8).float().mean().item() if c_max is not None else 0.0
+                            print(
+                                f"    [clamp]  c_min={c_min:.4f}  c_max={c_max:.4f}  "
+                                f"frac@min={c_at_min:.3f}  frac@max={c_at_max:.3f}  "
+                                f"c_param: mean={c_interior_param.mean():.4f}  "
+                                f"min={c_interior_param.min():.4f}  max={c_interior_param.max():.4f}"
+                            )
                             c_interior_param.clamp_(min=c_min, max=c_max)
-                # c just changed — u's curvature history is stale, reset it.
-                # u_optimiser = make_u_optimiser()
+
+                # c changed — rebuild the u transform and re-seed z so that
+                # A(new c) and the current u remain consistent.
+                if u_precond and u_transform is not None:
+                    c_full_new = vm_in.build_full_c(c_interior_param.detach() * c_ref)
+                    u_transform.rebuild(self.loss, c_full_new)
+                    with torch.no_grad():
+                        z_param.data.copy_(u_transform.inverse(get_u_inner_detached()))
+                    u_optimiser = make_u_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
 
@@ -294,7 +361,7 @@ class LBFGSB(Optimiser):
             c_full_final = vm_in.build_full_c(c_interior_param.detach() * c_ref)
             vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
 
-        u_inner_final = u_inner_param.detach()
+        u_inner_final = get_u_inner_detached()
         outputs: List[Wavefield] = []
         for s in range(n_shots):
             wf = Wavefield(grid=grid, velocity_model=vm_out)
