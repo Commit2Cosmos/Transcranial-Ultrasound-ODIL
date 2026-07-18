@@ -7,9 +7,9 @@ block ``A`` by one sequential forward-substitution (leapfrog) sweep.
 
 Public API
 ----------
-TimeStepPreconditioner   exact A^{-1} and A^{-T} by leapfrog sweep
-TimeStepUTransform       differentiable u = A^{-1} z coordinate change
-u_block_ops              returns {"matvec": callable} for A u (seeding)
+TimeStepPreconditioner   -- exact A^{-1} and A^{-T} by leapfrog sweep
+TimeStepUTransform       -- differentiable u = A^{-1} z coordinate change
+u_block_ops              -- returns {"matvec": callable} for A u (seeding)
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Callable, Dict
 
 import torch
 
-# Helper: differentiable linear map via custom autograd Function
 
+# Helper: differentiable linear map via custom autograd Function
 
 class _LinearMapFn(torch.autograd.Function):
     """Wrap a linear map ``M`` so that autograd sees ``forward = M`` and
@@ -36,10 +36,9 @@ class _LinearMapFn(torch.autograd.Function):
     def backward(ctx, grad_out: torch.Tensor):
         # dL/dz = (du/dz)^T dL/du = (A^{-1})^T dL/du = A^{-T} dL/du
         return ctx.M.apply_T(grad_out), None
-    
+
 
 # Vectorised matvec for the reduced PDE block A
-
 
 def u_block_ops(loss, c_full: torch.Tensor) -> Dict[str, Callable]:
     """Return matrix-free operators for the reduced PDE block ``A``.
@@ -91,7 +90,6 @@ def u_block_ops(loss, c_full: torch.Tensor) -> Dict[str, Callable]:
 
 # Exact preconditioner: A^{-1} by forward substitution
 
-
 class TimeStepPreconditioner:
     """Exact ``M = A^{-1}`` by forward substitution (a leapfrog sweep).
 
@@ -134,9 +132,10 @@ class TimeStepPreconditioner:
         self._k = (c_full.detach().to(dtype=g.dtype, device=g.device)
                    / self._c0) ** 2
 
-    def _sweep(self, v: torch.Tensor) -> torch.Tensor:
-        """Forward substitution: solve ``A x = v`` for ``v`` of shape
-        ``(S, n, Nx, Ny)``. Row ``t = j+1``::
+    def _sweep_with_k(self, v: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        """Forward substitution ``A(k) x = v`` for ``v`` of shape ``(S, n, Nx, Ny)``.
+
+        ``k`` may require grad (used by :meth:`apply_diff_c`). Row ``t = j+1``::
 
             denom x_{t+1} = v_j + (2/dt'^2 - sig_p) x_t + k L x_t
                           + (dt^2/12) k L (k L x_t) - (1/dt'^2 - sig_s/2dt') x_{t-1}
@@ -148,18 +147,33 @@ class TimeStepPreconditioner:
         xs = []
         for j in range(n):
             lap = self._lap.apply(x_t)
-            rhs = v[:, j] + self._B0 * x_t + self._k * lap - self._Cc * x_tm
+            rhs = v[:, j] + self._B0 * x_t + k * lap - self._Cc * x_tm
             if self._ot4:
-                rhs = rhs + gam * self._k * self._lap.apply(self._k * lap)
+                rhs = rhs + gam * k * self._lap.apply(k * lap)
             x_new = rhs / self._denom
             xs.append(x_new)
             x_tm, x_t = x_t, x_new
         return torch.stack(xs, dim=1)
 
+    def _sweep(self, v: torch.Tensor) -> torch.Tensor:
+        """Forward substitution with the cached (detached) medium ``self._k``."""
+        return self._sweep_with_k(v, self._k)
+
     def apply(self, v: torch.Tensor) -> torch.Tensor:
-        """Exact ``A^{-1} v`` (one sequential leapfrog sweep)."""
+        """Exact ``A^{-1} v`` (one sequential leapfrog sweep, no grad)."""
         with torch.no_grad():
             return self._sweep(v)
+
+    def apply_diff_c(self, z: torch.Tensor, c_full: torch.Tensor) -> torch.Tensor:
+        """``u = A(c)^{-1} z`` with gradients flowing into ``c_full``.
+
+        Used for the ``frozen_z`` c-step where ``z`` is held fixed (typically
+        detached) and L-BFGS updates ``c``.  Does **not** use
+        :class:`_LinearMapFn` — that map only backprops through ``z``.
+        """
+        g = self.wave_eq.wavefield.grid
+        k = (c_full.to(dtype=g.dtype, device=g.device) / self._c0) ** 2
+        return self._sweep_with_k(z, k)
 
     def apply_T(self, v: torch.Tensor) -> torch.Tensor:
         """Exact ``A^{-T} v``: autograd through the (linear) forward sweep."""
@@ -174,9 +188,7 @@ class TimeStepPreconditioner:
         """SPD action ``P v = A^{-1} A^{-T} v = (A^T A)^{-1} v`` (exact)."""
         return self.apply(self.apply_T(v))
 
-
 # Coordinate-change transform: u = A^{-1} z
-
 
 class TimeStepUTransform:
     """Exact inverse-operator metric for the wavefield block: ``u = A^{-1} z``.
@@ -213,8 +225,20 @@ class TimeStepUTransform:
         self._A = u_block_ops(loss, c_full)["matvec"]
 
     def apply(self, z: torch.Tensor) -> torch.Tensor:
-        """Differentiable ``u = A^{-1} z`` for ``z`` of shape ``(S, NT-2, Nx, Ny)``."""
+        """Differentiable ``u = A^{-1} z`` w.r.t. ``z`` only (``c`` frozen in ``M``).
+
+        Uses :class:`_LinearMapFn` so the sequential sweep is not stored in the
+        autograd graph — correct and cheap for the z-step.
+        """
         return _LinearMapFn.apply(z, self.M)
+
+    def apply_diff_c(self, z: torch.Tensor, c_full: torch.Tensor) -> torch.Tensor:
+        """``u = A(c)^{-1} z`` with gradients w.r.t. ``c_full`` (for the c-step).
+
+        ``z`` should be detached.  Recomputes the leapfrog sweep with a live
+        ``k = (c/c0)^2`` so L-BFGS trial ``c`` values see a valid closure.
+        """
+        return self.M.apply_diff_c(z, c_full)
 
     def inverse(self, u: torch.Tensor) -> torch.Tensor:
         """``z = A u`` (exact, no grad) -- used to seed ``z`` from a ``u`` guess."""

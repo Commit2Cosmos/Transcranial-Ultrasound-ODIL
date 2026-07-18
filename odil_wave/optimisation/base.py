@@ -1,13 +1,39 @@
 from abc import ABC, abstractmethod
+import math
 from typing import List, Optional, Tuple, Type
 
 import torch
+import torch.nn.functional as _F
 
 from odil_wave.loss import DiscreteLoss, ForwardLoss, InverseLoss
 from odil_wave.loss.utils import LossTape
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
 from .preconditioner import TimeStepUTransform
+
+
+def _gaussian_smooth_2d(g: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Smooth a 2-D gradient tensor with a Gaussian kernel (reflect padding).
+
+    Parameters
+    ----------
+    g : Tensor of shape (Nx, Ny)
+    sigma : kernel standard deviation in grid cells
+
+    Returns
+    -------
+    Tensor of same shape as *g*, smoothed in-place copy.
+    """
+    if sigma <= 0.0:
+        return g
+    ks = 2 * int(math.ceil(3.0 * sigma)) + 1
+    x = torch.arange(ks, dtype=g.dtype, device=g.device) - ks // 2
+    k1d = torch.exp(-0.5 * (x / sigma) ** 2)
+    k1d = k1d / k1d.sum()
+    k2d = (k1d[:, None] * k1d[None, :]).view(1, 1, ks, ks)
+    pad = ks // 2
+    g_in = _F.pad(g.view(1, 1, *g.shape), (pad, pad, pad, pad), mode="reflect")
+    return _F.conv2d(g_in, k2d).view(g.shape)
 
 
 class Optimiser(ABC):
@@ -50,11 +76,22 @@ class LBFGSB(Optimiser):
         "c_lr": 1.0,
         "c_max_iter": 4,
         "c_history_size": 10,
-        # c-gradient preconditioning: divide grad_c by (mean u^2 energy + stab * max)
+        # c-gradient preconditioning
+        # c_precond_type: "energy" (divide by mean u^2) or "gaussian" (smooth gradient)
         "c_precond": False,
+        "c_precond_type": "energy",
+        "c_precond_sigma": 2.0,   # Gaussian sigma in grid cells (used when type="gaussian")
         "c_precond_stab": 1e-2,
         # u-block preconditioning: reparameterise u = A^{-1} z (leapfrog transform)
         "u_precond": False,
+        # c-step mode:
+        #   "frozen_u" — classic: u detached, L = PDE + data (grad through A(c)u)
+        #   "frozen_z" — z detached, u = A(c)^{-1} z live in c, L = data (+reg)
+        #                requires u_precond=True; keep c_precond=False until
+        #                the raw direct data gradient is validated
+        "c_update": "frozen_u",
+        # whether to discard the c LBFGS curvature history after each u-phase
+        # (True = safe default; False = carry history across outer iterations)
         "reset_c_history": True,
     }
     _LBFGS_KEYS = frozenset({
@@ -64,7 +101,8 @@ class LBFGSB(Optimiser):
     })
     _SCHEDULE_KEYS = frozenset({
         "u_steps", "c_steps", "c_lr", "c_max_iter", "c_history_size",
-        "c_precond", "c_precond_stab", "u_precond", "reset_c_history",
+        "c_precond", "c_precond_type", "c_precond_sigma", "c_precond_stab",
+        "u_precond", "c_update", "reset_c_history",
     })
 
     def __init__(
@@ -73,6 +111,7 @@ class LBFGSB(Optimiser):
         loss: DiscreteLoss,
         clamp: bool = False,
         u_init=None,
+        free_mask=None,
         **opts,
     ) -> None:
         super().__init__(wavefield, loss)
@@ -80,22 +119,38 @@ class LBFGSB(Optimiser):
         self.c_min = grid.c_min if clamp else None
         self.c_max = grid.c_max if clamp else None
         self.u_init = u_init
+        # Optional boolean mask (shape = interior grid) indicating which c
+        # cells are free to be optimised.  Cells where free_mask=False are
+        # held fixed at their initial value throughout the run (gradient is
+        # zeroed before each LBFGS curvature update; value is hard-reset after
+        # each step so the line-search cannot move them either).
+        self.free_mask = free_mask
 
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
-    def _split_opts(self) -> Tuple[int, int, int, dict, dict, bool, float, bool, bool]:
+    def _split_opts(self):
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
         u_steps = int(opts.pop("u_steps", 1))
-        c_steps = int(opts.popx("c_steps", 1))
+        c_steps = int(opts.pop("c_steps", 1))
         c_lr = float(opts.pop("c_lr", 1.0))
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
         c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
         c_precond = bool(opts.pop("c_precond", False))
+        c_precond_type = str(opts.pop("c_precond_type", "energy"))
+        c_precond_sigma = float(opts.pop("c_precond_sigma", 2.0))
         c_precond_stab = float(opts.pop("c_precond_stab", 1e-2))
         u_precond = bool(opts.pop("u_precond", False))
+        c_update = str(opts.pop("c_update", "frozen_u"))
         reset_c_history = bool(opts.pop("reset_c_history", True))
+
+        if c_update not in ("frozen_u", "frozen_z"):
+            raise ValueError(
+                f"c_update must be 'frozen_u' or 'frozen_z', got {c_update!r}"
+            )
+        if c_update == "frozen_z" and not u_precond:
+            raise ValueError("c_update='frozen_z' requires u_precond=True")
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
 
@@ -104,7 +159,9 @@ class LBFGSB(Optimiser):
         c_torch_opts["max_iter"] = c_max_iter
         c_torch_opts["history_size"] = c_history_size
 
-        return n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab, u_precond, reset_c_history
+        return (n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts,
+                c_precond, c_precond_type, c_precond_sigma, c_precond_stab,
+                u_precond, c_update, reset_c_history)
 
     def _seed_amplitudes(self, n_shots, dtype, device) -> torch.Tensor:
         """(n_shots, NT-2, NX, NY) initial inner rows from u_init/wavefield."""
@@ -144,11 +201,20 @@ class LBFGSB(Optimiser):
         then optimises ``z``; the transformed Hessian block is
         ``A^{-T} H_u A^{-1} = a I + (data term)``, which is much better
         conditioned than the raw ``H_u``.  Seeding is exact:
-        ``z_0 = A u_0``.  After each c-update the transform is rebuilt and
-        ``z`` is re-seeded from the current ``u``.
+        ``z_0 = A u_0``.
+
+        ``c_update``:
+          - ``"frozen_u"`` (default): after the z/u phase, freeze ``u`` and
+            minimise PDE+data w.r.t. ``c``.  Then rebuild ``A`` and choose
+            ``z_new`` so ``A(c_new)^{-1} z_new = u_old`` (``u`` preserved).
+          - ``"frozen_z"``: freeze ``z``, set ``u = A(c)^{-1} z`` inside
+            every L-BFGS closure (live in ``c``), minimise data (+reg) only.
+            Leave ``z`` unchanged; rebuild the transform for the next z-step.
         """
         self.opts.update(overrides)
-        n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts, c_precond, c_precond_stab, u_precond, reset_c_history = self._split_opts()
+        (n_iter, u_steps, c_steps, u_torch_opts, c_torch_opts,
+         c_precond, c_precond_type, c_precond_sigma, c_precond_stab,
+         u_precond, c_update, reset_c_history) = self._split_opts()
 
         grid = self.wavefield.grid
         dtype = grid.dtype
@@ -171,13 +237,25 @@ class LBFGSB(Optimiser):
         is_inverse = isinstance(self.loss, InverseLoss)
         if is_inverse:
             c0_int = vm_c_const[grid.interior_slice].detach().clone()
-            # Reparameterise: optimise c new = c / c_ref (dimensionless, order 1).
+            # Reparameterise: optimise ĉ = c / c_ref (dimensionless, order ~1).
             # This brings the c gradient into the same order of magnitude as u,
             # which is required for LBFGS/GD line searches to succeed.
             c_ref = float(c0_int.mean().item())
             c_interior_param = torch.nn.Parameter(c0_int / c_ref)
+
+            # free_mask: which interior cells are allowed to move.
+            # None means all cells are free (default behaviour).
+            if self.free_mask is not None:
+                _free_mask = self.free_mask.to(dtype=torch.bool, device=device)
+                # Normalised initial values for frozen cells (reset after each step).
+                _c_frozen_init = (c0_int / c_ref)[~_free_mask].clone().detach()
+            else:
+                _free_mask = None
+                _c_frozen_init = None
         else:
             c_ref = None
+            _free_mask = None
+            _c_frozen_init = None
             c_interior_param = None
 
         # u parameterisation: direct (u_inner_param) or transformed (z_param)
@@ -248,7 +326,8 @@ class LBFGSB(Optimiser):
                 # Wavefield-energy preconditioner: prec[x,y] = mean over shots
                 # and time of u^2.  Dividing grad_c by this dampens updates in
                 # well-illuminated regions and amplifies them where energy is low.
-                if c_precond:
+                # Skip for frozen_z until the raw gradient is validated.
+                if c_precond and c_update == "frozen_u":
                     with torch.no_grad():
                         u_sq = get_u_inner_detached().pow(2).mean(dim=(0, 1))  # (NX, NY)
                         _prec = u_sq[grid.interior_slice]
@@ -256,30 +335,61 @@ class LBFGSB(Optimiser):
                             _prec.max().clamp(min=1e-30)
                         )
 
-                # u just changed — reset c's curvature history unless the caller
+                # u/z just changed — reset c's curvature history unless the caller
                 # explicitly asked to carry it across outer iterations.
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
+
+                # Freeze z for the whole c-phase (frozen_z).
+                z_fixed = (
+                    z_param.detach()
+                    if (c_update == "frozen_z" and u_precond)
+                    else None
+                )
+
                 for _ in range(c_steps):
                     def c_closure():
                         c_optimiser.zero_grad()
-                        amps_fixed = torch.cat(
-                            [zero_row_S, ic_row_S, get_u_inner_detached()], dim=1
-                        )
                         c_phys = c_interior_param * c_ref
                         c_full = vm_in.build_full_c(c_phys)
-                        L_c = self.loss.evaluate(
-                            amps_fixed, c_full, c_phys
-                        )
+
+                        if c_update == "frozen_z":
+                            # Recompute u = A(c)^{-1} z inside every L-BFGS trial
+                            # so the graph from c → u is live.
+                            u_inner_live = u_transform.apply_diff_c(z_fixed, c_full)
+                            amps = torch.cat(
+                                [zero_row_S, ic_row_S, u_inner_live], dim=1
+                            )
+                            # At fixed z, ||z - f|| is independent of c, so drop PDE.
+                            L_c = self.loss.evaluate(
+                                amps,
+                                c_full,
+                                c_phys,
+                                weights_override={"pde": 0.0},
+                            )
+                        else:
+                            # frozen_u: u detached; data term is constant in c.
+                            amps_fixed = torch.cat(
+                                [zero_row_S, ic_row_S, get_u_inner_detached()], dim=1
+                            )
+                            L_c = self.loss.evaluate(
+                                amps_fixed, c_full, c_phys
+                            )
+
                         L_c.backward()
+                        # Zero out gradients for frozen cells so LBFGS does
+                        # not build curvature info for them.
+                        if _free_mask is not None and c_interior_param.grad is not None:
+                            c_interior_param.grad[~_free_mask] = 0.0
                         if c_interior_param.grad is not None:
                             with torch.no_grad():
                                 g_raw = c_interior_param.grad
                                 _n = g_raw.numel()
                                 _pct_pos = 100.0 * float((g_raw > 0).sum()) / _n
                                 _pct_neg = 100.0 * float((g_raw < 0).sum()) / _n
+                                tag = "frozen_z" if c_update == "frozen_z" else "frozen_u"
                                 print(
-                                    f"    [grad_c RAW]    "
+                                    f"    [grad_c {tag}]  "
                                     f"mean={g_raw.mean():+.3e}  "
                                     f"min={g_raw.min():+.3e}  "
                                     f"max={g_raw.max():+.3e}  "
@@ -287,18 +397,31 @@ class LBFGSB(Optimiser):
                                 )
                         if (
                             c_precond
-                            and _prec is not None
+                            and c_update == "frozen_u"
                             and c_interior_param.grad is not None
                         ):
                             with torch.no_grad():
-                                print(
-                                    f"    [prec energy]   "
-                                    f"min={_prec.min():.3e}  "
-                                    f"mean={_prec.mean():.3e}  "
-                                    f"max={_prec.max():.3e}  "
-                                    f"eps={_eps_prec:.3e}"
-                                )
-                                c_interior_param.grad.div_(_prec + _eps_prec)
+                                if c_precond_type == "gaussian":
+                                    # Smooth gradient with a Gaussian kernel.
+                                    # Does not depend on u — safe when u is wrong.
+                                    print(
+                                        f"    [prec gaussian] sigma={c_precond_sigma:.1f} cells"
+                                    )
+                                    g_smooth = _gaussian_smooth_2d(
+                                        c_interior_param.grad, c_precond_sigma
+                                    )
+                                    c_interior_param.grad.copy_(g_smooth)
+                                else:
+                                    # Default: energy preconditioner (divide by mean u^2).
+                                    if _prec is not None:
+                                        print(
+                                            f"    [prec energy]   "
+                                            f"min={_prec.min():.3e}  "
+                                            f"mean={_prec.mean():.3e}  "
+                                            f"max={_prec.max():.3e}  "
+                                            f"eps={_eps_prec:.3e}"
+                                        )
+                                        c_interior_param.grad.div_(_prec + _eps_prec)
                                 g_pre = c_interior_param.grad
                                 _np = g_pre.numel()
                                 _pct_pos_p = 100.0 * float((g_pre > 0).sum()) / _np
@@ -313,6 +436,10 @@ class LBFGSB(Optimiser):
                         return L_c
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
+                        # Hard-reset frozen cells — the line-search may have
+                        # moved them slightly despite zero gradient.
+                        if _free_mask is not None:
+                            c_interior_param.data[~_free_mask] = _c_frozen_init
                         if c_min is not None or c_max is not None:
                             c_at_min = (c_interior_param <= c_min + 1e-8).float().mean().item() if c_min is not None else 0.0
                             c_at_max = (c_interior_param >= c_max - 1e-8).float().mean().item() if c_max is not None else 0.0
@@ -324,13 +451,31 @@ class LBFGSB(Optimiser):
                             )
                             c_interior_param.clamp_(min=c_min, max=c_max)
 
-                # c changed — rebuild the u transform and re-seed z so that
-                # A(new c) and the current u remain consistent.
+                # c changed — rebuild A for the new medium.
                 if u_precond and u_transform is not None:
-                    c_full_new = vm_in.build_full_c(c_interior_param.detach() * c_ref)
+                    # For frozen_u, save u from the OLD transform before rebuild.
+                    # After rebuild, get_u_inner() would use A(c_new)^{-1} z_old
+                    # and reseeding would incorrectly leave z unchanged.
+                    u_fixed_before_rebuild = None
+                    if c_update == "frozen_u":
+                        with torch.no_grad():
+                            u_fixed_before_rebuild = u_transform.apply(
+                                z_param.detach()
+                            ).clone()
+
+                    c_full_new = vm_in.build_full_c(
+                        c_interior_param.detach() * c_ref
+                    )
                     u_transform.rebuild(self.loss, c_full_new)
-                    with torch.no_grad():
-                        z_param.data.copy_(u_transform.inverse(get_u_inner_detached()))
+
+                    if c_update == "frozen_u":
+                        # Choose z_new so A(c_new)^{-1} z_new = u_old.
+                        with torch.no_grad():
+                            z_param.data.copy_(
+                                u_transform.inverse(u_fixed_before_rebuild)
+                            )
+                    # frozen_z: leave z unchanged; next z-step uses
+                    # u = A(c_new)^{-1} z.
                     u_optimiser = make_u_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)

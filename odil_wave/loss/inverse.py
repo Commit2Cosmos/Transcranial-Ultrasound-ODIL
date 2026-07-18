@@ -152,16 +152,19 @@ class InverseLoss(DiscreteLoss):
         amp: torch.Tensor,
         c_full: torch.Tensor,
         c_interior: torch.Tensor | None = None,
+        weights_override: dict | None = None,
     ) -> torch.Tensor:
         r_pde, r_data = self._residuals(amp, c_full)
 
         w = self.config.weights
+        if weights_override is not None:
+            w = {**w, **weights_override}
         pde_terms = (r_pde**2).mean(dim=(1, 2, 3)).sum()
         data_terms = (r_data**2).mean(dim=(1, 2)).sum()
         L = w["pde"] * pde_terms + w["data"] * data_terms
 
         if self.config.regulariser is not None and c_interior is not None:
-            L = L + w["reg"] * self.config.regulariser(c_interior)
+            L = L + w.get("reg", 0.0) * self.config.regulariser(c_interior)
 
         self.evaluations += 1
         with torch.no_grad():
