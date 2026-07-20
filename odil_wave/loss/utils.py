@@ -42,15 +42,15 @@ class LossConfig:
     def __post_init__(self):
         wf = self.wave_eq.wavefield
         Nx, Ny = wf.grid.shape
-        Nt = wf.grid.nt
+        nf = wf.n_frequencies
 
         merged = dict(_DEFAULT_WEIGHTS)
         if self.weights is not None:
             merged.update(self.weights)
         self.weights = merged
 
-        # Hard zero IC at t=0 means amplitude has (NT-1, NX, NY) per shot.
-        self.speed_offset = self.geometry.n_sources * (Nt - 1) * Nx * Ny
+        # Real/imag packing: 2 * n_sources * nf * nx * ny free u DOFs.
+        self.speed_offset = self.geometry.n_sources * nf * Nx * Ny * 2
         self.device = wf.grid.device
         self.dtype = wf.grid.dtype
 
@@ -108,21 +108,23 @@ class LossTape:
         else:
             r_pde = residuals[0]
             with torch.no_grad():
-                self.history["pde_rms"].append(
-                    float(r_pde.detach().pow(2).mean().sqrt().cpu())
-                )
-                self.history["pde_loss"].append(
-                    float(r_pde.detach().pow(2).mean().cpu())
-                )
+                if r_pde.is_complex():
+                    pde_sq = r_pde.real.square() + r_pde.imag.square()
+                else:
+                    pde_sq = r_pde.detach().square()
+                self.history["pde_rms"].append(float(pde_sq.mean().sqrt().cpu()))
+                self.history["pde_loss"].append(float(pde_sq.mean().cpu()))
 
                 if len(residuals) > 1:
                     r_data = residuals[1]
+                    if r_data.is_complex():
+                        data_sq = r_data.real.square() + r_data.imag.square()
+                    else:
+                        data_sq = r_data.detach().square()
                     self.history["data_rms"].append(
-                        float(r_data.detach().pow(2).mean().sqrt().cpu())
+                        float(data_sq.mean().sqrt().cpu())
                     )
-                    self.history["data_loss"].append(
-                        float(r_data.detach().pow(2).mean().cpu())
-                    )
+                    self.history["data_loss"].append(float(data_sq.mean().cpu()))
 
         if pde_src_ratio is not None:
             self.history["pde_src_ratio"].append(float(pde_src_ratio))
