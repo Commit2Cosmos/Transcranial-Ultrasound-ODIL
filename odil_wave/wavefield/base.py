@@ -1,22 +1,17 @@
 from dataclasses import dataclass, field
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 
-from odil_wave.grid import Grid
+from odil_wave.grid import Grid, FrequencySelection, complex_dtype
 from odil_wave.models import VelocityModel
-from odil_wave.plot_utils import length_scale, time_scale
+from odil_wave.plot_utils import length_scale, frequency_scale
 
 
 def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
-    """Rescale a wavefield array for plotting.
-
-    mode:
-      - None / "none": pass-through
-      - "global":     divide by global max-abs (whole volume / slice)
-      - "per_frame":  divide each leading-axis frame by its own max-abs
-    """
+    """Rescale a wavefield array for plotting."""
     if mode is None or mode == "none":
         return amp
     if mode == "global":
@@ -34,40 +29,51 @@ def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
 
 @dataclass
 class Wavefield:
-    """Wave solution u(x, y, t) on a `Grid`, bound to a shared `VelocityModel`."""
+    """Complex frequency-domain wavefield u(ω, x, y) on a `Grid`.
+
+    Amplitude shape is ``(n_frequencies, nx, ny)`` complex for a single shot.
+    Multi-shot batches used by losses/optimisers are
+    ``(n_shots, n_frequencies, nx, ny)``.
+
+    ``init_ut`` is retained only for the leapfrog *time-domain reference*
+    generator used in FFT sanity tests; it is unused by the frequency ODIL path.
+    """
 
     grid: Grid
+    frequency_selection: FrequencySelection
     _amplitude: torch.Tensor = field(init=False)
-    init_amplitude: torch.Tensor | np.ndarray | None = (
-        None  # optionally initialise field
-    )
-
-    velocity_model: VelocityModel | None = None  # shared reference, not owned
-
+    init_amplitude: torch.Tensor | np.ndarray | None = None
+    velocity_model: VelocityModel | None = None
     _init_ut: torch.Tensor = field(init=False)
-    init_velocity: torch.Tensor | np.ndarray | None = (
-        None  # optional initial velocity field
-    )
-
-    # ensure device and dataype are consistent
+    init_velocity: torch.Tensor | np.ndarray | None = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)
+    cdtype: torch.dtype = field(init=False)
 
     def __post_init__(self) -> None:
-        Nx, Ny = self.grid.shape
-        Nt = self.grid.nt
+        if self.frequency_selection.grid is not self.grid:
+            # Allow equal grids constructed separately if metadata matches
+            if (
+                self.frequency_selection.n_time != self.grid.nt
+                or abs(self.frequency_selection.dt - self.grid.dt) > 1e-15
+            ):
+                raise ValueError(
+                    "frequency_selection must be built from the same Grid "
+                    "(matching nt/dt) as this Wavefield."
+                )
 
-        # extract device and dtype from grid for consistency
+        Nx, Ny = self.grid.shape
+        nf = self.frequency_selection.n_frequencies
+
         self.device = self.grid.device
         self.dtype = self.grid.dtype
+        self.cdtype = complex_dtype(self.dtype)
 
-        # cast inputs to torch Tensors to accept numpy arrays as well
-        # initialise amplitude as Nx*Ny*Nt or provided values
         self._amplitude = (
-            torch.zeros(size=(Nt, Nx, Ny), dtype=self.dtype, device=self.device)
+            torch.zeros(size=(nf, Nx, Ny), dtype=self.cdtype, device=self.device)
             if self.init_amplitude is None
             else torch.as_tensor(
-                self.init_amplitude, dtype=self.dtype, device=self.device
+                self.init_amplitude, dtype=self.cdtype, device=self.device
             )
         )
 
@@ -75,9 +81,7 @@ class Wavefield:
             self.velocity_model = VelocityModel(self.grid)
 
         self._init_ut = (
-            torch.zeros(
-                size=(Nx, Ny), dtype=self.dtype, device=self.device
-            )  # default init is zeros
+            torch.zeros(size=(Nx, Ny), dtype=self.dtype, device=self.device)
             if self.init_velocity is None
             else torch.as_tensor(
                 self.init_velocity, dtype=self.dtype, device=self.device
@@ -90,8 +94,11 @@ class Wavefield:
 
     @property
     def init_ut_nd(self) -> torch.Tensor:
-        """Initial velocity IC expressed in dimensionless time: u_{t'} = u_t * t0."""
         return self._init_ut * self.grid.t0
+
+    @property
+    def n_frequencies(self) -> int:
+        return self.frequency_selection.n_frequencies
 
     @property
     def amplitude(self) -> torch.Tensor:
@@ -99,18 +106,14 @@ class Wavefield:
 
     @amplitude.setter
     def amplitude(self, value: np.ndarray | torch.Tensor) -> None:
-        Nt = self.grid.nt
+        nf = self.n_frequencies
         Nx, Ny = self.grid.shape
-        if isinstance(value, torch.Tensor):
-            self._amplitude = value.to(dtype=self.dtype, device=self.device).reshape(
-                Nt, Nx, Ny
-            )
-        else:
-            self._amplitude = torch.as_tensor(
-                np.asarray(value).reshape(Nt, Nx, Ny),
-                dtype=self.dtype,
-                device=self.device,
-            )
+        amp = (
+            value.to(dtype=self.cdtype, device=self.device)
+            if isinstance(value, torch.Tensor)
+            else torch.as_tensor(np.asarray(value), dtype=self.cdtype, device=self.device)
+        )
+        self._amplitude = amp.reshape(nf, Nx, Ny)
 
     @property
     def wavespeed(self) -> torch.Tensor:
@@ -120,29 +123,38 @@ class Wavefield:
         self,
         idx: int,
         title="Wavefield and model",
-        view: str = "xy",
+        view: str = "abs",
         normalize: str | None = None,
         norm=None,
     ):
-        assert view in [
-            "xy",
-            "ty",
-            "tx",
-        ], "View must be str and one of 'xy', 'ty', 'tx'"
-        axis = {"xy": 0, "ty": 1, "tx": 2}[view]  # extract axis index
+        """Show frequency slice ``idx``.
 
-        # extrcat shapes
-        Nx, Ny = self.grid.shape
-        Nt = self.grid.nt
+        ``view``: ``"abs"`` | ``"real"`` | ``"imag"`` | ``"phase"``.
+        """
+        if not (0 <= idx < self.n_frequencies):
+            raise ValueError(
+                f"idx should be in [0, {self.n_frequencies}), got {idx}."
+            )
+        amp = self.amplitude[idx].detach().cpu().numpy()
+        if view == "abs":
+            amp_data = np.abs(amp)
+            cmap = "viridis"
+            label = "|u|"
+        elif view == "real":
+            amp_data = amp.real
+            cmap = "RdBu_r"
+            label = "Re(u)"
+        elif view == "imag":
+            amp_data = amp.imag
+            cmap = "RdBu_r"
+            label = "Im(u)"
+        elif view == "phase":
+            amp_data = np.angle(amp)
+            cmap = "twilight"
+            label = "phase"
+        else:
+            raise ValueError(f"view must be abs/real/imag/phase, got {view!r}")
 
-        param = [Nt, Nx, Ny][axis]  # extract upper limit of axis
-
-        if not (0 <= idx < param):
-            raise ValueError(f"idx should be an int in range [0, {param}], got {idx}.")
-
-        amp_data = np.take(
-            self.amplitude.cpu().numpy(), idx, axis=axis
-        )  # extract slice
         amp_data = _normalize_amplitude(amp_data, normalize)
 
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
@@ -151,45 +163,27 @@ class Wavefield:
         x_extent = (xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult)
 
         im1 = axs[0].imshow(
-            amp_data.T,
-            origin="lower",
-            extent=x_extent,
-            cmap="RdBu_r",
+            amp_data.T, origin="lower", extent=x_extent, cmap=cmap
         )
 
         im2_kw = dict(origin="lower", extent=(xmin, xmax, ymin, ymax), cmap="viridis")
         wsp_np = self.wavespeed.cpu().numpy()
         if norm is None:
-            _vmin = float(wsp_np.min())
-            _vmax = float(wsp_np.max())
-            if _vmax > _vmin:
-                from odil_wave.models import velocity_norm
-
-                norm = velocity_norm(
-                    vmin=_vmin,
-                    vcenter=_vmin + 0.25 * (_vmax - _vmin),
-                    vmax=_vmax,
-                )
-                im2_kw["norm"] = norm
-            else:
-                im2_kw["vmin"] = _vmin
-                im2_kw["vmax"] = _vmax
+            im2_kw["vmin"] = float(wsp_np.min())
+            im2_kw["vmax"] = float(wsp_np.max())
         else:
             im2_kw["norm"] = norm
         im2 = axs[1].imshow(wsp_np.T, **im2_kw)
 
-        i, j = view[0], view[1]  # extract letters for labelling
+        f = float(self.frequency_selection.frequencies[idx].item())
+        f_mult, f_unit = frequency_scale(abs(f) if f != 0 else 1.0)
         for ax in axs:
-            ax.set_xlabel(f"{i} [{x_unit}]")
-            ax.set_ylabel(f"{j} [{x_unit}]")
-
-        slice_plane = ["t", "x", "y"][axis]
-        axs[0].set_title(f"Amplitude field ({view} plane, {slice_plane} = {idx})")
+            ax.set_xlabel(f"x [{x_unit}]")
+            ax.set_ylabel(f"y [{x_unit}]")
+        axs[0].set_title(f"{label} (f = {f * f_mult:.3g} {f_unit})")
         axs[1].set_title("Wave speed model")
-
-        plt.colorbar(im1, ax=axs[0], label="Amplitude", shrink=0.85)
+        plt.colorbar(im1, ax=axs[0], label=label, shrink=0.85)
         plt.colorbar(im2, ax=axs[1], label=r"Wavespeed ($ms^{-1}$)", shrink=0.85)
-
         fig.suptitle(title)
         fig.tight_layout()
         plt.show()
@@ -197,30 +191,19 @@ class Wavefield:
     def animate(
         self,
         filename: str = "wavefield.gif",
-        fps: int = 20,
-        cmap: str = "RdBu_r",
-        title: str = "Wavefield history",
+        fps: int = 5,
+        cmap: str = "viridis",
+        title: str = "Wavefield |u|(f)",
         normalize: str | None = None,
     ) -> str:
-        """Render the amplitude field over all time steps to an animated GIF.
-
-        `normalize`:
-          - None (default): a single global colour scale (±max-abs over the
-            whole history) — physically faithful, but late-time wavefields
-            can look washed out if the early signal is much stronger.
-          - "global": same scale, but values rescaled to [-1, 1].
-          - "per_frame": each frame is rescaled to its own ±max-abs, which
-            keeps weak frames visible at the cost of comparability.
-        """
-
-        amp = self.amplitude.cpu().numpy()  # (Nt, Nx, Ny)
+        """Animate ``|u|`` over frequency index."""
+        amp = np.abs(self.amplitude.detach().cpu().numpy())
         amp = _normalize_amplitude(amp, normalize)
-        Nt = self.grid.nt
+        nf = self.n_frequencies
         (xmin, xmax), (ymin, ymax) = self.grid.extent
-        t = self.grid.t.cpu().numpy()
-
+        freqs = self.frequency_selection.frequencies.cpu().numpy()
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
-        t_mult, t_unit = time_scale(float(t[-1]) if t.size else 1.0)
+        f_mult, f_unit = frequency_scale(float(np.max(np.abs(freqs))) or 1.0)
 
         vmax = float(np.abs(amp).max()) or 1.0
         fig, ax = plt.subplots(figsize=(6, 5))
@@ -229,23 +212,22 @@ class Wavefield:
             origin="lower",
             extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap=cmap,
-            vmin=-vmax,
+            vmin=0.0,
             vmax=vmax,
             animated=True,
         )
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
-        ttl = ax.set_title(f"{title}  (t = {t[0] * t_mult:.2f} {t_unit})")
-        plt.colorbar(im, ax=ax, label="amplitude", shrink=0.85)
+        ttl = ax.set_title(f"{title}  (f = {freqs[0] * f_mult:.3g} {f_unit})")
+        plt.colorbar(im, ax=ax, label="|u|", shrink=0.85)
 
-        # update for drawing frames
         def update(frame: int):
             im.set_data(amp[frame].T)
-            ttl.set_text(f"{title}  (t = {t[frame] * t_mult:.2f} {t_unit})")
+            ttl.set_text(f"{title}  (f = {freqs[frame] * f_mult:.3g} {f_unit})")
             return im, ttl
 
         anim = animation.FuncAnimation(
-            fig, update, frames=Nt, interval=1000 / fps, blit=False
+            fig, update, frames=nf, interval=1000 / fps, blit=False
         )
         anim.save(filename, writer=animation.PillowWriter(fps=fps))
         plt.close(fig)
