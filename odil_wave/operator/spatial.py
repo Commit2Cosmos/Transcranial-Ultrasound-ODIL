@@ -30,7 +30,15 @@ def _fourth_derivative_1d(
 def _apply_conv_laplacian(
     utm: torch.Tensor, kernel: torch.Tensor, pad: int
 ) -> torch.Tensor:
-    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror)."""
+    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror).
+
+    Complex inputs are processed as real/imag separately (``F.conv2d`` is real).
+    """
+    if utm.is_complex():
+        return torch.complex(
+            _apply_conv_laplacian(utm.real, kernel, pad),
+            _apply_conv_laplacian(utm.imag, kernel, pad),
+        )
     spatial = utm.shape[-2:]
     leading = utm.shape[:-2]
     x = utm.reshape(-1, 1, *spatial)
