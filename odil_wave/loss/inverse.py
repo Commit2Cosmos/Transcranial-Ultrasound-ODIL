@@ -1,38 +1,29 @@
-import math
 from typing import Tuple
 
 import torch
 
 from odil_wave.wavefield import Wavefield
 
-from .base import DiscreteLoss
+from .base import DiscreteLoss, mean_abs_sq
 from .utils import LossConfig, LossTape
 
 
 class InverseLoss(DiscreteLoss):
-    """Joint (u, c) inverse-problem loss.
+    """Joint (u, c) inverse-problem loss in the frequency domain.
 
-    L = w_pde  * sum_s mean(r_pde_s  ** 2)
-      + w_data * sum_s mean(r_data_s ** 2)
-      + w_reg  * R(c_interior)            (if a Regulariser is attached)
+    L = w_pde  * mean(|r_pde|²)   # over shots, frequencies, space
+      + w_data * mean(|r_data|²)  # over shots, frequencies, receivers
+      + w_reg  * R(c_interior)
 
-    Observations may be supplied either as full per-shot wavefields
-    (``observed_wavefield``) or as receiver traces only (``observed_traces``,
-    shape ``(n_shots, NT, n_receivers)``). The latter is intended for data
-    from external forward models such as Stride.
+    Global means keep the loss / gradient scale invariant to ``N_f`` and
+    ``N_s`` so fair comparisons do not conflate more data with a larger loss.
 
-    ``normalize_data`` rescales the receiver traces that enter the data
-    residual. Modes:
-      - None / "none":   off — raw amplitudes (default).
-      - "per_receiver":  each receiver's trace is divided by its own max-abs
-                         in the observations. The same factor is applied to
-                         synthetic traces.
-      - "global":        per-shot global max-abs (one scalar per shot).
+    ``c_interior`` is the field passed to the regulariser. ``LBFGSB`` passes
+    the normalised parameter ``c_new = c / c_ref`` so Tikhonov is scale-stable;
+    the PDE always uses physical ``c_full``.
 
-    Early-arrival muting
-    --------------------
-    Pass ``t_mask`` (same units as ``grid.t``) to taper out samples before
-    that time in the data residual. Pass ``None`` (default) to disable.
+    Observations: full complex wavefields ``(n_shots, nf, nx, ny)`` or
+    complex receiver traces ``(n_shots, nf, n_receivers)``.
     """
 
     def __init__(
@@ -43,8 +34,7 @@ class InverseLoss(DiscreteLoss):
         observed_traces=None,
         callback: LossTape | None = None,
         normalize_data: str | None = None,
-        t_mask: float | None = None,
-        mute_taper_steps: int = 4,
+        f_weights: torch.Tensor | None = None,
     ):
         super().__init__(config, callback)
 
@@ -55,28 +45,41 @@ class InverseLoss(DiscreteLoss):
                 "Supply exactly one of observed_wavefield or observed_traces."
             )
 
+        cdtype = self.config.wave_eq.wavefield.cdtype
         self._trace_mode = has_tr
         if has_tr:
-            tr = torch.as_tensor(observed_traces, dtype=self.config.dtype)
+            tr = torch.as_tensor(observed_traces, dtype=cdtype)
             if tr.ndim != 3:
                 raise ValueError(
-                    f"observed_traces must be (n_shots, NT, n_receivers), "
+                    f"observed_traces must be (n_shots, nf, n_receivers), "
                     f"got {tuple(tr.shape)}"
                 )
             self.d_obs = tr.to(device=self.config.device)
         else:
             obs = self._stack_observations(observed_wavefield)
             self.d_obs = torch.as_tensor(
-                obs, dtype=self.config.dtype, device=self.config.device
+                obs, dtype=cdtype, device=self.config.device
             )
 
         self.normalize_data = normalize_data
-        self._mute_mask = self._build_mute_mask(t_mask, mute_taper_steps)
+        nf = self.config.wave_eq.wavefield.n_frequencies
+        if f_weights is None:
+            self._f_weights = None
+        else:
+            w = torch.as_tensor(
+                f_weights, dtype=self.config.dtype, device=self.config.device
+            ).reshape(-1)
+            if w.numel() != nf:
+                raise ValueError(
+                    f"f_weights length {w.numel()} != n_frequencies {nf}"
+                )
+            self._f_weights = w.view(1, nf, 1).detach()
+
         self._trace_scale = self._compute_trace_scale()
 
     @staticmethod
     def _stack_observations(observed_wavefield):
-        """Coerce input to a (n_shots, NT, NX, NY) tensor."""
+        """Coerce input to a (n_shots, nf, NX, NY) tensor."""
         if isinstance(observed_wavefield, (list, tuple)):
             amps = [
                 w.amplitude if isinstance(w, Wavefield) else torch.as_tensor(w)
@@ -86,7 +89,7 @@ class InverseLoss(DiscreteLoss):
         return observed_wavefield
 
     def _obs_traces(self) -> torch.Tensor:
-        """Observation traces as ``(n_shots, NT, n_receivers)``."""
+        """Observation traces as ``(n_shots, nf, n_receivers)``."""
         if self._trace_mode:
             return self.d_obs
         i = self.config.geometry.recv_ij[:, 0]
@@ -97,8 +100,8 @@ class InverseLoss(DiscreteLoss):
         if self.normalize_data is None or self.normalize_data == "none":
             return None
         obs_tr = self._obs_traces()
-        if self._mute_mask is not None:
-            obs_tr = obs_tr * self._mute_mask
+        if self._f_weights is not None:
+            obs_tr = obs_tr * self._f_weights
         if self.normalize_data == "per_receiver":
             scale = obs_tr.abs().amax(dim=1, keepdim=True)
         elif self.normalize_data == "global":
@@ -109,26 +112,6 @@ class InverseLoss(DiscreteLoss):
                 "expected one of None, 'per_receiver', 'global'."
             )
         return scale.clamp(min=1e-12).detach()
-
-    def _build_mute_mask(
-        self,
-        t_mask: float | None,
-        taper_steps: int,
-    ) -> torch.Tensor | None:
-        if t_mask is None:
-            return None
-
-        cfg = self.config
-        grid = cfg.wavefield.grid
-        t = grid.t.to(dtype=cfg.dtype, device=cfg.device)
-        taper_width = max(1, int(taper_steps)) * float(grid.dt)
-
-        delta = t - float(t_mask)
-        ramp = 0.5 - 0.5 * torch.cos(
-            torch.clamp(delta / taper_width, min=0.0, max=1.0) * math.pi
-        )
-        mask = torch.where(delta <= 0, torch.zeros_like(delta), ramp)
-        return mask.view(1, -1, 1).detach()
 
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor
@@ -143,8 +126,8 @@ class InverseLoss(DiscreteLoss):
             syn_tr = syn_tr / self._trace_scale
             obs_tr = obs_tr / self._trace_scale
         data = syn_tr - obs_tr
-        if self._mute_mask is not None:
-            data = data * self._mute_mask
+        if self._f_weights is not None:
+            data = data * self._f_weights
         return pde, data
 
     def evaluate(
@@ -159,18 +142,22 @@ class InverseLoss(DiscreteLoss):
         w = self.config.weights
         if weights_override is not None:
             w = {**w, **weights_override}
-        pde_terms = (r_pde**2).mean(dim=(1, 2, 3)).sum()
-        data_terms = (r_data**2).mean(dim=(1, 2)).sum()
+        # Global mean (not sum-over-shots): scale-invariant in N_f and N_s.
+        pde_terms = mean_abs_sq(r_pde)
+        data_terms = mean_abs_sq(r_data)
         L = w["pde"] * pde_terms + w["data"] * data_terms
 
         if self.config.regulariser is not None and c_interior is not None:
             L = L + w.get("reg", 0.0) * self.config.regulariser(c_interior)
 
+        if L.is_complex():
+            L = L.real
+
         self.evaluations += 1
         with torch.no_grad():
-            pde_rms = float(r_pde.pow(2).mean().sqrt().detach().cpu())
-            data_rms = float(r_data.pow(2).mean().sqrt().detach().cpu())
-            src_rms = float(self.sources.pow(2).mean().sqrt().detach().cpu())
+            pde_rms = float(mean_abs_sq(r_pde).sqrt().detach().cpu())
+            data_rms = float(mean_abs_sq(r_data).sqrt().detach().cpu())
+            src_rms = float(mean_abs_sq(self.sources).sqrt().detach().cpu())
 
         self._last_residuals = {
             "pde_rms": pde_rms,
