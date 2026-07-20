@@ -1,106 +1,83 @@
+"""Frequency-domain wave equation residual (discrete temporal symbols)."""
+
 from dataclasses import dataclass, field
+
 import torch
+
 from odil_wave.wavefield import Wavefield
 from .base import DenseOperator
-from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
-from .conditions import (
-    Conditions,
-    NeumannMirrorBC2nd,
-    NeumannMirrorBC4th,
-    PML,
-)
+from .conditions import Conditions, NeumannMirrorBC2nd, NeumannMirrorBC4th, Sponge
 
 
 @dataclass
 class WaveEquation:
-    """Discrete acoustic wave equation u_tt - c^2*lap(u) = f.
+    """Discrete frequency-domain acoustic residual matching the time ODIL form.
 
-    Initial conditions (u(0,x,y)=0 and u_t(0,x,y)=init_ut) are hard-
-    constrained.
+    Time residual (normalized)::
+
+        r = D_tt[u] - c'^2 ∇'^2 u - f'
+          + w_sponge [ σ_sum_nd D_t[u] + σ_prod_nd u ]
+
+    Frequency form (2nd-order centered symbols from FrequencySelection)::
+
+        r(ω) = λ_tt u - c'^2 ∇'^2 u - f̂'
+             + w_sponge [ σ_sum_nd λ_t u + σ_prod_nd u ]
+
+    with ``λ_t = i sin(ω_nd Δt') / Δt'`` and
+    ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)``.
+
+    Amplitudes / sources are complex ``(n_shots, n_frequencies, nx, ny)``.
+    ``c_closed_form`` is intentionally unimplemented for complex ``u``.
     """
 
     wavefield: Wavefield
-    time_order: int = 2
     space_order: int = 2
     pml_weight: float = 1.0
+    # Accepted for API compatibility with older call sites; ignored.
+    time_order: int = 2
+    ot4: bool = False
 
-    _time_op: DenseOperator = field(init=False)
     _lap: DenseOperator = field(init=False)
     _bc: Conditions = field(init=False)
-    _pml: PML = field(init=False)
+    _sponge: Sponge = field(init=False)
 
     def __post_init__(self):
-        if self.time_order == 2:
-            self._time_op = TimeOperator2ndOrder(self.wavefield)
-        elif self.time_order == 4:
-            self._time_op = TimeOperator4thOrder(self.wavefield)
-        else:
-            raise ValueError(f"Invalid time order: {self.time_order}")
-
         if self.space_order == 2:
             self._lap = Laplacian2ndOrder(self.wavefield)
+            self._bc = NeumannMirrorBC2nd()
         elif self.space_order == 4:
             self._lap = Laplacian4thOrder(self.wavefield)
+            self._bc = NeumannMirrorBC4th()
         elif self.space_order == 10:
-            self._lap = Laplacian10thOrder(self.wavefield)  
-        else:
-            raise ValueError(f"Invalid space order: {self.space_order}")
-
-        if self.space_order == 2:
-            self._bc = NeumannMirrorBC2nd()
-        elif self.space_order in (4, 10):
+            self._lap = Laplacian10thOrder(self.wavefield)
             self._bc = NeumannMirrorBC4th()
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
-        self._pml = PML(self.wavefield, self.pml_weight)
+        self._sponge = Sponge(self.wavefield, self.pml_weight)
 
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:
-        """Dimensionless residual u_{t't'} - c'^2 * lap'(u) - f' with PML damping.
+        """Complex dimensionless residual on shot-batched frequency fields.
 
-        ``wsp`` is the physical wavespeed (m/s); it is normalised by
-        ``grid.c0`` here so the optimiser can keep operating in physical
-        units. ``source`` is expected pre-scaled by ``t0**2``.
+        ``wsp`` is physical wavespeed (m/s). ``source`` is pre-scaled by ``t0**2``.
         """
         c0 = self.wavefield.grid.c0
         wsp_nd = wsp / c0
-        utt = self._time_op.apply(amp)
+        freq = self.wavefield.frequency_selection
+        lambda_t, lambda_tt = freq.symbols_broadcast()
+        # Ensure symbol dtype matches amp
+        lambda_t = lambda_t.to(dtype=amp.dtype, device=amp.device)
+        lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
+
         lap = self._lap.apply(amp, bc=self._bc)
-        r = utt - wsp_nd**2 * lap - source
-        return self._pml.apply(r, amp)
+        r = lambda_tt * amp - wsp_nd**2 * lap - source
+        return self._sponge.apply(r, amp, lambda_t)
 
-    def c_closed_form(
-        self,
-        amp: torch.Tensor,
-        source: torch.Tensor,
-        c_current: torch.Tensor | None = None,
-        illum_rel_floor: float = 1e-6,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Per-cell least-squares wavespeed given the wavefield (variable
-        projection).
+    def c_closed_form(self, *args, **kwargs):
+        raise NotImplementedError(
+            "c_closed_form is out of scope for complex frequency-domain u "
+            "until a conjugated, real-valued update is derived and tested."
+        )
 
-        Parameters
-        ----------
-        amp : (n_shots, NT, NX, NY) wavefield.
-        source : (n_shots, NT, NX, NY) sources, pre-scaled by ``t0**2``.
-        c_current : optional (NX, NY) fallback for unilluminated cells.
-
-        Returns
-        -------
-        (c_star, illumination) : both (NX, NY).
-        """
-        with torch.no_grad():
-            utt = self._time_op.apply(amp)
-            a = self._lap.apply(amp, bc=self._bc)
-            b = self._pml.apply(utt - source, amp)
-            num = (a * b).sum(dim=(0, 1))
-            den = (a * a).sum(dim=(0, 1))
-            floor = illum_rel_floor * float(den.max())
-            k = num / den.clamp(min=floor)
-            c0 = self.wavefield.grid.c0
-            c_star = c0 * k.clamp(min=1e-12).sqrt()
-            if c_current is not None:
-                c_star = torch.where(den > floor, c_star, c_current)
-            return c_star, den
