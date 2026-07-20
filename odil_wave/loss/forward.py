@@ -1,22 +1,23 @@
 import torch
 
-from .base import DiscreteLoss
+from .base import DiscreteLoss, mean_abs_sq
 
 
 class ForwardLoss(DiscreteLoss):
-    """Per-shot PDE-residual loss for the forward solve."""
+    """Per-shot PDE-residual loss for the frequency-domain forward solve."""
 
     def _residuals(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
-        # amp:     (n_shots, NT, NX, NY)
-        # sources: (n_shots, NT, NX, NY) -- precomputed in DiscreteLoss.__init__
+        # amp, sources: (n_shots, nf, nx, ny) complex
         return self.config.wave_eq.residual(amp, wsp, self.sources)
 
     def evaluate(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
         r = self._residuals(amp, wsp)
         w_pde = self.config.weights["pde"]
-        L = w_pde * (r**2).mean(dim=(1, 2, 3)).sum()
+        L = w_pde * mean_abs_sq(r)  # global mean over shots, frequencies, space
+        if L.is_complex():
+            L = L.real
 
         self.evaluations += 1
         self._last_residuals = (r.detach(),)
-
         return L
+
