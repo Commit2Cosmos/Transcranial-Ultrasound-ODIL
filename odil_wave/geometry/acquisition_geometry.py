@@ -6,7 +6,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from odil_wave.grid import Grid
+from odil_wave.grid import Grid, FrequencySelection
 from odil_wave.models import VelocityModel
 from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
@@ -47,6 +47,7 @@ class AcquisitionGeometry:
         self,
         grid: Grid,
         source: SourceSignal,
+        frequency_selection: FrequencySelection,
         n_receivers: int = 16,
         n_sources: Optional[int] = None,
         sigma_s: Optional[float] = None,
@@ -57,6 +58,7 @@ class AcquisitionGeometry:
     ):
         self.grid = grid
         self.source = source
+        self.frequency_selection = frequency_selection
         # ensure same device and dtype as grid
         self.device = self.grid.device
         self.dtype = self.grid.dtype
@@ -109,28 +111,43 @@ class AcquisitionGeometry:
         i, j = int(self.recv_ij[rcv_idx, 0]), int(self.recv_ij[rcv_idx, 1])
         return float(self.grid.x[i]), float(self.grid.y[j])
 
-    def source_field(self, src_idx: int) -> torch.Tensor:
-        """(NT, NX, NY) source field: SourceSignal in time, `source_spatial`
-        profile ('gaussian' blob or single-node 'point') in space."""
+    def _spatial_profile(self, src_idx: int) -> torch.Tensor:
         if self.source_spatial == "point":
             i = int(self.src_ij[src_idx, 0])
             j = int(self.src_ij[src_idx, 1])
             spatial = torch.zeros(self.grid.shape, dtype=self.dtype, device=self.device)
             spatial[i, j] = 1.0
-        else:
-            x_src, y_src = self.src_position(src_idx)
-            spatial = torch.exp(
-                -(
-                    ((self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2)
-                    / self.sigma_s**2
-                )
+            return spatial
+        x_src, y_src = self.src_position(src_idx)
+        return torch.exp(
+            -(
+                ((self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2)
+                / self.sigma_s**2
             )
+        )
+
+    def source_field_time(self, src_idx: int) -> torch.Tensor:
+        """Real ``(nt, nx, ny)`` source for leapfrog / FFT reference."""
+        spatial = self._spatial_profile(src_idx)
         temporal = self.source.waveform(self.grid.t)
         return temporal.view(-1, 1, 1) * spatial.view(1, *self.grid.shape)
 
+    def source_field(self, src_idx: int) -> torch.Tensor:
+        """Complex ``(n_frequencies, nx, ny)`` source on FrequencySelection bins."""
+        spatial = self._spatial_profile(src_idx)
+        spectrum = self.source.spectrum(self.frequency_selection)
+        cdtype = self.frequency_selection.cdtype
+        return spectrum.to(dtype=cdtype).view(-1, 1, 1) * spatial.to(dtype=cdtype).view(
+            1, *self.grid.shape
+        )
+
     def extract_observations(self, U: torch.Tensor) -> torch.Tensor:
-        """Pull (NT, n_receivers) sensor data from a (NT, NX, NY) wavefield."""
-        return U[:, self.recv_ij[:, 0], self.recv_ij[:, 1]]
+        """Pull ``(..., n_receivers)`` from a field with trailing ``(nx, ny)``.
+
+        Time-domain ``U``: ``(nt, nx, ny)`` → ``(nt, n_rcv)``.
+        Frequency-domain ``U``: ``(nf, nx, ny)`` → ``(nf, n_rcv)``.
+        """
+        return U[..., self.recv_ij[:, 0], self.recv_ij[:, 1]]
 
     def plot_traces(
         self,
@@ -232,7 +249,7 @@ class AcquisitionGeometry:
         """
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
-        src = self.source_field(src_idx).cpu().numpy()
+        src = self.source_field_time(src_idx).cpu().numpy()
         if t_idx is None:
             t_idx = int(
                 np.argmax(np.abs(self.source.waveform(self.grid.t).cpu().numpy()))
