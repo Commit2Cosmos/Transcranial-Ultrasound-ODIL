@@ -1,19 +1,26 @@
-"""Explicit leapfrog time-stepping forward solver.
-"""
+"""Explicit leapfrog time-stepping forward solver (FFT sanity reference)."""
 
 import math
 import warnings
-from typing import List, Optional
+from typing import Optional
 
 import torch
 
 from odil_wave.wavefield import Wavefield
 from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
-from .utils import WaveEquation
+from .temporal import (
+    TimeOperator2ndOrder,
+    _first_time_derivative,
+    _make_endpoint_masks,
+)
 
 
 class LeapfrogSolver:
-    """Exact explicit solve of the ``time_order=2`` discrete wave equation."""
+    """Exact explicit solve of the ``time_order=2`` discrete wave equation.
+
+    Retained as a **time-domain reference** for FFT sanity tests. Public ODIL
+    path uses :class:`HelmholtzSolver` / frequency residuals.
+    """
 
     def __init__(
         self,
@@ -41,16 +48,11 @@ class LeapfrogSolver:
         grid = wavefield.grid
         c_max = float(wavefield.velocity_model.c.max())
         cfl = grid.cfl(c_max)
-        # Leapfrog limit: dt^2 * lambda_max(-c^2 lap_h) <= 4. The 2nd-order
-        # Laplacian has max eigenvalue 4/h^2 per axis -> cfl <= 1; the
-        # 4th-order stencil reaches (16/3)/h^2 -> cfl <= sqrt(3)/2.
         if space_order == 2:
             cfl_limit = 1.0
         elif space_order == 4:
             cfl_limit = math.sqrt(3.0) / 2.0
         elif space_order == 10:
-            # 10th-order 1D second-derivative stencil has max eigenvalue
-            # approximately 6.8267 / h^2, so the 2D CFL limit is 2/sqrt(6.8267).
             cfl_limit = 2.0 / math.sqrt(6.826666666666667)
         else:
             raise ValueError(f"Invalid space order: {space_order}")
@@ -67,8 +69,8 @@ class LeapfrogSolver:
                 RuntimeWarning,
             )
 
-    def solve(self, verbose: bool = True) -> List[Wavefield]:
-        """Time-step all shots; returns one `Wavefield` per shot."""
+    def solve_time(self, verbose: bool = True) -> torch.Tensor:
+        """Time-step all shots; returns real ``(n_shots, nt, nx, ny)``."""
         wf = self.wavefield
         grid = wf.grid
         device, dtype = grid.device, grid.dtype
@@ -76,11 +78,10 @@ class LeapfrogSolver:
         Nx, Ny = grid.shape
         n_shots = self.geometry.n_sources
 
-        # Same non-dimensional scaling as DiscreteLoss: f' = t0^2 * f.
         sources = (
             torch.stack(
                 [
-                    self.geometry.source_field(s).to(dtype=dtype, device=device)
+                    self.geometry.source_field_time(s).to(dtype=dtype, device=device)
                     for s in range(n_shots)
                 ]
             )
@@ -89,12 +90,13 @@ class LeapfrogSolver:
 
         dt = grid.dt_nd
         k = (wf.velocity_model.c / grid.c0) ** 2
-        sig_s = self.pml_weight * (grid.sigma_x_nd + grid.sigma_y_nd)
-        sig_p = self.pml_weight * (grid.sigma_x_nd * grid.sigma_y_nd)
+        sig_s_raw = grid.sigma_x_nd + grid.sigma_y_nd
+        sig_p_raw = grid.sigma_x_nd * grid.sigma_y_nd
+        sig_s = self.pml_weight * sig_s_raw
+        sig_p = self.pml_weight * sig_p_raw
         denom = 1.0 / dt**2 + sig_s / (2.0 * dt)
 
         amp = torch.zeros(n_shots, NT, Nx, Ny, dtype=dtype, device=device)
-        # Hard ICs matching LBFGSB's fixed rows: u[0] = 0, u[1] = dt * u_t(0).
         amp[:, 1] = grid.dt * wf.init_ut.to(dtype=dtype, device=device)
 
         with torch.no_grad():
@@ -108,15 +110,17 @@ class LeapfrogSolver:
                 )
                 amp[:, t + 1] = rhs / denom
 
-        # Health check with the matching discrete residual.
-        wave_eq = WaveEquation(
-            wf,
-            time_order=2,
-            space_order=self.space_order,
-            pml_weight=self.pml_weight,
-        )
+        # Time-domain residual health check (legacy operators).
+        time_op = TimeOperator2ndOrder(wf)
+        mask_first, mask_last = _make_endpoint_masks(NT, device)
         with torch.no_grad():
-            r = wave_eq.residual(amp, wf.velocity_model.c, sources)
+            utt = time_op.apply(amp)
+            lap = self._lap.apply(amp)
+            r = utt - k * lap - sources
+            u_t = _first_time_derivative(
+                amp, dt, wf.init_ut_nd, mask_first, mask_last
+            )
+            r = r + self.pml_weight * (sig_s_raw * u_t + sig_p_raw * amp)
             r_rms = float(r.pow(2).mean().sqrt())
             src_rms = float(sources.pow(2).mean().sqrt())
         self.diagnostics = {
@@ -132,10 +136,8 @@ class LeapfrogSolver:
                 f"|r_pde|/|src| = {self.diagnostics['ratio']:.3e}, "
                 f"|u|_max = {self.diagnostics['u_absmax']:.3e}"
             )
+        return amp
 
-        outputs: List[Wavefield] = []
-        for s in range(n_shots):
-            out = Wavefield(grid=grid, velocity_model=wf.velocity_model)
-            out.amplitude = amp[s]
-            outputs.append(out)
-        return outputs
+    def solve(self, verbose: bool = True) -> torch.Tensor:
+        """Alias for :meth:`solve_time` (returns time-domain amplitudes)."""
+        return self.solve_time(verbose=verbose)
