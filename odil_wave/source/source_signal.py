@@ -122,6 +122,14 @@ class SourceSignal:
             f"Unknown source kind '{self.kind}'. Use 'ricker' or 'tone_burst'."
         )
 
+    def spectrum(self, frequency_selection) -> torch.Tensor:
+        """Complex spectrum of ``s(t)`` on ``FrequencySelection`` bins.
+
+        FFT of the waveform on ``grid.t`` with the same norm/bins as observations.
+        """
+        s_t = self.waveform(self.grid.t)
+        return frequency_selection.fft_time_series(s_t, dim=0)
+
     def __call__(self, t: torch.Tensor) -> torch.Tensor:
         return self.waveform(t)
 
