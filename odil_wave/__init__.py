@@ -1,4 +1,9 @@
-from odil_wave.grid import Grid, FrequencySelection
+from odil_wave.grid import (
+    Grid,
+    FrequencyLimits,
+    FrequencySelection,
+    usable_frequency_limits,
+)
 from odil_wave.source import SourceSignal
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.models import VelocityModel
@@ -11,11 +16,20 @@ from odil_wave.loss import (
     InverseLoss,
     Regulariser,
 )
-from odil_wave.optimisation import LBFGSB, debug_one_c_step
+from odil_wave.optimisation import (
+    LBFGSB,
+    debug_one_c_step,
+    BandTimingStats,
+    FrequencyBand,
+    FrequencyContinuationResult,
+    run_frequency_continuation,
+)
 
 __all__ = [
     "Grid",
+    "FrequencyLimits",
     "FrequencySelection",
+    "usable_frequency_limits",
     "SourceSignal",
     "AcquisitionGeometry",
     "VelocityModel",
@@ -30,4 +44,9 @@ __all__ = [
     "Regulariser",
     "LBFGSB",
     "debug_one_c_step",
+    "BandTimingStats",
+    "FrequencyBand",
+    "FrequencyContinuationResult",
+    "run_frequency_continuation",
 ]
+
