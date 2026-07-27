@@ -20,6 +20,7 @@ import torch
 
 # Helper: differentiable linear map via custom autograd Function
 
+
 class _LinearMapFn(torch.autograd.Function):
     """Wrap a linear map ``M`` so that autograd sees ``forward = M`` and
     ``backward = M^T``.  Avoids storing the full computation graph of the
@@ -39,6 +40,7 @@ class _LinearMapFn(torch.autograd.Function):
 
 
 # Vectorised matvec for the reduced PDE block A
+
 
 def u_block_ops(loss, c_full: torch.Tensor) -> Dict[str, Callable]:
     """Return matrix-free operators for the reduced PDE block ``A``.
@@ -63,32 +65,29 @@ def u_block_ops(loss, c_full: torch.Tensor) -> Dict[str, Callable]:
     dt = g.dt_nd
     c0 = g.c0
     lap = wave_eq._lap
-    ot4 = wave_eq.ot4
     w = wave_eq.pml_weight
 
     sig_s = w * (g.sigma_x_nd + g.sigma_y_nd)
     sig_p = w * (g.sigma_x_nd * g.sigma_y_nd)
-    denom = 1.0 / dt**2 + sig_s / (2.0 * dt)   # (Nx, Ny)
-    Cc    = 1.0 / dt**2 - sig_s / (2.0 * dt)
-    B0    = 2.0 / dt**2 - sig_p
+    denom = 1.0 / dt**2 + sig_s / (2.0 * dt)  # (Nx, Ny)
+    Cc = 1.0 / dt**2 - sig_s / (2.0 * dt)
+    B0 = 2.0 / dt**2 - sig_p
     k = (c_full.detach().to(dtype=g.dtype, device=g.device) / c0) ** 2
-    gam = dt**2 / 12.0
 
     def matvec(u: torch.Tensor) -> torch.Tensor:
         """Vectorised ``A u``: ``(S, n, Nx, Ny) -> (S, n, Nx, Ny)``."""
         z0 = torch.zeros_like(u[:, :1])
-        u_m1 = torch.cat([z0,       u[:, :-1]],  dim=1)  # u_{j-1}
-        u_m2 = torch.cat([z0, z0,   u[:, :-2]],  dim=1)  # u_{j-2}
+        u_m1 = torch.cat([z0, u[:, :-1]], dim=1)  # u_{j-1}
+        u_m2 = torch.cat([z0, z0, u[:, :-2]], dim=1)  # u_{j-2}
         lap_m1 = lap.apply(u_m1)
         Au = denom * u - B0 * u_m1 - k * lap_m1 + Cc * u_m2
-        if ot4:
-            Au = Au - gam * k * lap.apply(k * lap_m1)
         return Au
 
     return {"matvec": matvec}
 
 
 # Exact preconditioner: A^{-1} by forward substitution
+
 
 class TimeStepPreconditioner:
     """Exact ``M = A^{-1}`` by forward substitution (a leapfrog sweep).
@@ -99,8 +98,8 @@ class TimeStepPreconditioner:
     ``1/dt'^2 + sigma_s/(2 dt')`` and ``x_t, x_{t-1}`` through the leapfrog
     stencil. One forward-substitution sweep -- the existing leapfrog kernel
     driven by the residual as a source -- therefore applies ``A^{-1}``
-    *exactly*: arbitrary velocity contrast, true reflect boundaries, PML and
-    OT4 rows included. ``A^{-T}`` is the reverse-time sweep, obtained here by
+    *exactly*: arbitrary velocity contrast, true reflect boundaries and PML.
+    ``A^{-T}`` is the reverse-time sweep, obtained here by
     autograd through the forward loop (exact transpose of every patch).
 
     As a split preconditioner ``P = M M^T = (A^T A)^{-1}`` the PDE block of
@@ -116,7 +115,6 @@ class TimeStepPreconditioner:
         g = wave_eq.wavefield.grid
         self._dt = g.dt_nd
         self._c0 = g.c0
-        self._ot4 = wave_eq.ot4
         self._lap = wave_eq._lap
         w = wave_eq.pml_weight
         self._sig_s = w * (g.sigma_x_nd + g.sigma_y_nd)
@@ -129,8 +127,7 @@ class TimeStepPreconditioner:
     def rebuild(self, c_full: torch.Tensor) -> None:
         """Refresh the medium (cheap, elementwise). Call per outer c-update."""
         g = self.wave_eq.wavefield.grid
-        self._k = (c_full.detach().to(dtype=g.dtype, device=g.device)
-                   / self._c0) ** 2
+        self._k = (c_full.detach().to(dtype=g.dtype, device=g.device) / self._c0) ** 2
 
     def _sweep_with_k(self, v: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         """Forward substitution ``A(k) x = v`` for ``v`` of shape ``(S, n, Nx, Ny)``.
@@ -141,15 +138,12 @@ class TimeStepPreconditioner:
                           + (dt^2/12) k L (k L x_t) - (1/dt'^2 - sig_s/2dt') x_{t-1}
         """
         n = v.shape[1]
-        gam = self._dt**2 / 12.0
         x_t = torch.zeros_like(v[:, 0])
         x_tm = torch.zeros_like(v[:, 0])
         xs = []
         for j in range(n):
             lap = self._lap.apply(x_t)
             rhs = v[:, j] + self._B0 * x_t + k * lap - self._Cc * x_tm
-            if self._ot4:
-                rhs = rhs + gam * k * self._lap.apply(k * lap)
             x_new = rhs / self._denom
             xs.append(x_new)
             x_tm, x_t = x_t, x_new
@@ -188,14 +182,16 @@ class TimeStepPreconditioner:
         """SPD action ``P v = A^{-1} A^{-T} v = (A^T A)^{-1} v`` (exact)."""
         return self.apply(self.apply_T(v))
 
+
 # Coordinate-change transform: u = A^{-1} z
+
 
 class TimeStepUTransform:
     """Exact inverse-operator metric for the wavefield block: ``u = A^{-1} z``.
 
     ``M`` is :class:`TimeStepPreconditioner` -- the exact inverse of the
     reduced PDE block by sequential forward substitution (one leapfrog
-    sweep; arbitrary velocity contrast, PML and OT4 rows included). L-BFGS
+    sweep; arbitrary velocity contrast and PML included). L-BFGS
     on ``z`` therefore sees::
 
         M^T H_u M = a I + b (S A^{-1})^T (S A^{-1})

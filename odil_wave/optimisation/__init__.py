@@ -9,14 +9,6 @@ from .frequency_continuation import (
 )
 from .helmholtz_utransform import HelmholtzUTransform
 
-__all__ = [
-    "LBFGSB",
-    "HelmholtzUTransform",
-    "debug_one_c_step",
-    "BandTimingStats",
-    "FrequencyBand",
-    "FrequencyContinuationResult",
-    "run_frequency_continuation",
 from .grid_transfer import (
     SUPPORTED_STAGGERINGS,
     assert_compatible_interiors,
@@ -27,6 +19,7 @@ from .grid_transfer import (
 from .modil import (
     MODILInversion,
     MODILVelocityParameterization,
+    MODILWavefieldParameterization,
     build_grid_hierarchy,
 )
 
@@ -34,6 +27,11 @@ __all__ = [
     "LBFGSB",
     "LBFGSClosedForm",
     "debug_one_c_step",
+    "HelmholtzUTransform",
+    "BandTimingStats",
+    "FrequencyBand",
+    "FrequencyContinuationResult",
+    "run_frequency_continuation",
     # geometry-aware grid-transfer operators
     "prolongate_interior_velocity",
     "resample_interior_field",
@@ -41,6 +39,7 @@ __all__ = [
     "assert_compatible_interiors",
     "SUPPORTED_STAGGERINGS",
     # genuine simultaneous mODIL
+    "MODILWavefieldParameterization",
     "MODILVelocityParameterization",
     "MODILInversion",
     "build_grid_hierarchy",

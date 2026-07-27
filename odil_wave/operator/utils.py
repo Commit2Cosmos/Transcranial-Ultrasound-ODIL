@@ -38,7 +38,6 @@ class WaveEquation:
     pml_weight: float = 1.0
     # Accepted for API compatibility with older call sites; ignored.
     time_order: int = 2
-    ot4: bool = False
 
     _lap: DenseOperator = field(init=False)
     _bc: Conditions = field(init=False)
