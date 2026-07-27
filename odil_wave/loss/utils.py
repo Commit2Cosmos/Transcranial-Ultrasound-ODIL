@@ -121,9 +121,7 @@ class LossTape:
                         data_sq = r_data.real.square() + r_data.imag.square()
                     else:
                         data_sq = r_data.detach().square()
-                    self.history["data_rms"].append(
-                        float(data_sq.mean().sqrt().cpu())
-                    )
+                    self.history["data_rms"].append(float(data_sq.mean().sqrt().cpu()))
                     self.history["data_loss"].append(float(data_sq.mean().cpu()))
 
         if pde_src_ratio is not None:
