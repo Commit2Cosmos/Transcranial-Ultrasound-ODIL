@@ -6,9 +6,11 @@ from .frequency_continuation import (
     FrequencyContinuationResult,
     run_frequency_continuation,
 )
+from .helmholtz_utransform import HelmholtzUTransform
 
 __all__ = [
     "LBFGSB",
+    "HelmholtzUTransform",
     "debug_one_c_step",
     "BandTimingStats",
     "FrequencyBand",
