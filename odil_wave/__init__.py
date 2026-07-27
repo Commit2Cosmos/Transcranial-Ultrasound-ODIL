@@ -26,8 +26,8 @@ from odil_wave.optimisation import (
     LBFGSClosedForm,
     MODILInversion,
     MODILVelocityParameterization,
+    MODILWavefieldParameterization,
     build_grid_hierarchy,
-    debug_one_c_step,
     prolongate_interior_velocity,
     resample_full_wavefield,
     resample_interior_field,
@@ -59,6 +59,7 @@ __all__ = [
     "run_frequency_continuation",
     # genuine simultaneous mODIL
     "MODILVelocityParameterization",
+    "MODILWavefieldParameterization",
     "MODILInversion",
     "build_grid_hierarchy",
     # geometry-aware grid transfer
@@ -66,4 +67,3 @@ __all__ = [
     "resample_interior_field",
     "resample_full_wavefield",
 ]
-
