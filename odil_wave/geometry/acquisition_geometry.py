@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from odil_wave.grid import Grid, FrequencySelection
-from odil_wave.models import VelocityModel
+from odil_wave.models import VelocityModel, velocity_norm
 from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
 
@@ -278,9 +278,26 @@ class AcquisitionGeometry:
         plt.colorbar(im, ax=ax, shrink=0.85, pad=0.04, label="amplitude [a.u.]")
         return ax
 
-    def show(self, velocity_model: VelocityModel, ax=None, norm=None):
+    def show(
+        self,
+        velocity_model: VelocityModel,
+        ax=None,
+        norm=None,
+        vmin: float = 1400.0,
+        vcenter: float = 1600.0,
+        vmax: float = 3000.0,
+    ):
+        """Overlay the source/receiver ring on the velocity model.
+
+        The velocity colourbar uses a two-slope normalisation so that
+        ``[vmin, vcenter]`` and ``[vcenter, vmax]`` each fill half the bar
+        (defaults 1400 / 1600 / 3000 m/s). Pass an explicit ``norm`` to
+        override.
+        """
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 5))
+        if norm is None and vmax > vmin:
+            norm = velocity_norm(vmin=vmin, vcenter=vcenter, vmax=vmax)
         velocity_model.show(
             ax=ax,
             title=f"acquisition on {velocity_model.profile}",
