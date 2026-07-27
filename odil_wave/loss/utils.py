@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import torch
@@ -245,8 +245,18 @@ class LossTape:
         geom: AcquisitionGeometry,
         title: str = "Velocity recovery",
         norm=None,
+        vmin: float = 1400.0,
+        vcenter: float = 1600.0,
+        vmax: float = 3000.0,
     ):
-        """4-panel: truth | recovered | recovered-truth | c-history error."""
+        """4-panel: truth | recovered | recovered-truth | c-history error.
+
+        The truth/recovered colourbar uses a two-slope normalisation: the
+        ranges ``[vmin, vcenter]`` and ``[vcenter, vmax]`` each occupy half of
+        the colourbar (defaults 1400 / 1600 / 3000 m/s, so water-to-soft-tissue
+        contrast gets the lower half and soft-tissue-to-skull the upper half).
+        Pass an explicit ``norm`` to override.
+        """
         grid = truth.grid
         c_true_np = truth.c.detach().cpu().numpy()
         c_final_np = recovered.c.detach().cpu().numpy()
@@ -254,8 +264,6 @@ class LossTape:
 
         (xmin, xmax), (ymin, ymax) = grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
-        vmin = float(min(c_true_np.min(), c_final_np.min()))
-        vmax = float(max(c_true_np.max(), c_final_np.max()))
         dmax = float(np.max(np.abs(diff))) * 1.05 + 1e-9
 
         rx = grid.x[geom.recv_ij[:, 0]].detach().cpu().numpy() * x_mult
@@ -264,11 +272,7 @@ class LossTape:
         sy = grid.y[geom.src_ij[:, 1]].detach().cpu().numpy() * x_mult
 
         if norm is None and vmax > vmin:
-            norm = velocity_norm(
-                vmin=vmin,
-                vcenter=vmin + 0.25 * (vmax - vmin),
-                vmax=vmax,
-            )
+            norm = velocity_norm(vmin=vmin, vcenter=vcenter, vmax=vmax)
 
         fig, axes = plt.subplots(2, 2, figsize=(11, 9))
         panels = [
