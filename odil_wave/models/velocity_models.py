@@ -241,6 +241,19 @@ class VelocityModel:
             return None
         return self._head_mask[self.grid.interior_slice]
 
+    def skull_region_masks(self) -> tuple:
+        """Return ``(head_mask, interior_mask, rim_mask)`` on the full grid.
+
+        Available for ``shepp_logan`` / ``shepp_logan_skull``. Kept for
+        notebooks that still call this helper.
+        """
+        if getattr(self, "_head_mask", None) is None:
+            raise ValueError(
+                "skull_region_masks() requires a skull-bearing profile "
+                f"(shepp_logan / shepp_logan_skull), got {self.profile!r}"
+            )
+        return self._head_mask, self._interior_mask, self._rim_mask
+
     @property
     def c_max(self) -> float:
         return float(self.c.max())
@@ -257,6 +270,7 @@ class VelocityModel:
         vmax: Optional[float] = None,
         show_pml: bool = True,
         norm=None,
+        vcenter: float = 1600.0,
     ):
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))

@@ -9,7 +9,7 @@ from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
 from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .utils import WaveEquation
 from .leapfrog import LeapfrogSolver
-from .helmholtz import HelmholtzSolver
+from .helmholtz import HelmholtzFactorCache, HelmholtzSolver
 
 __all__ = [
     "SparseOperator",
@@ -26,5 +26,6 @@ __all__ = [
     "WaveEquation",
     "LeapfrogSolver",
     "HelmholtzSolver",
+    "HelmholtzFactorCache",
 ]
 

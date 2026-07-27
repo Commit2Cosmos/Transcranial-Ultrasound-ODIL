@@ -1,4 +1,8 @@
-"""Forward / warm-start Helmholtz linear solve (not a preconditioner)."""
+"""Forward / warm-start Helmholtz linear solve (not a preconditioner).
+
+Also exposes :class:`HelmholtzFactorCache` for reuse of SuperLU factors while
+``c`` is fixed (forward ``A^{-1}`` and Hermitian-adjoint ``A^{-H}``).
+"""
 
 from __future__ import annotations
 
@@ -8,11 +12,149 @@ from typing import List, Optional, Tuple
 import numpy as np
 import scipy.sparse as sp
 import torch
-from scipy.sparse.linalg import splu
+from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.wavefield import Wavefield
 from .spatial import _C10, _C10_CENTER
 from .utils import WaveEquation
+
+
+class HelmholtzFactorCache:
+    """Cached SuperLU factors of ``H(c, ω_k)`` for a fixed medium ``c``.
+
+    One factorisation per frequency. While ``c`` is unchanged the same LU can
+    apply both forward solves ``H^{-1}`` (``trans='N'``) and Hermitian-adjoint
+    solves ``H^{-H}`` (``trans='H'``) for arbitrary multi-shot RHS.
+
+    Rebuild (or construct a new cache) whenever ``c`` changes. This is intended
+    for wavefield reparameterisation ``u = H^{-1} z`` with ``c`` frozen — not
+    for differentiating through ``c``.
+    """
+
+    def __init__(self, solver: "HelmholtzSolver", c: torch.Tensor) -> None:
+        self.solver = solver
+        wf = solver.wavefield
+        grid = wf.grid
+        self.nx, self.ny = grid.nx, grid.ny
+        self.n = self.nx * self.ny
+        self.nf = wf.frequency_selection.n_frequencies
+        self.cdtype = wf.cdtype
+        self.device = grid.device
+        self._H: list[sp.csr_matrix] = []
+        self._lu: list[SuperLU] = []
+        self.n_factor = 0
+        self.n_forward_solves = 0
+        self.n_adjoint_solves = 0
+        self.factor_s = 0.0
+        self.forward_solve_s = 0.0
+        self.adjoint_solve_s = 0.0
+
+        c_det = c.detach()
+        for k in range(self.nf):
+            H = solver.assemble_H_sparse(c_det, k)
+            t0 = time.perf_counter()
+            lu = splu(H.tocsc())
+            self.factor_s += time.perf_counter() - t0
+            self.n_factor += 1
+            self._H.append(H.tocsr())
+            self._lu.append(lu)
+
+    def reset_counters(self) -> None:
+        self.n_forward_solves = 0
+        self.n_adjoint_solves = 0
+        self.forward_solve_s = 0.0
+        self.adjoint_solve_s = 0.0
+
+    def matvec(self, u: torch.Tensor) -> torch.Tensor:
+        """Apply sparse ``H`` (no solve): ``z = H u``.
+
+        ``u`` shape ``(n_shots, nf, nx, ny)`` complex.
+        """
+        if u.ndim != 4 or u.shape[1] != self.nf:
+            raise ValueError(
+                f"expected u shape (n_shots, {self.nf}, {self.nx}, {self.ny}), "
+                f"got {tuple(u.shape)}"
+            )
+        n_shots = u.shape[0]
+        out = torch.empty_like(u)
+        for k in range(self.nf):
+            U = (
+                u[:, k]
+                .detach()
+                .cpu()
+                .numpy()
+                .reshape(n_shots, self.n)
+                .T
+                .astype(np.complex128, copy=False)
+            )
+            Z = self._H[k] @ U
+            out[:, k] = torch.as_tensor(
+                Z.T.reshape(n_shots, self.nx, self.ny),
+                dtype=self.cdtype,
+                device=self.device,
+            )
+        return out
+
+    def solve(
+        self,
+        rhs: torch.Tensor,
+        *,
+        trans: str = "N",
+    ) -> torch.Tensor:
+        """Solve ``H X = RHS`` (``trans='N'``) or ``H^H X = RHS`` (``trans='H'``).
+
+        ``rhs`` / return shape ``(n_shots, nf, nx, ny)`` complex. Each frequency
+        uses one batched multi-RHS SuperLU call (counts as one linear solve per
+        frequency toward ``n_forward_solves`` / ``n_adjoint_solves``).
+        """
+        if trans not in ("N", "H", "T"):
+            raise ValueError(f"trans must be 'N', 'H', or 'T'; got {trans!r}")
+        if rhs.ndim != 4 or rhs.shape[1] != self.nf:
+            raise ValueError(
+                f"expected rhs shape (n_shots, {self.nf}, {self.nx}, {self.ny}), "
+                f"got {tuple(rhs.shape)}"
+            )
+        n_shots = rhs.shape[0]
+        out = torch.empty_like(rhs)
+        is_adj = trans in ("H", "T")
+        t0 = time.perf_counter()
+        for k in range(self.nf):
+            F = (
+                rhs[:, k]
+                .detach()
+                .cpu()
+                .numpy()
+                .reshape(n_shots, self.n)
+                .T
+                .astype(np.complex128, copy=False)
+            )
+            X = self._lu[k].solve(F, trans=trans)
+            out[:, k] = torch.as_tensor(
+                X.T.reshape(n_shots, self.nx, self.ny),
+                dtype=self.cdtype,
+                device=self.device,
+            )
+        dt = time.perf_counter() - t0
+        if is_adj:
+            self.n_adjoint_solves += self.nf
+            self.adjoint_solve_s += dt
+        else:
+            self.n_forward_solves += self.nf
+            self.forward_solve_s += dt
+        return out
+
+    def diagnostics(self) -> dict:
+        return {
+            "n_factor": self.n_factor,
+            "n_forward_solves": self.n_forward_solves,
+            "n_adjoint_solves": self.n_adjoint_solves,
+            "n_linear_solves": self.n_forward_solves + self.n_adjoint_solves,
+            "factor_s": self.factor_s,
+            "forward_solve_s": self.forward_solve_s,
+            "adjoint_solve_s": self.adjoint_solve_s,
+            "nf": self.nf,
+            "n_dofs": self.n,
+        }
 
 
 def _reflect_index(idx: int, n: int) -> int:
@@ -131,6 +273,10 @@ class HelmholtzSolver:
         )
         self.diagnostics: Optional[dict] = None
         self._L_csr: Optional[sp.csr_matrix] = None
+
+    def factorize(self, c: torch.Tensor) -> HelmholtzFactorCache:
+        """Build a :class:`HelmholtzFactorCache` for fixed ``c`` (all frequencies)."""
+        return HelmholtzFactorCache(self, c)
 
     def _sources(self) -> torch.Tensor:
         grid = self.wavefield.grid
@@ -323,3 +469,4 @@ class HelmholtzSolver:
             out.amplitude = amp[s]
             outputs.append(out)
         return outputs
+

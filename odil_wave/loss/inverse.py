@@ -168,3 +168,63 @@ class InverseLoss(DiscreteLoss):
         }
 
         return L
+
+    def evaluate_z(
+        self,
+        z: torch.Tensor,
+        u: torch.Tensor,
+        c_full: torch.Tensor,
+        c_interior: torch.Tensor | None = None,
+        weights_override: dict | None = None,
+    ) -> torch.Tensor:
+        """Loss for ``u_precond='z'``: PDE in ``z``, data through ``u = A(c)^{-1} z``.
+
+        Uses the same ``mean_abs_sq`` reduction as :meth:`evaluate` (no ``1/2``,
+        no sum). Continuum ``½‖·‖²`` notation is conceptual only.
+
+        * PDE residual: ``z - f'`` (``f'`` = :attr:`sources`)
+        * Data residual: receiver sample of ``u`` minus observations
+          (``u`` must be ``A(c)^{-1} z`` for the current ``c``)
+        """
+        r_pde = z - self.sources
+
+        i = self.config.geometry.recv_ij[:, 0]
+        j = self.config.geometry.recv_ij[:, 1]
+        syn_tr = u[:, :, i, j]
+        obs_tr = self._obs_traces()
+        if self._trace_scale is not None:
+            syn_tr = syn_tr / self._trace_scale
+            obs_tr = obs_tr / self._trace_scale
+        r_data = syn_tr - obs_tr
+        if self._f_weights is not None:
+            r_data = r_data * self._f_weights
+
+        w = self.config.weights
+        if weights_override is not None:
+            w = {**w, **weights_override}
+        pde_terms = mean_abs_sq(r_pde)
+        data_terms = mean_abs_sq(r_data)
+        L = w["pde"] * pde_terms + w["data"] * data_terms
+
+        if self.config.regulariser is not None and c_interior is not None:
+            L = L + w.get("reg", 0.0) * self.config.regulariser(c_interior)
+
+        if L.is_complex():
+            L = L.real
+
+        self.evaluations += 1
+        with torch.no_grad():
+            pde_rms = float(mean_abs_sq(r_pde).sqrt().detach().cpu())
+            data_rms = float(mean_abs_sq(r_data).sqrt().detach().cpu())
+            src_rms = float(mean_abs_sq(self.sources).sqrt().detach().cpu())
+
+        self._last_residuals = {
+            "pde_rms": pde_rms,
+            "data_rms": data_rms,
+            "pde_loss": float(pde_terms.detach().cpu()),
+            "data_loss": float(data_terms.detach().cpu()),
+            "pde_src_ratio": pde_rms / max(src_rms, 1e-30),
+        }
+
+        return L
+
