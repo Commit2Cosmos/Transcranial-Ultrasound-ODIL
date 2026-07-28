@@ -5,7 +5,11 @@ from odil_wave.grid import (
     usable_frequency_limits,
 )
 from odil_wave.source import SourceSignal
-from odil_wave.geometry import AcquisitionGeometry
+from odil_wave.geometry import (
+    AcquisitionGeometry,
+    canonicalize_source_offsets,
+    source_ring_indices,
+)
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
 from odil_wave.operator import WaveEquation, LeapfrogSolver, HelmholtzSolver
@@ -32,6 +36,8 @@ __all__ = [
     "usable_frequency_limits",
     "SourceSignal",
     "AcquisitionGeometry",
+    "canonicalize_source_offsets",
+    "source_ring_indices",
     "VelocityModel",
     "Wavefield",
     "WaveEquation",
