@@ -11,9 +11,39 @@ from .base import DenseOperator
 from odil_wave.wavefield import Wavefield
 
 
-# 10th-order 1D central FD coefficients for d²u/dx²
+# 1D central FD coefficients for d²u/dx² (offsets 1, 2, ... ; plus the centre).
+# 6th-order 7-point stencil.
+_C6 = [3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0]
+_C6_CENTER = -49.0 / 18.0
+# 8th-order 9-point stencil.
+_C8 = [8.0 / 5.0, -1.0 / 5.0, 8.0 / 315.0, -1.0 / 560.0]
+_C8_CENTER = -205.0 / 72.0
+# 10th-order 11-point stencil.
 _C10 = [5.0 / 3.0, -5.0 / 21.0, 5.0 / 126.0, -5.0 / 1008.0, 1.0 / 3150.0]
 _C10_CENTER = -5269.0 / 1800.0
+
+
+def _cross_laplacian_kernel(coeffs, center, cx, cy, dtype, device) -> torch.Tensor:
+    """Build a ``(1, 1, N, N)`` cross-stencil Laplacian kernel.
+
+    ``coeffs`` are the 1D d²/dx² central coefficients for offsets 1..P; the
+    stencil half-width is ``P`` so ``N = 2*P + 1``. ``u_xx`` lives on the
+    centre column, ``u_yy`` on the centre row, matching the layout used by
+    :func:`_apply_conv_laplacian` (spatial-x along dim-2, spatial-y along dim-3).
+    """
+    p = len(coeffs)
+    n = 2 * p + 1
+    K = torch.zeros(1, 1, n, n, dtype=dtype, device=device)
+    for k, ck in enumerate(coeffs):
+        offset = k + 1
+        # u_xx: column at w=p
+        K[0, 0, p - offset, p] = ck * cx
+        K[0, 0, p + offset, p] = ck * cx
+        # u_yy: row at h=p
+        K[0, 0, p, p - offset] = ck * cy
+        K[0, 0, p, p + offset] = ck * cy
+    K[0, 0, p, p] = center * (cx + cy)
+    return K
 
 
 def _fourth_derivative_1d(
@@ -108,29 +138,45 @@ class Laplacian4thOrder(SpatialOperator):
 
 
 @dataclass
+class Laplacian6thOrder(SpatialOperator):
+    """6th-order 13-point cross Laplacian via ``F.conv2d`` + reflect padding."""
+
+    def __init__(self, wavefield: Wavefield):
+        super().__init__(wavefield)
+        g = wavefield.grid
+        self._kernel = _cross_laplacian_kernel(
+            _C6, _C6_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+        )
+
+    def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
+        return _apply_conv_laplacian(utm, self._kernel, pad=3)
+
+
+@dataclass
+class Laplacian8thOrder(SpatialOperator):
+    """8th-order 17-point cross Laplacian via ``F.conv2d`` + reflect padding."""
+
+    def __init__(self, wavefield: Wavefield):
+        super().__init__(wavefield)
+        g = wavefield.grid
+        self._kernel = _cross_laplacian_kernel(
+            _C8, _C8_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+        )
+
+    def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
+        return _apply_conv_laplacian(utm, self._kernel, pad=4)
+
+
+@dataclass
 class Laplacian10thOrder(SpatialOperator):
     """10th-order 11-point Laplacian via ``F.conv2d`` + reflect padding."""
 
     def __init__(self, wavefield: Wavefield):
         super().__init__(wavefield)
         g = wavefield.grid
-        dx, dy = g.dx_nd, g.dy_nd
-        cx = 1.0 / dx**2
-        cy = 1.0 / dy**2
-        K = torch.zeros(1, 1, 11, 11, dtype=g.dtype, device=g.device)
-        # u_xx: column at w=5 (spatial-x axis varies along dim-2 of the field).
-        for k, ck in enumerate(_C10):
-            offset = k + 1
-            K[0, 0, 5 - offset, 5] = ck * cx
-            K[0, 0, 5 + offset, 5] = ck * cx
-        K[0, 0, 5, 5] += _C10_CENTER * cx
-        # u_yy: row at h=5 (spatial-y axis varies along dim-3 of the field).
-        for k, ck in enumerate(_C10):
-            offset = k + 1
-            K[0, 0, 5, 5 - offset] = ck * cy
-            K[0, 0, 5, 5 + offset] = ck * cy
-        K[0, 0, 5, 5] += _C10_CENTER * cy
-        self._kernel = K
+        self._kernel = _cross_laplacian_kernel(
+            _C10, _C10_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+        )
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
         return _apply_conv_laplacian(utm, self._kernel, pad=5)

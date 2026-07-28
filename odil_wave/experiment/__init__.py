@@ -1,0 +1,78 @@
+"""Reproducible experiment layer for frequency-domain FWI.
+
+Config resolution / validation / (de)serialisation is torch-free (``config``);
+the run orchestration (``problem``, ``recorder``, ``runner``) uses the numerical
+stack.
+"""
+
+from .config import (
+    ConfigError,
+    RunConfig,
+    apply_overrides,
+    canonical_optimiser_name,
+    deep_merge,
+    default_config_dict,
+    load_config_file,
+    resolve_config,
+    validate_config,
+)
+from .plots import (
+    LiveVelocityView,
+    animate_bands,
+    load_band_velocities,
+    load_final_velocity,
+    load_loss_tape,
+    load_metrics,
+    plot_run_history,
+    plot_velocity_recovery,
+)
+from .problem import BandContext, Problem, build_problem, grid_summary
+from .recorder import FIELDNAMES, RecordingTape, RunRecorder
+from .runner import (
+    BandResult,
+    RunResult,
+    run_frequency_band,
+    run_inverse,
+    run_inverse_closed_form,
+    run_inverse_lbfgsb,
+    run_inverse_modil,
+)
+
+__all__ = [
+    # config
+    "ConfigError",
+    "RunConfig",
+    "resolve_config",
+    "validate_config",
+    "load_config_file",
+    "default_config_dict",
+    "apply_overrides",
+    "deep_merge",
+    "canonical_optimiser_name",
+    # problem
+    "Problem",
+    "BandContext",
+    "build_problem",
+    "grid_summary",
+    # recorder
+    "RunRecorder",
+    "RecordingTape",
+    "FIELDNAMES",
+    # plots / analysis
+    "LiveVelocityView",
+    "animate_bands",
+    "load_band_velocities",
+    "load_final_velocity",
+    "load_loss_tape",
+    "load_metrics",
+    "plot_run_history",
+    "plot_velocity_recovery",
+    # runner
+    "RunResult",
+    "BandResult",
+    "run_inverse",
+    "run_inverse_lbfgsb",
+    "run_inverse_closed_form",
+    "run_inverse_modil",
+    "run_frequency_band",
+]

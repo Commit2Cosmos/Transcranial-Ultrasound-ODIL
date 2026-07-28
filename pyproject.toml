@@ -21,6 +21,7 @@ dependencies = [
     "jax",
     "torch",
     "scikit-image",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

@@ -276,7 +276,6 @@ class VelocityModel:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
-        c_np = self.c.cpu().numpy()
         imshow_kw = dict(
             origin="lower",
             extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
@@ -284,25 +283,12 @@ class VelocityModel:
         )
         # A `norm` (e.g. the two-slope velocity_norm) fully controls the colour
         # mapping, so vmin/vmax must not also be passed to imshow.
-        # Defaults match AcquisitionGeometry.show / LossTape.show_velocity_recovery
-        # (1400 / 1600 / 3000) so soft tissue is not crushed by the skull.
         if norm is not None:
             imshow_kw["norm"] = norm
-        elif vmin is None and vmax is None:
-            imshow_kw["norm"] = velocity_norm(
-                vmin=1400.0, vcenter=vcenter, vmax=3000.0
-            )
         else:
-            lo = 1400.0 if vmin is None else float(vmin)
-            hi = 3000.0 if vmax is None else float(vmax)
-            if hi > lo:
-                imshow_kw["norm"] = velocity_norm(
-                    vmin=lo, vcenter=vcenter, vmax=hi
-                )
-            else:
-                imshow_kw["vmin"] = lo
-                imshow_kw["vmax"] = hi
-        im = ax.imshow(c_np.T, **imshow_kw)
+            imshow_kw["vmin"] = vmin
+            imshow_kw["vmax"] = vmax
+        im = ax.imshow(self.c.cpu().numpy().T, **imshow_kw)
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
         ax.set_aspect("equal")

@@ -121,9 +121,7 @@ class LossTape:
                         data_sq = r_data.real.square() + r_data.imag.square()
                     else:
                         data_sq = r_data.detach().square()
-                    self.history["data_rms"].append(
-                        float(data_sq.mean().sqrt().cpu())
-                    )
+                    self.history["data_rms"].append(float(data_sq.mean().sqrt().cpu()))
                     self.history["data_loss"].append(float(data_sq.mean().cpu()))
 
         if pde_src_ratio is not None:
@@ -143,6 +141,40 @@ class LossTape:
             return
 
         self.history["c_history"].append(np.asarray(c_arr, dtype=np.float32).copy())
+
+    @classmethod
+    def from_records(cls, records, name: str = "loaded run") -> "LossTape":
+        """Rebuild a tape's *scalar* history from saved metric records.
+
+        ``records`` is the list of per-iteration dicts written by
+        :class:`odil_wave.experiment.RunRecorder` (``metrics.jsonl`` rows). This
+        lets the plotting methods (``show`` / ``show_velocity_recovery``) run
+        against a finished, saved run without re-executing the solve. Full-grid
+        ``c_history`` is *not* stored per iteration by that scheme, so it stays
+        empty (see :func:`odil_wave.experiment.plots.animate_bands` for the
+        per-band velocity animation).
+        """
+        # (history key, record key) — records use ``loss_total`` for the loss.
+        key_map = [
+            ("loss", "loss_total"),
+            ("pde_rms", "pde_rms"),
+            ("data_rms", "data_rms"),
+            ("pde_loss", "pde_loss"),
+            ("data_loss", "data_loss"),
+            ("pde_src_ratio", "pde_src_ratio"),
+            ("rel_c_error", "rel_c_error"),
+            ("ssim_head_roi", "ssim_head_roi"),
+        ]
+        tape = cls(name=name, store_c_history=False)
+        for hist_key, rec_key in key_map:
+            series = [
+                (float(r[rec_key]) if r.get(rec_key) is not None else float("nan"))
+                for r in records
+            ]
+            # Keep a scalar series only if at least one record carried it.
+            if any(np.isfinite(v) for v in series):
+                tape.history[hist_key] = series
+        return tape
 
     def show(self, title: str = "Loss History"):
         assert len(self.history["loss"]) > 0, "No loss history to show."
@@ -179,11 +211,21 @@ class LossTape:
         cmap: str = "viridis",
         title: str = "c(x, y) evolution",
         norm=None,
+        frame_labels=None,
     ) -> str:
-        """Render the per-iteration c(x, y) snapshots to an animated GIF."""
+        """Render the ``c(x, y)`` snapshots in ``c_history`` to an animated GIF.
+
+        ``frame_labels`` optionally names each frame (e.g. per-band labels);
+        when omitted the frame index is shown.
+        """
         history = self.history["c_history"]
         if not history:
             raise RuntimeError("No c_history to animate. Run an inverse solve first.")
+        if frame_labels is not None and len(frame_labels) != len(history):
+            raise ValueError(
+                f"frame_labels has {len(frame_labels)} entries but there are "
+                f"{len(history)} frames."
+            )
 
         stack = np.stack(history)  # (n_iter, NX, NY)
         (xmin, xmax), (ymin, ymax) = grid.extent
@@ -219,12 +261,17 @@ class LossTape:
         im = ax.imshow(stack[0].T, **imshow_kw)
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
-        ttl = ax.set_title(f"{title}  (frame 0)")
+
+        def _frame_title(frame: int) -> str:
+            tag = frame_labels[frame] if frame_labels is not None else f"frame {frame}"
+            return f"{title}  ({tag})"
+
+        ttl = ax.set_title(_frame_title(0))
         plt.colorbar(im, ax=ax, label="c [m/s]", shrink=0.85)
 
         def update(frame: int):
             im.set_data(stack[frame].T)
-            ttl.set_text(f"{title}  (frame {frame})")
+            ttl.set_text(_frame_title(frame))
             return im, ttl
 
         anim = animation.FuncAnimation(
@@ -304,19 +351,32 @@ class LossTape:
             plt.colorbar(im, ax=ax, shrink=0.85)
 
         ax_err = axes[1, 1]
-        if self.history["c_history"]:
+        # Prefer the per-iteration relative-error series recorded to disk (new
+        # logging scheme); otherwise recompute it from any in-memory c_history.
+        rel_hist = [
+            e
+            for e in self.history.get("rel_c_error", [])
+            if e is not None and np.isfinite(e)
+        ]
+        if rel_hist:
+            err_hist = rel_hist
+        elif self.history["c_history"]:
             denom = float(np.linalg.norm(c_true_np))
             err_hist = [
                 float(np.linalg.norm(c - c_true_np) / denom)
                 for c in self.history["c_history"]
             ]
+        else:
+            err_hist = None
+
+        if err_hist:
             ax_err.semilogy(err_hist, color="tab:red")
-            ax_err.set_xlabel("logged c snapshot")
+            ax_err.set_xlabel("logged iteration")
             ax_err.set_ylabel(r"$\|c-c^*\|_\mathrm{rel}$")
             ax_err.set_title("c recovery error")
             ax_err.grid(alpha=0.3)
         else:
-            ax_err.text(0.5, 0.5, "no c_history", ha="center", va="center")
+            ax_err.text(0.5, 0.5, "no error history", ha="center", va="center")
             ax_err.set_axis_off()
 
         fig.suptitle(title)

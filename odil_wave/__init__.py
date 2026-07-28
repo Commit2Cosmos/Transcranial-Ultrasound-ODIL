@@ -27,6 +27,14 @@ from odil_wave.optimisation import (
     FrequencyBand,
     FrequencyContinuationResult,
     run_frequency_continuation,
+    LBFGSClosedForm,
+    MODILInversion,
+    MODILVelocityParameterization,
+    MODILWavefieldParameterization,
+    build_grid_hierarchy,
+    prolongate_interior_velocity,
+    resample_full_wavefield,
+    resample_interior_field,
 )
 
 __all__ = [
@@ -49,10 +57,19 @@ __all__ = [
     "InverseLoss",
     "Regulariser",
     "LBFGSB",
+    "LBFGSClosedForm",
     "debug_one_c_step",
     "BandTimingStats",
     "FrequencyBand",
     "FrequencyContinuationResult",
     "run_frequency_continuation",
+    # genuine simultaneous mODIL
+    "MODILVelocityParameterization",
+    "MODILWavefieldParameterization",
+    "MODILInversion",
+    "build_grid_hierarchy",
+    # geometry-aware grid transfer
+    "prolongate_interior_velocity",
+    "resample_interior_field",
+    "resample_full_wavefield",
 ]
-

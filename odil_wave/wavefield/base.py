@@ -111,7 +111,9 @@ class Wavefield:
         amp = (
             value.to(dtype=self.cdtype, device=self.device)
             if isinstance(value, torch.Tensor)
-            else torch.as_tensor(np.asarray(value), dtype=self.cdtype, device=self.device)
+            else torch.as_tensor(
+                np.asarray(value), dtype=self.cdtype, device=self.device
+            )
         )
         self._amplitude = amp.reshape(nf, Nx, Ny)
 
@@ -122,69 +124,61 @@ class Wavefield:
     def show(
         self,
         idx: int,
-        title="Wavefield and model",
-        view: str = "abs",
+        title: str = "Wavefield",
         normalize: str | None = None,
-        norm=None,
     ):
-        """Show frequency slice ``idx``.
+        """Show frequency slice ``idx`` as a 2x2 panel of the complex field.
 
-        ``view``: ``"abs"`` | ``"real"`` | ``"imag"`` | ``"phase"``.
+        Panels are ``|u|`` (magnitude), ``Re(u)``, ``Im(u)`` and the phase
+        ``arg(u)``. ``normalize`` (``None`` | ``"global"`` | ``"per_frame"``)
+        rescales the complex field by its peak magnitude before the magnitude /
+        real / imaginary panels are drawn; the phase panel is unaffected.
         """
         if not (0 <= idx < self.n_frequencies):
-            raise ValueError(
-                f"idx should be in [0, {self.n_frequencies}), got {idx}."
-            )
+            raise ValueError(f"idx should be in [0, {self.n_frequencies}), got {idx}.")
         amp = self.amplitude[idx].detach().cpu().numpy()
-        if view == "abs":
-            amp_data = np.abs(amp)
-            cmap = "viridis"
-            label = "|u|"
-        elif view == "real":
-            amp_data = amp.real
-            cmap = "RdBu_r"
-            label = "Re(u)"
-        elif view == "imag":
-            amp_data = amp.imag
-            cmap = "RdBu_r"
-            label = "Im(u)"
-        elif view == "phase":
-            amp_data = np.angle(amp)
-            cmap = "twilight"
-            label = "phase"
-        else:
-            raise ValueError(f"view must be abs/real/imag/phase, got {view!r}")
+        # A single 2D slice, so "global" and "per_frame" both reduce to scaling
+        # by this slice's peak |u|; normalise the complex field once so the
+        # Re/Im panels stay on a common, comparable scale.
+        if normalize in ("global", "per_frame"):
+            scale = float(np.max(np.abs(amp)))
+            if scale > 0:
+                amp = amp / scale
+        elif normalize not in (None, "none"):
+            raise ValueError(
+                f"Invalid normalize mode {normalize!r}; expected one of "
+                "None, 'global', 'per_frame'."
+            )
 
-        amp_data = _normalize_amplitude(amp_data, normalize)
+        # (data, cmap, label, symmetric-diverging?)
+        panels = [
+            (np.abs(amp), "viridis", "|u|", False),
+            (amp.real, "RdBu_r", "Re(u)", True),
+            (amp.imag, "RdBu_r", "Im(u)", True),
+            (np.angle(amp), "twilight", "phase [rad]", False),
+        ]
 
-        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         x_extent = (xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult)
-
-        im1 = axs[0].imshow(
-            amp_data.T, origin="lower", extent=x_extent, cmap=cmap
-        )
-
-        im2_kw = dict(origin="lower", extent=(xmin, xmax, ymin, ymax), cmap="viridis")
-        wsp_np = self.wavespeed.cpu().numpy()
-        if norm is None:
-            im2_kw["vmin"] = float(wsp_np.min())
-            im2_kw["vmax"] = float(wsp_np.max())
-        else:
-            im2_kw["norm"] = norm
-        im2 = axs[1].imshow(wsp_np.T, **im2_kw)
-
         f = float(self.frequency_selection.frequencies[idx].item())
         f_mult, f_unit = frequency_scale(abs(f) if f != 0 else 1.0)
-        for ax in axs:
+
+        fig, axs = plt.subplots(2, 2, figsize=(11, 9))
+        for ax, (data, cmap, label, diverging) in zip(axs.ravel(), panels):
+            imshow_kw = dict(origin="lower", extent=x_extent, cmap=cmap)
+            if label.startswith("phase"):
+                imshow_kw["vmin"], imshow_kw["vmax"] = -np.pi, np.pi
+            elif diverging:
+                m = float(np.max(np.abs(data))) or 1.0
+                imshow_kw["vmin"], imshow_kw["vmax"] = -m, m
+            im = ax.imshow(data.T, **imshow_kw)
             ax.set_xlabel(f"x [{x_unit}]")
             ax.set_ylabel(f"y [{x_unit}]")
-        axs[0].set_title(f"{label} (f = {f * f_mult:.3g} {f_unit})")
-        axs[1].set_title("Wave speed model")
-        plt.colorbar(im1, ax=axs[0], label=label, shrink=0.85)
-        plt.colorbar(im2, ax=axs[1], label=r"Wavespeed ($ms^{-1}$)", shrink=0.85)
-        fig.suptitle(title)
+            ax.set_title(label)
+            plt.colorbar(im, ax=ax, label=label, shrink=0.85)
+
+        fig.suptitle(f"{title} (f = {f * f_mult:.3g} {f_unit})")
         fig.tight_layout()
         plt.show()
 
