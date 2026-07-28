@@ -38,6 +38,58 @@ def _gaussian_smooth_2d(g: torch.Tensor, sigma: float) -> torch.Tensor:
     return _F.conv2d(g_in, k2d).view(g.shape)
 
 
+def _armijo_gd_step_z(
+    *,
+    z_real: torch.nn.Parameter,
+    z_imag: torch.nn.Parameter,
+    pack_z,
+    apply_u,
+    eval_loss,
+    loss0: torch.Tensor,
+    lr: float,
+    armijo_c: float = 1e-4,
+    max_backtracks: int = 20,
+) -> Tuple[torch.Tensor, int]:
+    """One steepest-descent step on complex ``z`` with Armijo backtracking.
+
+    Assumes ``z_real.grad`` / ``z_imag.grad`` are already populated at the
+    current point and ``loss0`` is that point's loss. Updates parameters
+    in place.
+
+    Returns
+    -------
+    loss :
+        Loss at the accepted point (or ``loss0`` if no step accepted).
+    n_trial_evals :
+        Number of line-search loss evaluations (excluding ``loss0``).
+    """
+    g_r = z_real.grad
+    g_i = z_imag.grad
+    if g_r is None or g_i is None:
+        raise RuntimeError("z GD step requires gradients on z_real and z_imag")
+
+    with torch.no_grad():
+        g_sq = float(g_r.pow(2).sum() + g_i.pow(2).sum())
+        L0 = float(loss0.detach())
+        z_r0 = z_real.data.clone()
+        z_i0 = z_imag.data.clone()
+        step = float(lr)
+        n_trial = 0
+        for _ in range(max_backtracks):
+            z_real.data.copy_(z_r0 - step * g_r)
+            z_imag.data.copy_(z_i0 - step * g_i)
+            z_trial = pack_z()
+            u_trial = apply_u(z_trial)
+            L_trial = eval_loss(z_trial, u_trial)
+            n_trial += 1
+            if float(L_trial.detach()) <= L0 - armijo_c * step * g_sq:
+                return L_trial, n_trial
+            step *= 0.5
+        z_real.data.copy_(z_r0)
+        z_imag.data.copy_(z_i0)
+        return loss0, n_trial
+
+
 class Optimiser(ABC):
     """Base optimiser class."""
 
@@ -51,21 +103,31 @@ class Optimiser(ABC):
 
 
 class LBFGSB(Optimiser):
-    """Block-coordinate dual L-BFGS for frequency-domain ODIL.
+    """Block-coordinate dual optimiser for frequency-domain ODIL.
 
-    Each outer iteration: wavefield L-BFGS then c-LBFGS (``u`` or ``z``
-    fixed as appropriate). Complex wavefield unknowns are stored as two real
-    tensors owned by the wavefield optimiser. ``c`` is real.
+    Each outer iteration updates the wavefield block then the ``c`` block
+    (``u`` or ``z`` held fixed as appropriate). Complex wavefield unknowns are
+    stored as two real tensors. ``c`` is always updated with L-BFGS
+    (``c_max_iter``, ``c_lr``, …).
 
     Wavefield mode (``u_precond``):
 
-    * ``None`` / ``False`` (default) — direct optimisation of physical ``u``
-      using ``u_steps`` matrix-free PDE residuals.
-    * ``"z"`` — reparameterisation ``u = A(c)^{-1} z`` using ``z_steps``
-      (``u_steps`` is ignored). PDE loss is ``mean(|z-f|^2)``; data loss is
-      ``mean(|P A(c)^{-1} z - d|^2)``. Recommended experimental settings
-      (caller-side, not defaults): ``z_steps=1``, ``w_pde=100``, ``w_data=1``.
-      Larger ``z_steps`` (5/10/20) are not recommended.
+    * ``None`` / ``False`` (default) — direct L-BFGS on physical ``u``
+      (``u_steps``, ``max_iter``).
+    * ``"z"`` — reparameterisation ``u = A(c)^{-1} z``. The ``z`` block is
+      controlled by:
+
+      - ``z_optim``: ``"gd"`` (default) — one steepest-descent step with
+        Armijo backtracking (initial step ``z_lr``); or ``"lbfgs"`` —
+        PyTorch L-BFGS using ``max_iter`` / ``history_size``.
+      - ``z_steps``: number of z updates per outer iteration (recommended: 1).
+      - ``z_lr``: Armijo initial step when ``z_optim="gd"`` (recommended: 1.0).
+
+      PDE loss is ``mean(|z-f|^2)``; data loss is ``mean(|P A(c)^{-1} z - d|^2)``.
+      Recommended weights (caller-side): ``w_pde=100``, ``w_data=1``.
+      Prefer ``z_optim="gd"``: with the usual per-outer z-history reset,
+      ``z_optim="lbfgs"`` and ``max_iter=1`` is nearly the same as one
+      steepest-descent + Wolfe step and does not improve recovery.
 
     Optional early stopping (disabled by default: ``early_stop_rtol=0``):
     after ``early_stop_min_iter`` outer steps, stop if relative loss improvement
@@ -79,6 +141,8 @@ class LBFGSB(Optimiser):
         "u_steps": 1,
         "c_steps": 1,
         "z_steps": 1,
+        "z_optim": "gd",
+        "z_lr": 1.0,
         "u_precond": None,
         "max_iter": 4,
         "history_size": 10,
@@ -105,6 +169,7 @@ class LBFGSB(Optimiser):
         "tolerance_grad", "tolerance_change",
         "history_size", "line_search_fn",
     })
+    _Z_OPTIMS = frozenset({"gd", "lbfgs"})
 
     def __init__(
         self,
@@ -130,6 +195,8 @@ class LBFGSB(Optimiser):
         u_steps = int(opts.pop("u_steps", 1))
         c_steps = int(opts.pop("c_steps", 1))
         z_steps = int(opts.pop("z_steps", 1))
+        z_optim = str(opts.pop("z_optim", "gd")).lower()
+        z_lr = float(opts.pop("z_lr", 1.0))
         u_precond = opts.pop("u_precond", None)
         c_lr = float(opts.pop("c_lr", 1.0))
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
@@ -158,6 +225,12 @@ class LBFGSB(Optimiser):
             )
         if u_precond_mode == "z" and z_steps < 1:
             raise ValueError(f"z_steps must be >= 1 when u_precond='z'; got {z_steps}")
+        if z_optim not in self._Z_OPTIMS:
+            raise ValueError(
+                f"z_optim must be one of {sorted(self._Z_OPTIMS)}; got {z_optim!r}"
+            )
+        if z_lr <= 0.0:
+            raise ValueError(f"z_lr must be > 0; got {z_lr}")
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
         c_torch_opts = dict(u_torch_opts)
@@ -170,6 +243,8 @@ class LBFGSB(Optimiser):
             u_steps,
             c_steps,
             z_steps,
+            z_optim,
+            z_lr,
             u_precond_mode,
             u_torch_opts,
             c_torch_opts,
@@ -230,6 +305,8 @@ class LBFGSB(Optimiser):
             u_steps,
             c_steps,
             z_steps,
+            z_optim,
+            z_lr,
             u_precond_mode,
             u_torch_opts,
             c_torch_opts,
@@ -249,6 +326,8 @@ class LBFGSB(Optimiser):
                 n_iter=n_iter,
                 z_steps=z_steps,
                 c_steps=c_steps,
+                z_optim=z_optim,
+                z_lr=z_lr,
                 u_torch_opts=u_torch_opts,
                 c_torch_opts=c_torch_opts,
                 c_precond=c_precond,
@@ -525,6 +604,8 @@ class LBFGSB(Optimiser):
         n_iter: int,
         z_steps: int,
         c_steps: int,
+        z_optim: str,
+        z_lr: float,
         u_torch_opts: dict,
         c_torch_opts: dict,
         c_precond: bool,
@@ -589,7 +670,7 @@ class LBFGSB(Optimiser):
         def make_c_optimiser():
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
-        z_optimiser = make_z_optimiser()
+        z_optimiser = make_z_optimiser() if z_optim == "lbfgs" else None
         c_optimiser = make_c_optimiser() if c_steps > 0 else None
 
         c_min = self.c_min / c_ref if self.c_min is not None else None
@@ -612,17 +693,44 @@ class LBFGSB(Optimiser):
             c_full_fixed = c_full_from_hat(c_hat_fixed)
 
             for _ in range(z_steps):
-                def z_closure():
-                    nonlocal n_u_closure
-                    n_u_closure += 1
-                    z_optimiser.zero_grad()
+                if z_optim == "gd":
+                    if z_real.grad is not None:
+                        z_real.grad = None
+                    if z_imag.grad is not None:
+                        z_imag.grad = None
                     z = pack_z()
                     u = tf.apply(z)
                     L = self.loss.evaluate_z(z, u, c_full_fixed, c_hat_fixed)
                     L.backward()
-                    return L
+                    n_u_closure += 1
 
-                loss_value = z_optimiser.step(z_closure)
+                    def _eval_z(z_t, u_t):
+                        return self.loss.evaluate_z(
+                            z_t, u_t, c_full_fixed, c_hat_fixed
+                        )
+
+                    loss_value, n_trial = _armijo_gd_step_z(
+                        z_real=z_real,
+                        z_imag=z_imag,
+                        pack_z=pack_z,
+                        apply_u=tf.apply,
+                        eval_loss=_eval_z,
+                        loss0=L,
+                        lr=z_lr,
+                    )
+                    n_u_closure += n_trial
+                else:
+                    def z_closure():
+                        nonlocal n_u_closure
+                        n_u_closure += 1
+                        z_optimiser.zero_grad()
+                        z = pack_z()
+                        u = tf.apply(z)
+                        L = self.loss.evaluate_z(z, u, c_full_fixed, c_hat_fixed)
+                        L.backward()
+                        return L
+
+                    loss_value = z_optimiser.step(z_closure)
 
             if c_steps > 0:
                 z_fixed = pack_z_detached()
@@ -703,7 +811,8 @@ class LBFGSB(Optimiser):
                 # c changed — rebuild factors for next z-stage; reset z history.
                 with torch.no_grad():
                     tf.rebuild(c_full_from_hat(c_interior_param.detach()))
-                z_optimiser = make_z_optimiser()
+                if z_optim == "lbfgs":
+                    z_optimiser = make_z_optimiser()
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
             c_full_now = None
@@ -785,6 +894,8 @@ class LBFGSB(Optimiser):
             "n_closure": n_u_closure + n_c_closure,
             "u_precond": "z",
             "z_steps": z_steps,
+            "z_optim": z_optim,
+            "z_lr": z_lr,
             "n_factor": d["n_factor"],
             "n_forward_solves": d["n_forward_solves"],
             "n_adjoint_solves": d["n_adjoint_solves"],
