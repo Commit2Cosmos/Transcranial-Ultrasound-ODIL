@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import math
 import torch
@@ -10,6 +10,81 @@ from odil_wave.grid import Grid, FrequencySelection
 from odil_wave.models import VelocityModel, velocity_norm
 from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
+
+
+def canonicalize_source_offsets(
+    n_receivers: int,
+    n_sources_per_offset: int,
+    offsets: Sequence[int],
+) -> Tuple[int, ...]:
+    """Map offsets into ``0 .. step-1`` and reject empty / duplicate octets.
+
+    With ``step = n_receivers // n_sources_per_offset``, offset ``k`` and
+    ``k + step`` select the same ring positions (cyclically reordered).
+
+    Non-divisible ``n_receivers / n_sources_per_offset`` is only allowed for
+    the legacy default ``source_offsets=(0,)`` (historical subsample).
+    """
+    if n_sources_per_offset <= 0:
+        raise ValueError(
+            f"n_sources_per_offset must be positive, got {n_sources_per_offset}."
+        )
+    if not offsets:
+        raise ValueError("source_offsets must contain at least one offset.")
+
+    divisible = n_receivers % n_sources_per_offset == 0
+    if not divisible:
+        # path: only the historical single octet at offset 0.
+        step = max(1, n_receivers // n_sources_per_offset)
+        raw = tuple(int(o) % step for o in offsets)
+        if raw != (0,):
+            raise ValueError(
+                f"n_receivers ({n_receivers}) must be divisible by "
+                f"n_sources_per_offset ({n_sources_per_offset}) when using "
+                f"rotated source_offsets={tuple(offsets)!r}."
+            )
+        return (0,)
+
+    step = n_receivers // n_sources_per_offset
+    canonical: List[int] = []
+    seen: set[int] = set()
+    for raw in offsets:
+        off = int(raw) % step
+        if off in seen:
+            raise ValueError(
+                f"duplicate source offset {off} after canonicalisation "
+                f"(step={step}); got source_offsets={tuple(offsets)!r}."
+            )
+        seen.add(off)
+        canonical.append(off)
+    return tuple(canonical)
+
+
+def source_ring_indices(
+    n_receivers: int,
+    n_sources_per_offset: int,
+    offsets: Sequence[int] = (0,),
+) -> List[int]:
+    """Receiver-ring indices for one or more rotated source octets.
+
+    For each canonical offset ``off``, places sources at
+    ``(off + i * step) % n_receivers`` for ``i = 0 .. n_sources_per_offset-1``.
+    Multiple offsets are concatenated in the given (canonicalised) order.
+
+    If ``n_receivers`` is not divisible by ``n_sources_per_offset``, only the
+    legacy ``source_offsets=(0,)`` layout is supported (same as the pre-offset
+    ``recv[::step][:n_sources]`` subsample).
+    """
+    offs = canonicalize_source_offsets(n_receivers, n_sources_per_offset, offsets)
+    if n_receivers % n_sources_per_offset != 0:
+        step = max(1, n_receivers // n_sources_per_offset)
+        return list(range(0, n_receivers, step))[:n_sources_per_offset]
+    step = n_receivers // n_sources_per_offset
+    return [
+        (off + i * step) % n_receivers
+        for off in offs
+        for i in range(n_sources_per_offset)
+    ]
 
 
 def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
@@ -55,6 +130,7 @@ class AcquisitionGeometry:
         b_frac: float = 0.70,
         ring_center: Tuple[float, float] = (0.0, 0.0),
         source_spatial: str = "gaussian",
+        source_offsets: Sequence[int] = (0,),
     ):
         self.grid = grid
         self.source = source
@@ -64,7 +140,10 @@ class AcquisitionGeometry:
         self.dtype = self.grid.dtype
 
         self.n_receivers = n_receivers
-        self.n_sources = n_receivers if n_sources is None else n_sources
+        # Configured octet size; active shot count is len(source_ring_indices).
+        self.n_sources_per_offset = (
+            n_receivers if n_sources is None else int(n_sources)
+        )
         self.sigma_s = (
             self._default_sigma_s(grid, source) if sigma_s is None else sigma_s
         )
@@ -74,8 +153,15 @@ class AcquisitionGeometry:
         self.source_spatial = source_spatial
 
         self.recv_ij = self._place_ellipse(self.n_receivers)
-        step = max(1, self.n_receivers // self.n_sources)
-        self.src_ij = self.recv_ij[::step][: self.n_sources]
+        self.source_offsets = canonicalize_source_offsets(
+            self.n_receivers, self.n_sources_per_offset, source_offsets
+        )
+        self.source_ring_indices = source_ring_indices(
+            self.n_receivers, self.n_sources_per_offset, self.source_offsets
+        )
+        # Solvers / losses treat n_sources as the active batch size.
+        self.n_sources = len(self.source_ring_indices)
+        self.src_ij = self.recv_ij[self.source_ring_indices]
 
     @staticmethod
     def _default_sigma_s(grid: Grid, source: SourceSignal) -> float:
