@@ -101,6 +101,8 @@ continuation:
 
 loss:
   weights: {pde: 1.0, data: 100.0, reg: 0.0}
+  # name: null | tikhonov | tv_iso | tv_aniso; params: {eps: 1.0e-8} (tv_iso).
+  # The scalar weight is weights.reg above (set > 0 to activate).
   regulariser: {name: null, params: {}}
 
 optimiser:
@@ -126,6 +128,10 @@ optimiser:
     c_max_iter: 6
     c_history_size: 10
     reset_c_history: true
+    c_update: lbfgs            # lbfgs | closed_form (variable-projection c*)
+    c_update_every: 1          # closed_form only: apply c* every N outer iters
+    c_relax: 1.0               # closed_form only: c <- (1-a) c + a c*
+    illum_rel_floor: 1.0e-6    # closed_form only: low-illumination cells hold c
     early_stop_rtol: 0.0       # <= 0 disables early stopping
     early_stop_min_iter: 0
     early_stop_patience: 3

@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import torch
 
-from odil_wave.loss import InverseLoss, LossConfig
+from odil_wave.loss import InverseLoss, LossConfig, Regulariser
 from odil_wave.metrics import ssim as _ssim
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
@@ -29,8 +29,10 @@ from odil_wave.wavefield import Wavefield
 from . import envinfo
 from .config import (
     BandCfg,
+    ConfigError,
     RunConfig,
     canonical_optimiser_name,
+    canonical_regulariser_name,
     deep_merge,
     expand_band_schedule,
     resolve_config,
@@ -188,6 +190,10 @@ def _build_optimiser(
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
+            c_update=lb.c_update,
+            c_update_every=lb.c_update_every,
+            c_relax=lb.c_relax,
+            illum_rel_floor=lb.illum_rel_floor,
             c_precond=lb.precond.c_precond,
             c_precond_type=lb.precond.c_precond_type,
             c_precond_sigma=lb.precond.c_precond_sigma,
@@ -199,13 +205,17 @@ def _build_optimiser(
         )
 
     if name == "cf":
-        from odil_wave.optimisation import LBFGSClosedForm
+        # The closed-form c-update is LBFGSB's variable-projection c-block
+        # (u-L-BFGS + exact per-cell c*); "cf" is that path with the direct
+        # wavefield block.
+        from odil_wave.optimisation import LBFGSB
 
         cf = opt.cf
-        return LBFGSClosedForm(
+        return LBFGSB(
             wf_inv,
             loss,
             **shared,
+            c_update="closed_form",
             c_update_every=cf.c_update_every,
             c_relax=cf.c_relax,
             illum_rel_floor=cf.illum_rel_floor,
@@ -426,13 +436,31 @@ def _atomic_npy(path: Path, arr: np.ndarray) -> None:
 
 
 def _build_regulariser(cfg: RunConfig):
+    """Build the configured :class:`~odil_wave.loss.Regulariser`, or ``None``.
+
+    ``cfg.loss.regulariser.name`` selects the penalty kind (``tikhonov`` /
+    ``tv_iso`` / ``tv_aniso``; aliases resolved by
+    :func:`~odil_wave.experiment.config.canonical_regulariser_name`) and
+    ``params`` forwards keyword arguments to the constructor (only ``eps``, the
+    ``tv_iso`` smoothing floor). Returns ``None`` when no regulariser is
+    configured, so :class:`~odil_wave.loss.LossConfig` omits the reg term.
+
+    The scalar weight is *not* set here: it is ``loss.weights['reg']``, applied
+    by :class:`~odil_wave.loss.InverseLoss` (and by the closed-form proximal
+    step) at evaluation time.
+    """
     reg = cfg.loss.regulariser
     if reg is None or reg.name is None:
         return None
-    raise NotImplementedError(
-        f"regulariser {reg.name!r} is configured but not wired in "
-        "experiment.runner; add a factory in _build_regulariser."
-    )
+    kind = canonical_regulariser_name(reg.name)
+    params = dict(reg.params or {})
+    unknown = set(params) - {"eps"}
+    if unknown:
+        raise ConfigError(
+            f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
+            "the only accepted param is 'eps'."
+        )
+    return Regulariser(kind=kind, **params)
 
 
 def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, band_ctx):

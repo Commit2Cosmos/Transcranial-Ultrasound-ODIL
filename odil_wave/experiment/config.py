@@ -248,6 +248,15 @@ class LBFGSBCfg:
     c_max_iter: int = 6
     c_history_size: int = 10
     reset_c_history: bool = True
+    # c-block update rule. "lbfgs" (default): the L-BFGS c-step above (with the
+    # optional c-gradient preconditioner). "closed_form": the exact per-cell
+    # variable-projection update (as in the ``cf`` optimiser) instead of L-BFGS,
+    # driven by ``c_update_every`` / ``c_relax`` / ``illum_rel_floor`` and
+    # available for both the direct and the ``u_precond='z'`` wavefield blocks.
+    c_update: str = "lbfgs"  # "lbfgs" | "closed_form"
+    c_update_every: int = 1  # closed_form only
+    c_relax: float = 1.0  # closed_form only
+    illum_rel_floor: float = 1e-6  # closed_form only
     early_stop_rtol: float = 0.0
     early_stop_min_iter: int = 0
     early_stop_patience: int = 3
@@ -257,7 +266,8 @@ class LBFGSBCfg:
 
 @dataclass(frozen=True)
 class CFCfg:
-    """Fields specific to the closed-form c update (LBFGSClosedForm)."""
+    """Fields specific to the ``cf`` optimiser: LBFGSB with a closed-form
+    (variable-projection) c-update (``c_update='closed_form'``)."""
 
     c_update_every: int = 2
     c_relax: float = 1.0
@@ -558,6 +568,36 @@ def canonical_optimiser_name(name: str) -> str:
     return _OPTIMISER_ALIASES[key]
 
 
+# Regulariser kinds accepted by :class:`odil_wave.loss.Regulariser`, plus the
+# aliases understood in configs. Kept torch-free here so ``--dry-run`` can
+# validate a regulariser name without importing the numerical stack; the actual
+# object is built in ``experiment.runner._build_regulariser``.
+_REGULARISER_ALIASES = {
+    "tikhonov": "tikhonov",
+    "l2": "tikhonov",
+    "smoothness": "tikhonov",
+    "smooth": "tikhonov",
+    "tv": "tv_iso",
+    "tv_iso": "tv_iso",
+    "tv_isotropic": "tv_iso",
+    "iso": "tv_iso",
+    "tv_aniso": "tv_aniso",
+    "tv_anisotropic": "tv_aniso",
+    "aniso": "tv_aniso",
+}
+
+
+def canonical_regulariser_name(name: str) -> str:
+    """Normalise a regulariser name to ``tikhonov`` / ``tv_iso`` / ``tv_aniso``."""
+    key = str(name).strip().lower()
+    if key not in _REGULARISER_ALIASES:
+        raise ConfigError(
+            f"unknown regulariser {name!r}; expected one of "
+            f"{sorted(set(_REGULARISER_ALIASES.values()))} (or an alias)."
+        )
+    return _REGULARISER_ALIASES[key]
+
+
 _SOURCE_SCHEDULES = ("joint", "sequential", "cyclic")
 
 
@@ -736,6 +776,21 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError("optimiser.lbfgsb.z_lr must be > 0")
         if lb.z_steps < 1:
             raise ConfigError("optimiser.lbfgsb.z_steps must be >= 1")
+        if str(lb.c_update).lower() not in ("lbfgs", "closed_form"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.c_update must be 'lbfgs' or 'closed_form', "
+                f"got {lb.c_update!r}"
+            )
+        if str(lb.c_update).lower() == "closed_form":
+            if lb.c_update_every < 1:
+                raise ConfigError(
+                    "optimiser.lbfgsb.c_update_every must be >= 1 for closed_form"
+                )
+            if lb.precond.c_precond:
+                warnings.append(
+                    "optimiser.lbfgsb.c_update='closed_form' ignores the "
+                    "c-gradient preconditioner (precond.c_precond)."
+                )
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -777,6 +832,21 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     for key in ("pde", "data"):
         if key not in cfg.loss.weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
+
+    reg = cfg.loss.regulariser
+    if reg is not None and reg.name is not None:
+        canonical_regulariser_name(reg.name)  # raises ConfigError on a bad name
+        unknown = set(reg.params or {}) - {"eps"}
+        if unknown:
+            raise ConfigError(
+                f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
+                "the only accepted param is 'eps'."
+            )
+        if float(cfg.loss.weights.get("reg", 0.0)) <= 0.0:
+            warnings.append(
+                f"loss.regulariser.name={reg.name!r} is set but loss.weights['reg'] "
+                "is <= 0, so the regulariser has no effect."
+            )
 
     ws = cfg.metrics.ssim.win_size
     if ws < 3 or ws % 2 == 0:

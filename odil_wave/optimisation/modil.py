@@ -853,7 +853,7 @@ class MODILInversion(Optimiser):
 
         Solves ``min_c 0.5 Σ w (c - c*)² + λ R(c)`` on the interior map with
         ``w = illum / mean(illum)``, mirroring
-        :meth:`~odil_wave.optimisation.closed_form.LBFGSClosedForm._prox_regularise`.
+        :meth:`~odil_wave.optimisation.base.LBFGSB._prox_regularise`.
         No-op without a configured regulariser. Used only by the closed-form
         c-update.
         """
