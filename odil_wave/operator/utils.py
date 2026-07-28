@@ -6,7 +6,13 @@ import torch
 
 from odil_wave.wavefield import Wavefield
 from .base import DenseOperator
-from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
+from .spatial import (
+    Laplacian2ndOrder,
+    Laplacian4thOrder,
+    Laplacian6thOrder,
+    Laplacian8thOrder,
+    Laplacian10thOrder,
+)
 from .conditions import Conditions, NeumannMirrorBC2nd, NeumannMirrorBC4th, Sponge
 
 
@@ -49,6 +55,12 @@ class WaveEquation:
             self._bc = NeumannMirrorBC2nd()
         elif self.space_order == 4:
             self._lap = Laplacian4thOrder(self.wavefield)
+            self._bc = NeumannMirrorBC4th()
+        elif self.space_order == 6:
+            self._lap = Laplacian6thOrder(self.wavefield)
+            self._bc = NeumannMirrorBC4th()
+        elif self.space_order == 8:
+            self._lap = Laplacian8thOrder(self.wavefield)
             self._bc = NeumannMirrorBC4th()
         elif self.space_order == 10:
             self._lap = Laplacian10thOrder(self.wavefield)

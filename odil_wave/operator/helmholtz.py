@@ -15,7 +15,7 @@ import torch
 from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.wavefield import Wavefield
-from .spatial import _C10, _C10_CENTER
+from .spatial import _C6, _C6_CENTER, _C8, _C8_CENTER, _C10, _C10_CENTER
 from .utils import WaveEquation
 
 
@@ -84,8 +84,7 @@ class HelmholtzFactorCache:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, self.n)
-                .T
-                .astype(np.complex128, copy=False)
+                .T.astype(np.complex128, copy=False)
             )
             Z = self._H[k] @ U
             out[:, k] = torch.as_tensor(
@@ -125,8 +124,7 @@ class HelmholtzFactorCache:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, self.n)
-                .T
-                .astype(np.complex128, copy=False)
+                .T.astype(np.complex128, copy=False)
             )
             X = self._lu[k].solve(F, trans=trans)
             out[:, k] = torch.as_tensor(
@@ -197,21 +195,26 @@ def _laplacian_kernel(
         K[2, 4] = -1.0 / 12.0 * cy
         K[2, 2] = -30.0 / 12.0 * (cx + cy)
         return K, pad
-    if space_order == 10:
-        pad = 5
-        K = np.zeros((11, 11), dtype=np.float64)
-        for k, ck in enumerate(_C10):
+    wide = {6: (_C6, _C6_CENTER), 8: (_C8, _C8_CENTER), 10: (_C10, _C10_CENTER)}
+    if space_order in wide:
+        coeffs, center = wide[space_order]
+        pad = len(coeffs)
+        n = 2 * pad + 1
+        K = np.zeros((n, n), dtype=np.float64)
+        for k, ck in enumerate(coeffs):
             offset = k + 1
-            K[5 - offset, 5] = ck * cx
-            K[5 + offset, 5] = ck * cx
-            K[5, 5 - offset] = ck * cy
-            K[5, 5 + offset] = ck * cy
-        K[5, 5] = _C10_CENTER * (cx + cy)
+            K[pad - offset, pad] = ck * cx
+            K[pad + offset, pad] = ck * cx
+            K[pad, pad - offset] = ck * cy
+            K[pad, pad + offset] = ck * cy
+        K[pad, pad] = center * (cx + cy)
         return K, pad
     raise ValueError(f"Unsupported space_order for sparse Helmholtz: {space_order}")
 
 
-def assemble_laplacian_csr(nx: int, ny: int, kernel: np.ndarray, pad: int) -> sp.csr_matrix:
+def assemble_laplacian_csr(
+    nx: int, ny: int, kernel: np.ndarray, pad: int
+) -> sp.csr_matrix:
     """Sparse Laplacian with Neumann-mirror (reflect) boundaries."""
     kh, kw = kernel.shape
     assert kh == 2 * pad + 1 and kw == 2 * pad + 1
@@ -285,9 +288,7 @@ class HelmholtzSolver:
         return (
             torch.stack(
                 [
-                    self.geometry.source_field(i).to(
-                        dtype=cdtype, device=grid.device
-                    )
+                    self.geometry.source_field(i).to(dtype=cdtype, device=grid.device)
                     for i in range(self.geometry.n_sources)
                 ]
             )
@@ -331,7 +332,11 @@ class HelmholtzSolver:
         lam_tt = float(freq.lambda_tt[freq_idx].detach().cpu().numpy())
 
         sig_sum = (
-            (grid.sigma_x_nd + grid.sigma_y_nd).detach().cpu().numpy().astype(np.float64)
+            (grid.sigma_x_nd + grid.sigma_y_nd)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
         ).reshape(-1)
         sig_prod = (
             (grid.sigma_x_nd * grid.sigma_y_nd)
@@ -342,9 +347,9 @@ class HelmholtzSolver:
         ).reshape(-1)
 
         # Diagonal: λ_tt + w (σ_sum λ_t + σ_prod)
-        diag = (
-            lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)
-        ).astype(np.complex128)
+        diag = (lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)).astype(
+            np.complex128
+        )
 
         L = self._laplacian_csr()
         # H = diag(a) - diag(c_nd²) @ L
@@ -397,8 +402,7 @@ class HelmholtzSolver:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, n)
-                .T
-                .astype(np.complex128, copy=False)
+                .T.astype(np.complex128, copy=False)
             )
             t0 = time.perf_counter()
             U = lu.solve(F)
@@ -469,4 +473,3 @@ class HelmholtzSolver:
             out.amplitude = amp[s]
             outputs.append(out)
         return outputs
-

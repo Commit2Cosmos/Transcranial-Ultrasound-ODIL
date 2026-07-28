@@ -7,7 +7,13 @@ from typing import Optional
 import torch
 
 from odil_wave.wavefield import Wavefield
-from .spatial import Laplacian2ndOrder, Laplacian4thOrder, Laplacian10thOrder
+from .spatial import (
+    Laplacian2ndOrder,
+    Laplacian4thOrder,
+    Laplacian6thOrder,
+    Laplacian8thOrder,
+    Laplacian10thOrder,
+)
 from .temporal import (
     TimeOperator2ndOrder,
     _first_time_derivative,
@@ -33,6 +39,10 @@ class LeapfrogSolver:
             lap_cls = Laplacian2ndOrder
         elif space_order == 4:
             lap_cls = Laplacian4thOrder
+        elif space_order == 6:
+            lap_cls = Laplacian6thOrder
+        elif space_order == 8:
+            lap_cls = Laplacian8thOrder
         elif space_order == 10:
             lap_cls = Laplacian10thOrder
         else:
@@ -48,10 +58,17 @@ class LeapfrogSolver:
         grid = wavefield.grid
         c_max = float(wavefield.velocity_model.c.max())
         cfl = grid.cfl(c_max)
+        # Leapfrog stability: cfl_limit = 2 / sqrt(|Λ_1d(π)|), where |Λ_1d(π)| is
+        # the magnitude of the 1D Laplacian stencil symbol at the Nyquist angle
+        # (grid.cfl already folds in the 2-D 1/dx²+1/dy² factor).
         if space_order == 2:
             cfl_limit = 1.0
         elif space_order == 4:
             cfl_limit = math.sqrt(3.0) / 2.0
+        elif space_order == 6:
+            cfl_limit = 2.0 / math.sqrt(272.0 / 45.0)
+        elif space_order == 8:
+            cfl_limit = 2.0 / math.sqrt(2048.0 / 315.0)
         elif space_order == 10:
             cfl_limit = 2.0 / math.sqrt(6.826666666666667)
         else:
@@ -117,9 +134,7 @@ class LeapfrogSolver:
             utt = time_op.apply(amp)
             lap = self._lap.apply(amp)
             r = utt - k * lap - sources
-            u_t = _first_time_derivative(
-                amp, dt, wf.init_ut_nd, mask_first, mask_last
-            )
+            u_t = _first_time_derivative(amp, dt, wf.init_ut_nd, mask_first, mask_last)
             r = r + self.pml_weight * (sig_s_raw * u_t + sig_p_raw * amp)
             r_rms = float(r.pow(2).mean().sqrt())
             src_rms = float(sources.pow(2).mean().sqrt())
