@@ -32,6 +32,7 @@ from .config import (
     RunConfig,
     canonical_optimiser_name,
     deep_merge,
+    expand_band_schedule,
     resolve_config,
     validate_config,
 )
@@ -181,6 +182,8 @@ def _build_optimiser(
             c_steps=opt.c_steps,
             z_steps=lb.z_steps,
             u_precond=lb.u_precond,
+            z_optim=lb.z_optim,
+            z_lr=lb.z_lr,
             c_lr=lb.c_lr,
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
@@ -275,7 +278,7 @@ def run_frequency_band(
     )
 
     t0 = time.perf_counter()
-    band_ctx = problem.make_band(freqs)
+    band_ctx = problem.make_band(freqs, band_cfg.source_offsets)
 
     t_warm = time.perf_counter()
     u_init = problem.warm_start(velocity_model, band_ctx)
@@ -371,6 +374,9 @@ def run_frequency_band(
         "n_iter_requested": n_iter,
         "n_iter_run": n_iter_run,
         "termination_reason": termination,
+        "source_offsets": list(band_ctx.geom.source_offsets),
+        "source_schedule": band_cfg.source_schedule,
+        "n_shots": int(band_ctx.geom.n_sources),
         "t_start_epoch_s": t0,
         "wall_s": wall_s,
         "warm_start_s": warm_s,
@@ -437,6 +443,8 @@ def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, ban
         "frequencies_hz": freqs,
         "n_iter_effective": n_iter,
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
+        "source_offsets": list(band_ctx.geom.source_offsets),
+        "n_shots": int(band_ctx.geom.n_sources),
         "warm_start": cfg.continuation.warm_start,
         "observation_method": cfg.observation.method,
         "normalize_data": cfg.observation.normalize_data,
@@ -498,8 +506,14 @@ def run_inverse(
         seed=config.run.seed,
         repo_root=Path(__file__).resolve().parents[2],
     )
+    # Expand sequential / cyclic source schedules into concrete "joint" stages;
+    # each expanded stage is one entry in the flat band loop below.
+    band_stages = expand_band_schedule(
+        list(config.continuation.bands), config.optimiser.n_iter
+    )
     meta["seed_record"] = seed_record
-    meta["n_bands"] = len(config.continuation.bands)
+    meta["n_bands"] = len(band_stages)
+    meta["n_config_bands"] = len(config.continuation.bands)
     meta["observation_method"] = config.observation.method
     meta["config_warnings"] = warnings
 
@@ -526,7 +540,7 @@ def run_inverse(
         )
 
         current = problem.init_velocity
-        for bi, band_cfg in enumerate(config.continuation.bands):
+        for bi, band_cfg in enumerate(band_stages):
             last_band_index = bi
             band_res = run_frequency_band(
                 problem, current, band_cfg, recorder, bi, bands_dir

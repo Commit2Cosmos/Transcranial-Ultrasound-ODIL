@@ -172,11 +172,29 @@ class ObservationCfg:
 
 @dataclass(frozen=True)
 class BandCfg:
-    """One continuation stage. Single-frequency if ``len == 1``."""
+    """One continuation stage. Single-frequency if ``len == 1``.
+
+    ``source_offsets`` selects one or more rotated source octets on the
+    receiver ring (see :func:`odil_wave.geometry.source_ring_indices`); the
+    default ``[0]`` is the historical single-octet layout. ``source_schedule``
+    controls how multiple offsets are run (mirrors
+    :class:`odil_wave.optimisation.frequency_continuation.FrequencyBand`):
+
+      * ``"joint"`` (default): all offsets active together in this one stage.
+      * ``"sequential"``: run one octet after another (same frequencies),
+        carrying ``c`` between offsets — expands to one stage per offset.
+      * ``"cyclic"``: alternate offsets one octet per outer step — expands to
+        ``n_iter`` single-iteration stages cycling through the offsets.
+
+    ``sequential`` / ``cyclic`` expand into several concrete stages at run time
+    (see :func:`expand_band_schedule`); ``joint`` is a single stage.
+    """
 
     frequencies_hz: List[float] = field(default_factory=lambda: [40e3])
     # per-band optimiser iteration budget; None -> optimiser.n_iter.
     n_iter: Optional[int] = None
+    source_offsets: List[int] = field(default_factory=lambda: [0])
+    source_schedule: str = "joint"  # "joint" | "sequential" | "cyclic"
 
 
 @dataclass(frozen=True)
@@ -223,6 +241,9 @@ class LBFGSBCfg:
 
     z_steps: int = 1
     u_precond: Optional[str] = None  # None | "z"
+    # z-block controls (only used when u_precond == "z").
+    z_optim: str = "gd"  # "gd" (Armijo steepest descent) | "lbfgs"
+    z_lr: float = 1.0  # Armijo initial step when z_optim == "gd"
     c_lr: float = 5.0
     c_max_iter: int = 6
     c_history_size: int = 10
@@ -537,6 +558,52 @@ def canonical_optimiser_name(name: str) -> str:
     return _OPTIMISER_ALIASES[key]
 
 
+_SOURCE_SCHEDULES = ("joint", "sequential", "cyclic")
+
+
+def expand_band_schedule(
+    bands: List["BandCfg"], default_n_iter: int
+) -> List["BandCfg"]:
+    """Expand ``sequential`` / ``cyclic`` source schedules into concrete stages.
+
+    Mirrors
+    :func:`odil_wave.optimisation.frequency_continuation._expand_source_schedule`
+    at the :class:`BandCfg` level. Each returned stage is a plain ``"joint"``
+    band with a single resolved ``source_offsets`` list, so the runner's flat
+    band loop (which already carries ``c`` from one stage to the next) realises
+    the sequential / cyclic semantics. ``joint`` bands (and any band with a
+    single offset) pass through unchanged.
+    """
+    stages: List[BandCfg] = []
+    for band in bands:
+        schedule = str(band.source_schedule).lower()
+        offs = list(band.source_offsets)
+        n_iter = int(default_n_iter if band.n_iter is None else band.n_iter)
+        if schedule == "sequential" and len(offs) > 1:
+            for off in offs:
+                stages.append(
+                    BandCfg(
+                        frequencies_hz=list(band.frequencies_hz),
+                        n_iter=n_iter,
+                        source_offsets=[off],
+                        source_schedule="joint",
+                    )
+                )
+        elif schedule == "cyclic" and len(offs) > 1:
+            for k in range(n_iter):
+                stages.append(
+                    BandCfg(
+                        frequencies_hz=list(band.frequencies_hz),
+                        n_iter=1,
+                        source_offsets=[offs[k % len(offs)]],
+                        source_schedule="joint",
+                    )
+                )
+        else:
+            stages.append(band)
+    return stages
+
+
 def default_config_dict() -> Dict[str, Any]:
     """The fully-resolved default configuration as a plain dict."""
     return RunConfig().to_dict()
@@ -647,11 +714,28 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     """
     warnings: List[str] = []
 
-    canonical_optimiser_name(cfg.optimiser.name)  # raises on bad name
+    name = canonical_optimiser_name(cfg.optimiser.name)  # raises on bad name
     if cfg.optimiser.log_every < 1:
         raise ConfigError("optimiser.log_every must be >= 1")
     if cfg.optimiser.n_iter < 1:
         raise ConfigError("optimiser.n_iter must be >= 1")
+
+    if name == "lbfgsb":
+        lb = cfg.optimiser.lbfgsb
+        if lb.u_precond not in (None, "z"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.u_precond must be null or 'z', "
+                f"got {lb.u_precond!r}"
+            )
+        if str(lb.z_optim).lower() not in ("gd", "lbfgs"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.z_optim must be 'gd' or 'lbfgs', "
+                f"got {lb.z_optim!r}"
+            )
+        if lb.z_lr <= 0:
+            raise ConfigError("optimiser.lbfgsb.z_lr must be > 0")
+        if lb.z_steps < 1:
+            raise ConfigError("optimiser.lbfgsb.z_steps must be >= 1")
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -662,6 +746,13 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
+        if not band.source_offsets:
+            raise ConfigError(f"band {bi} source_offsets must be non-empty")
+        if str(band.source_schedule).lower() not in _SOURCE_SCHEDULES:
+            raise ConfigError(
+                f"band {bi} source_schedule must be one of "
+                f"{list(_SOURCE_SCHEDULES)}, got {band.source_schedule!r}"
+            )
 
     if cfg.observation.method not in ("leapfrog_fft", "helmholtz"):
         raise ConfigError(
