@@ -160,3 +160,53 @@ class SourceSignal:
             )
         ax.grid(alpha=0.3)
         return ax
+
+    def plot_spectrum(self, frequencies=None, ax=None, title="Source spectrum"):
+        """Plot the normalised source magnitude spectrum ``|S(f)|``.
+
+        ``frequencies`` optionally marks selected bins (e.g. the inversion
+        frequencies) as vertical lines. It accepts a ``FrequencySelection``
+        (its ``.frequencies`` are used), a tensor/array of hertz values, or a
+        sequence of floats.
+        """
+        if ax is None:
+            _, ax = plt.subplots(figsize=(7.5, 3.2))
+
+        sig = self.waveform(self.grid.t).cpu().numpy()
+        mag = np.abs(np.fft.rfft(sig))
+        mag /= mag.max() + 1e-30
+        fr = np.fft.rfftfreq(self.grid.nt, d=self.grid.dt)
+
+        sel = _as_frequency_array(frequencies)
+        f_ref = float(np.max(sel)) if sel is not None and sel.size else self.f0
+        f_mult, f_unit = frequency_scale(f_ref if f_ref > 0 else self.f0)
+
+        ax.plot(fr * f_mult, mag, label="|S(f)|")
+        if sel is not None and sel.size:
+            for k, f in enumerate(sel):
+                ax.axvline(
+                    f * f_mult,
+                    color="crimson",
+                    ls="--",
+                    alpha=0.85,
+                    label="selected bins" if k == 0 else None,
+                )
+            ax.set_xlim(0, float(np.max(sel)) * f_mult * 2.2)
+        ax.set_xlabel(f"f [{f_unit}]")
+        ax.set_ylabel("normalised |S(f)|")
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(alpha=0.3)
+        return ax
+
+
+def _as_frequency_array(frequencies):
+    """Coerce a FrequencySelection / tensor / array / sequence to a 1D np array of |Hz|."""
+    if frequencies is None:
+        return None
+    freqs = getattr(frequencies, "frequencies", frequencies)
+    if isinstance(freqs, torch.Tensor):
+        freqs = freqs.detach().abs().cpu().numpy()
+    else:
+        freqs = np.abs(np.asarray(freqs, dtype=float))
+    return np.atleast_1d(freqs)
