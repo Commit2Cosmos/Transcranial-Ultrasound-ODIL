@@ -1,0 +1,155 @@
+# Default frequency-domain FWI configuration.
+#
+# This reproduces the notebook's single-band Shepp-Logan run: a 40 kHz LBFGSB
+# inversion (SETUP_SHEPP), truth = shepp_logan, initial model = shepp_logan_skull,
+# observed data synthesised by a broadband leapfrog time solve then FFT onto the
+# band's bins (no inverse crime).
+#
+# Any field omitted here falls back to the code default in
+# odil_wave/experiment/config.py; the fully-resolved config (every effective
+# value) is written to <run_dir>/config_resolved.yaml.
+#
+# Scientific notation such as 40e3 is parsed as a float (matching the notebook).
+
+run:
+  # blank -> auto: <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>[_<precond>]_<f0>_<bands>
+  run_id: ""
+  output_root: outputs
+  seed: 0
+  tags: []
+  notes: ""
+
+runtime:
+  device: cpu           # cpu | cuda | mps
+  dtype: float32        # float32 | float64
+  torch_num_threads: null
+  deterministic: false
+
+grid:
+  interior_shape: [125, 125]
+  c_min: 1300.0
+  c_max: 3100.0
+  interior_extent: [[0.0, 0.25], [0.0, 0.25]]   # metres
+  t_max: 0.0005         # 500 us
+  init_nt: 1300
+  pml_width: 40
+  pml_power: 3
+  pml_R0: 1.0e-6
+  cfl_safety: 0.9
+  L0: null
+  c0: null
+
+source:
+  kind: tone_burst
+  f0: 80e3
+  amplitude: 1.0
+  n_cycles: 3.0
+  envelope: gaussian
+  offset: 0
+  t0: null
+  dimensionless: true
+
+acquisition:
+  n_receivers: 64
+  n_sources: 8
+  a_frac: 0.9
+  b_frac: 0.9
+  ring_center: grid_center     # "grid_center" or [x, y]
+  sigma_s: null
+  source_spatial: gaussian
+
+physics:
+  space_order: 2
+  time_order: 2
+  pml_weight: 1.0
+
+truth:
+  profile: shepp_logan
+  scale: 0.85
+init:
+  profile: shepp_logan_skull
+  scale: 0.85
+
+observation:
+  method: leapfrog_fft         # leapfrog_fft (no inverse crime) | helmholtz
+  normalize_data: per_receiver # null | none | per_receiver | global
+  verbose: false
+
+continuation:
+  warm_start: helmholtz        # helmholtz | none
+  # Single band by default. For low->high multiscale continuation, list several
+  # single-frequency (or multi-frequency) stages; each recovered model warm
+  # starts the next, e.g.:
+  #   bands:
+  #     - {frequencies_hz: [50e3]}
+  #     - {frequencies_hz: [60e3]}
+  #     - {frequencies_hz: [70e3, 80e3]}   # multi-frequency stage
+  bands:
+    - frequencies_hz: [40e3]
+      n_iter: null             # null -> optimiser.n_iter
+
+loss:
+  weights: {pde: 1.0, data: 100.0, reg: 0.0}
+  regulariser: {name: null, params: {}}
+
+optimiser:
+  name: lbfgsb                 # lbfgsb | cf | modil
+  log_every: 5
+  n_iter: 20
+  u_steps: 20
+  c_steps: 1
+  max_iter: 20
+  history_size: 10
+  tolerance_grad: 1.0e-7
+  tolerance_change: 1.0e-9
+  line_search_fn: strong_wolfe
+  clamp: true
+
+  # Block-coordinate dual L-BFGS (LBFGSB).
+  lbfgsb:
+    z_steps: 1
+    u_precond: null            # null | z
+    c_lr: 5.0
+    c_max_iter: 6
+    c_history_size: 10
+    reset_c_history: true
+    early_stop_rtol: 0.0       # <= 0 disables early stopping
+    early_stop_min_iter: 0
+    early_stop_patience: 3
+    debug_c: false
+    precond:
+      c_precond: false
+      c_precond_type: energy   # energy | gaussian
+      c_precond_sigma: 2.0
+      c_precond_stab: 1.0e-2
+
+  # Closed-form c update (LBFGSClosedForm).
+  cf:
+    c_update_every: 2
+    c_relax: 1.0
+    illum_rel_floor: 1.0e-6
+
+  # Simultaneous multilevel inversion (MODILInversion).
+  modil:
+    num_levels: 2
+    coarsening_factor: 2
+    min_ppw: 3.0
+    c_update: closed_form      # lbfgs | closed_form
+    c_update_every: 2
+    c_relax: 1.0
+    c_lr: 5.0
+    c_max_iter: 6
+    c_history_size: 10
+    u_num_levels: 1
+    u_coarsening_factor: 2
+    modil_reg_weight: 0.0
+    illum_rel_floor: 1.0e-6
+
+metrics:
+  ssim:
+    mask: head_roi             # head_roi | interior | none
+    data_range: auto           # "auto" or a float
+    win_size: 7
+    gaussian_weights: false
+    sigma: 1.5
+  log_c_stats: true
