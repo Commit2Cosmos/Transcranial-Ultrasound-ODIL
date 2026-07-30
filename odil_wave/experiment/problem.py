@@ -160,8 +160,27 @@ class Problem:
 def _build_velocity(
     grid: Grid, spec: ModelCfg, center: Tuple[float, float]
 ) -> VelocityModel:
+    """Build a :class:`VelocityModel` from a :class:`ModelCfg`.
+
+    First-class fields (``scale``, ``skull_alpha``, ``skull_sigma``) are
+    forwarded as profile kwargs and override the same keys in ``spec.extra``.
+    ``extra.skull_smooth`` is normalised to ``skull_sigma`` when the first-class
+    ``skull_sigma`` is still at its default ``0`` (alias for
+    :class:`~odil_wave.models.VelocityModel`).
+    """
     kwargs = dict(spec.extra)
     kwargs["scale"] = spec.scale
+    kwargs["skull_alpha"] = spec.skull_alpha
+    if spec.skull_sigma != 0.0:
+        kwargs["skull_sigma"] = spec.skull_sigma
+        kwargs.pop("skull_smooth", None)
+    elif "skull_sigma" in kwargs:
+        kwargs["skull_sigma"] = float(kwargs["skull_sigma"])
+        kwargs.pop("skull_smooth", None)
+    elif "skull_smooth" in kwargs:
+        kwargs["skull_sigma"] = float(kwargs.pop("skull_smooth"))
+    else:
+        kwargs["skull_sigma"] = spec.skull_sigma
     if spec.profile == "overdensity" and "center" not in kwargs:
         kwargs["center"] = center
     pml_c = spec.pml_c
