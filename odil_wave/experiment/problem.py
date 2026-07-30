@@ -66,15 +66,18 @@ class Problem:
     ) -> BandContext:
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
-        geom = self._geometry(freq, source_offsets)
+        geom = self.make_geometry(freq, source_offsets)
         observed = self._observed(freq, geom)
         return BandContext(
             frequencies_hz=freqs, freq=freq, geom=geom, observed_wfs=observed
         )
 
-    def _geometry(
-        self, freq: FrequencySelection, source_offsets: Sequence[int] = (0,)
+    def make_geometry(
+        self,
+        freq: FrequencySelection,
+        source_offsets: Sequence[int] = (0,),
     ) -> AcquisitionGeometry:
+        """Acquisition layout for a band, *without* solving for observed data."""
         acq = self.cfg.acquisition
         return AcquisitionGeometry(
             self.grid,
