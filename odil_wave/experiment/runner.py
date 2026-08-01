@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import torch
 
-from odil_wave.loss import InverseLoss, LossConfig
+from odil_wave.loss import InverseLoss, LossConfig, Regulariser
 from odil_wave.metrics import ssim as _ssim
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
@@ -29,9 +29,12 @@ from odil_wave.wavefield import Wavefield
 from . import envinfo
 from .config import (
     BandCfg,
+    ConfigError,
     RunConfig,
     canonical_optimiser_name,
+    canonical_regulariser_name,
     deep_merge,
+    expand_band_schedule,
     resolve_config,
     validate_config,
 )
@@ -181,10 +184,16 @@ def _build_optimiser(
             c_steps=opt.c_steps,
             z_steps=lb.z_steps,
             u_precond=lb.u_precond,
+            z_optim=lb.z_optim,
+            z_lr=lb.z_lr,
             c_lr=lb.c_lr,
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
+            c_update=lb.c_update,
+            c_update_every=lb.c_update_every,
+            c_relax=lb.c_relax,
+            illum_rel_floor=lb.illum_rel_floor,
             c_precond=lb.precond.c_precond,
             c_precond_type=lb.precond.c_precond_type,
             c_precond_sigma=lb.precond.c_precond_sigma,
@@ -196,13 +205,17 @@ def _build_optimiser(
         )
 
     if name == "cf":
-        from odil_wave.optimisation import LBFGSClosedForm
+        # The closed-form c-update is LBFGSB's variable-projection c-block
+        # (u-L-BFGS + exact per-cell c*); "cf" is that path with the direct
+        # wavefield block.
+        from odil_wave.optimisation import LBFGSB
 
         cf = opt.cf
-        return LBFGSClosedForm(
+        return LBFGSB(
             wf_inv,
             loss,
             **shared,
+            c_update="closed_form",
             c_update_every=cf.c_update_every,
             c_relax=cf.c_relax,
             illum_rel_floor=cf.illum_rel_floor,
@@ -275,7 +288,7 @@ def run_frequency_band(
     )
 
     t0 = time.perf_counter()
-    band_ctx = problem.make_band(freqs)
+    band_ctx = problem.make_band(freqs, band_cfg.source_offsets)
 
     t_warm = time.perf_counter()
     u_init = problem.warm_start(velocity_model, band_ctx)
@@ -371,6 +384,9 @@ def run_frequency_band(
         "n_iter_requested": n_iter,
         "n_iter_run": n_iter_run,
         "termination_reason": termination,
+        "source_offsets": list(band_ctx.geom.source_offsets),
+        "source_schedule": band_cfg.source_schedule,
+        "n_shots": int(band_ctx.geom.n_sources),
         "t_start_epoch_s": t0,
         "wall_s": wall_s,
         "warm_start_s": warm_s,
@@ -420,13 +436,31 @@ def _atomic_npy(path: Path, arr: np.ndarray) -> None:
 
 
 def _build_regulariser(cfg: RunConfig):
+    """Build the configured :class:`~odil_wave.loss.Regulariser`, or ``None``.
+
+    ``cfg.loss.regulariser.name`` selects the penalty kind (``tikhonov`` /
+    ``tv_iso`` / ``tv_aniso``; aliases resolved by
+    :func:`~odil_wave.experiment.config.canonical_regulariser_name`) and
+    ``params`` forwards keyword arguments to the constructor (only ``eps``, the
+    ``tv_iso`` smoothing floor). Returns ``None`` when no regulariser is
+    configured, so :class:`~odil_wave.loss.LossConfig` omits the reg term.
+
+    The scalar weight is *not* set here: it is ``loss.weights['reg']``, applied
+    by :class:`~odil_wave.loss.InverseLoss` (and by the closed-form proximal
+    step) at evaluation time.
+    """
     reg = cfg.loss.regulariser
     if reg is None or reg.name is None:
         return None
-    raise NotImplementedError(
-        f"regulariser {reg.name!r} is configured but not wired in "
-        "experiment.runner; add a factory in _build_regulariser."
-    )
+    kind = canonical_regulariser_name(reg.name)
+    params = dict(reg.params or {})
+    unknown = set(params) - {"eps"}
+    if unknown:
+        raise ConfigError(
+            f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
+            "the only accepted param is 'eps'."
+        )
+    return Regulariser(kind=kind, **params)
 
 
 def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, band_ctx):
@@ -437,6 +471,8 @@ def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, ban
         "frequencies_hz": freqs,
         "n_iter_effective": n_iter,
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
+        "source_offsets": list(band_ctx.geom.source_offsets),
+        "n_shots": int(band_ctx.geom.n_sources),
         "warm_start": cfg.continuation.warm_start,
         "observation_method": cfg.observation.method,
         "normalize_data": cfg.observation.normalize_data,
@@ -498,8 +534,14 @@ def run_inverse(
         seed=config.run.seed,
         repo_root=Path(__file__).resolve().parents[2],
     )
+    # Expand sequential / cyclic source schedules into concrete "joint" stages;
+    # each expanded stage is one entry in the flat band loop below.
+    band_stages = expand_band_schedule(
+        list(config.continuation.bands), config.optimiser.n_iter
+    )
     meta["seed_record"] = seed_record
-    meta["n_bands"] = len(config.continuation.bands)
+    meta["n_bands"] = len(band_stages)
+    meta["n_config_bands"] = len(config.continuation.bands)
     meta["observation_method"] = config.observation.method
     meta["config_warnings"] = warnings
 
@@ -526,7 +568,7 @@ def run_inverse(
         )
 
         current = problem.init_velocity
-        for bi, band_cfg in enumerate(config.continuation.bands):
+        for bi, band_cfg in enumerate(band_stages):
             last_band_index = bi
             band_res = run_frequency_band(
                 problem, current, band_cfg, recorder, bi, bands_dir

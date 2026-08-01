@@ -157,6 +157,11 @@ class LBFGSB(Optimiser):
         "c_precond_sigma": 2.0,
         "c_precond_stab": 1e-2,
         "reset_c_history": True,
+        # c-block rule: "lbfgs" (default) or "closed_form" variable projection.
+        "c_update": "lbfgs",
+        "c_update_every": 1,
+        "c_relax": 1.0,
+        "illum_rel_floor": 1e-6,
         # Optional; early_stop_rtol <= 0 disables (default).
         "early_stop_rtol": 0.0,
         "early_stop_min_iter": 0,
@@ -164,11 +169,17 @@ class LBFGSB(Optimiser):
         # Print / store per-outer [grad_c] diagnostics (off by default).
         "debug_c": False,
     }
-    _LBFGS_KEYS = frozenset({
-        "lr", "max_iter", "max_eval",
-        "tolerance_grad", "tolerance_change",
-        "history_size", "line_search_fn",
-    })
+    _LBFGS_KEYS = frozenset(
+        {
+            "lr",
+            "max_iter",
+            "max_eval",
+            "tolerance_grad",
+            "tolerance_change",
+            "history_size",
+            "line_search_fn",
+        }
+    )
     _Z_OPTIMS = frozenset({"gd", "lbfgs"})
 
     def __init__(
@@ -206,13 +217,21 @@ class LBFGSB(Optimiser):
         c_precond_sigma = float(opts.pop("c_precond_sigma", 2.0))
         c_precond_stab = float(opts.pop("c_precond_stab", 1e-2))
         reset_c_history = bool(opts.pop("reset_c_history", True))
+        c_update = str(opts.pop("c_update", "lbfgs")).lower()
+        c_update_every = int(opts.pop("c_update_every", 1))
+        c_relax = float(opts.pop("c_relax", 1.0))
+        illum_rel_floor = float(opts.pop("illum_rel_floor", 1e-6))
         early_stop_rtol = float(opts.pop("early_stop_rtol", 0.0))
         early_stop_min_iter = int(opts.pop("early_stop_min_iter", 0))
         early_stop_patience = int(opts.pop("early_stop_patience", 3))
         debug_c = bool(opts.pop("debug_c", False))
         # Legacy time-domain stab key (unused).
         opts.pop("u_precond_stab", None)
-        opts.pop("c_update", None)
+
+        if c_update not in ("lbfgs", "closed_form"):
+            raise ValueError(
+                f"c_update must be 'lbfgs' or 'closed_form'; got {c_update!r}"
+            )
 
         if u_precond in (None, False):
             u_precond_mode = None
@@ -253,6 +272,10 @@ class LBFGSB(Optimiser):
             c_precond_sigma,
             c_precond_stab,
             reset_c_history,
+            c_update,
+            c_update_every,
+            c_relax,
+            illum_rel_floor,
             early_stop_rtol,
             early_stop_min_iter,
             early_stop_patience,
@@ -264,8 +287,10 @@ class LBFGSB(Optimiser):
         nf = self.wavefield.n_frequencies
         Nx, Ny = self.wavefield.grid.shape
         if self.u_init is None:
-            seed = self.wavefield.amplitude.detach().clone().to(
-                dtype=cdtype, device=device
+            seed = (
+                self.wavefield.amplitude.detach()
+                .clone()
+                .to(dtype=cdtype, device=device)
             )
             if seed.ndim == 3:
                 seed = seed.unsqueeze(0).expand(n_shots, -1, -1, -1)
@@ -293,6 +318,86 @@ class LBFGSB(Optimiser):
             )
         return stack.contiguous()
 
+    def _prox_regularise(
+        self, c_star: torch.Tensor, illum: torch.Tensor
+    ) -> torch.Tensor:
+        """Illumination-weighted proximal application of the loss regulariser.
+
+        Solves ``min_c 0.5 Σ w (c - c*)² + λ R(c)`` on the interior map with
+        ``w = illum / mean(illum)``. No-op without a configured regulariser or a
+        non-positive ``reg`` weight. Used only by the closed-form c-update and
+        operating on **physical** ``c`` (the L-BFGS c-block, by contrast,
+        regularises the normalised ĉ). :class:`MODILInversion` carries a
+        matching proximal step.
+        """
+        reg = self.loss.config.regulariser
+        lam = float(self.loss.config.weights.get("reg", 0.0))
+        if reg is None or lam <= 0.0:
+            return c_star
+        w = illum / illum.mean().clamp(min=1e-30)
+        c = c_star.detach().clone().requires_grad_(True)
+        prox_opt = torch.optim.LBFGS(
+            [c], max_iter=50, history_size=10, line_search_fn="strong_wolfe"
+        )
+
+        def prox_closure():
+            with torch.enable_grad():
+                prox_opt.zero_grad()
+                F = 0.5 * (w * (c - c_star) ** 2).sum() + lam * reg(c)
+                F.backward()
+            return F
+
+        prox_opt.step(prox_closure)
+        return c.detach()
+
+    def _closed_form_c_update(
+        self,
+        *,
+        amps_fixed: torch.Tensor,
+        c_interior_param: torch.nn.Parameter,
+        c_ref: float,
+        vm_in,
+        grid,
+        wave_eq,
+        c_min,
+        c_max,
+        free_mask,
+        c_frozen_init,
+        c_relax: float,
+        illum_rel_floor: float,
+    ) -> None:
+        """Write one closed-form variable-projection c-update into ``c_interior_param``.
+
+        ``amps_fixed`` is the (detached) wavefield ``u``; the update is the exact
+        per-cell argmin of the PDE misfit over ``c`` for that ``u`` (see
+        :meth:`odil_wave.operator.utils.WaveEquation.c_closed_form`) — no step
+        size, preconditioner or line search to tune. It is optionally relaxed
+        (``c ← (1-α) c + α c*``), regularised (a proximal step) and clamped to
+        ``[c_min, c_max]``. The result honours this optimiser's ĉ = c/c_ref
+        normalisation and any frozen (masked) cells; ``c_min``/``c_max`` are in
+        ĉ units. Replaces the L-BFGS c-block when ``c_update='closed_form'``.
+        """
+        with torch.no_grad():
+            c_phys_int = c_interior_param.detach() * c_ref
+            c_full_cur = vm_in.build_full_c(c_phys_int)
+            c_star_full, illum_full = wave_eq.c_closed_form(
+                amps_fixed,
+                self.loss.sources,
+                c_current=c_full_cur,
+                illum_rel_floor=illum_rel_floor,
+            )
+            c_star = c_star_full[grid.interior_slice]
+            c_star = self._prox_regularise(c_star, illum_full[grid.interior_slice])
+            if c_relax != 1.0:
+                c_star = (1.0 - c_relax) * c_phys_int + c_relax * c_star
+            c_hat = c_star / c_ref
+            if free_mask is not None:
+                c_hat = c_hat.clone()
+                c_hat[~free_mask] = c_frozen_init
+            if c_min is not None or c_max is not None:
+                c_hat = c_hat.clamp(min=c_min, max=c_max)
+            c_interior_param.data.copy_(c_hat)
+
     def minimise(
         self,
         on_iteration=None,
@@ -315,6 +420,10 @@ class LBFGSB(Optimiser):
             c_precond_sigma,
             c_precond_stab,
             reset_c_history,
+            c_update,
+            c_update_every,
+            c_relax,
+            illum_rel_floor,
             early_stop_rtol,
             early_stop_min_iter,
             early_stop_patience,
@@ -335,6 +444,10 @@ class LBFGSB(Optimiser):
                 c_precond_sigma=c_precond_sigma,
                 c_precond_stab=c_precond_stab,
                 reset_c_history=reset_c_history,
+                c_update=c_update,
+                c_update_every=c_update_every,
+                c_relax=c_relax,
+                illum_rel_floor=illum_rel_floor,
                 early_stop_rtol=early_stop_rtol,
                 early_stop_min_iter=early_stop_min_iter,
                 early_stop_patience=early_stop_patience,
@@ -348,6 +461,8 @@ class LBFGSB(Optimiser):
         cdtype = self.wavefield.cdtype
         device = grid.device
         n_shots = self.loss.config.geometry.n_sources
+        wave_eq = self.loss.config.wave_eq
+        closed_form_c = c_update == "closed_form"
 
         u_seed = self._seed_complex(n_shots, cdtype, device)
         u_real = torch.nn.Parameter(u_seed.real.contiguous().to(dtype=dtype))
@@ -386,7 +501,11 @@ class LBFGSB(Optimiser):
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
         u_optimiser = make_u_optimiser()
-        c_optimiser = make_c_optimiser() if (is_inverse and c_steps > 0) else None
+        c_optimiser = (
+            make_c_optimiser()
+            if (is_inverse and c_steps > 0 and not closed_form_c)
+            else None
+        )
 
         c_min = (
             self.c_min / c_ref
@@ -412,6 +531,7 @@ class LBFGSB(Optimiser):
         for i in range(n_iter):
             n_outer_done = i + 1
             for _ in range(u_steps):
+
                 def u_closure():
                     nonlocal n_u_closure
                     n_u_closure += 1
@@ -429,20 +549,45 @@ class LBFGSB(Optimiser):
 
                 loss_value = u_optimiser.step(u_closure)
 
-            if is_inverse and c_steps > 0:
+            if is_inverse and closed_form_c:
+                if c_update_every > 0 and (i + 1) % c_update_every == 0:
+                    self._closed_form_c_update(
+                        amps_fixed=pack_u_detached(),
+                        c_interior_param=c_interior_param,
+                        c_ref=c_ref,
+                        vm_in=vm_in,
+                        grid=grid,
+                        wave_eq=wave_eq,
+                        c_min=c_min,
+                        c_max=c_max,
+                        free_mask=_free_mask,
+                        c_frozen_init=_c_frozen_init,
+                        c_relax=c_relax,
+                        illum_rel_floor=illum_rel_floor,
+                    )
+                    with torch.no_grad():
+                        c_full_new = vm_in.build_full_c(
+                            c_interior_param.detach() * c_ref
+                        )
+                        loss_value = self.loss.evaluate(
+                            pack_u_detached(), c_full_new, c_interior_param.detach()
+                        )
+                    # c changed — reset u LBFGS history
+                    u_optimiser = make_u_optimiser()
+
+            elif is_inverse and c_steps > 0:
                 if c_precond:
                     with torch.no_grad():
                         u_sq = pack_u_detached().abs().square().mean(dim=(0, 1))
                         _prec = u_sq[grid.interior_slice]
-                        _eps_prec = c_precond_stab * float(
-                            _prec.max().clamp(min=1e-30)
-                        )
+                        _eps_prec = c_precond_stab * float(_prec.max().clamp(min=1e-30))
 
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
                 logged_grad_c = False
                 for _ in range(c_steps):
+
                     def c_closure():
                         nonlocal logged_grad_c, n_c_closure
                         n_c_closure += 1
@@ -452,9 +597,7 @@ class LBFGSB(Optimiser):
                         c_phys = c_interior_param * c_ref
                         c_full = vm_in.build_full_c(c_phys)
                         amps_fixed = pack_u_detached()
-                        L_c = self.loss.evaluate(
-                            amps_fixed, c_full, c_interior_param
-                        )
+                        L_c = self.loss.evaluate(amps_fixed, c_full, c_interior_param)
                         L_c.backward()
                         if _free_mask is not None and c_interior_param.grad is not None:
                             c_interior_param.grad[~_free_mask] = 0.0
@@ -489,10 +632,7 @@ class LBFGSB(Optimiser):
                                 logged_grad_c = True
                         elif not debug_c:
                             logged_grad_c = True
-                        if (
-                            c_precond
-                            and c_interior_param.grad is not None
-                        ):
+                        if c_precond and c_interior_param.grad is not None:
                             with torch.no_grad():
                                 if c_precond_type == "gaussian":
                                     g_smooth = _gaussian_smooth_2d(
@@ -592,6 +732,7 @@ class LBFGSB(Optimiser):
             "n_c_closure": n_c_closure,
             "n_closure": n_u_closure + n_c_closure,
             "u_precond": None,
+            "c_update": c_update,
             "n_factor": 0,
             "n_forward_solves": 0,
             "n_adjoint_solves": 0,
@@ -613,6 +754,10 @@ class LBFGSB(Optimiser):
         c_precond_sigma: float,
         c_precond_stab: float,
         reset_c_history: bool,
+        c_update: str,
+        c_update_every: int,
+        c_relax: float,
+        illum_rel_floor: float,
         early_stop_rtol: float,
         early_stop_min_iter: int,
         early_stop_patience: int,
@@ -631,6 +776,7 @@ class LBFGSB(Optimiser):
         n_shots = self.loss.config.geometry.n_sources
         vm_in = self.wavefield.velocity_model
         wave_eq = self.loss.config.wave_eq
+        closed_form_c = c_update == "closed_form"
 
         u_seed = self._seed_complex(n_shots, cdtype, device)
         c0_int = vm_in.c[grid.interior_slice].detach().clone().to(device=device)
@@ -671,7 +817,9 @@ class LBFGSB(Optimiser):
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
         z_optimiser = make_z_optimiser() if z_optim == "lbfgs" else None
-        c_optimiser = make_c_optimiser() if c_steps > 0 else None
+        c_optimiser = (
+            make_c_optimiser() if (c_steps > 0 and not closed_form_c) else None
+        )
 
         c_min = self.c_min / c_ref if self.c_min is not None else None
         c_max = self.c_max / c_ref if self.c_max is not None else None
@@ -705,9 +853,7 @@ class LBFGSB(Optimiser):
                     n_u_closure += 1
 
                     def _eval_z(z_t, u_t):
-                        return self.loss.evaluate_z(
-                            z_t, u_t, c_full_fixed, c_hat_fixed
-                        )
+                        return self.loss.evaluate_z(z_t, u_t, c_full_fixed, c_hat_fixed)
 
                     loss_value, n_trial = _armijo_gd_step_z(
                         z_real=z_real,
@@ -720,6 +866,7 @@ class LBFGSB(Optimiser):
                     )
                     n_u_closure += n_trial
                 else:
+
                     def z_closure():
                         nonlocal n_u_closure
                         n_u_closure += 1
@@ -732,21 +879,56 @@ class LBFGSB(Optimiser):
 
                     loss_value = z_optimiser.step(z_closure)
 
-            if c_steps > 0:
+            if closed_form_c:
+                if c_update_every > 0 and (i + 1) % c_update_every == 0:
+                    z_fixed = pack_z_detached()
+                    with torch.no_grad():
+                        # u = A(c)^{-1} z for the current medium; the closed-form
+                        # update then treats this u as fixed (direct ODIL sense).
+                        u_fixed = tf.cache.solve(z_fixed, trans="N")
+                    self._closed_form_c_update(
+                        amps_fixed=u_fixed,
+                        c_interior_param=c_interior_param,
+                        c_ref=c_ref,
+                        vm_in=vm_in,
+                        grid=grid,
+                        wave_eq=wave_eq,
+                        c_min=c_min,
+                        c_max=c_max,
+                        free_mask=_free_mask,
+                        c_frozen_init=_c_frozen_init,
+                        c_relax=c_relax,
+                        illum_rel_floor=illum_rel_floor,
+                    )
+                    with torch.no_grad():
+                        c_full_new = c_full_from_hat(c_interior_param.detach())
+                        # c changed -> refactor for the next z-stage and report
+                        # the loss at the recomputed u = A(c_new)^{-1} z.
+                        tf.rebuild(c_full_new)
+                        u_new = tf.cache.solve(pack_z_detached(), trans="N")
+                        loss_value = self.loss.evaluate_z(
+                            pack_z_detached(),
+                            u_new,
+                            c_full_new,
+                            c_interior_param.detach(),
+                        )
+                    if z_optim == "lbfgs":
+                        z_optimiser = make_z_optimiser()
+
+            elif c_steps > 0:
                 z_fixed = pack_z_detached()
                 if c_precond:
                     with torch.no_grad():
                         u_sq = tf.apply(z_fixed).abs().square().mean(dim=(0, 1))
                         _prec = u_sq[grid.interior_slice]
-                        _eps_prec = c_precond_stab * float(
-                            _prec.max().clamp(min=1e-30)
-                        )
+                        _eps_prec = c_precond_stab * float(_prec.max().clamp(min=1e-30))
 
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
                 logged_grad_c = False
                 for _ in range(c_steps):
+
                     def c_closure():
                         nonlocal logged_grad_c, n_c_closure
                         n_c_closure += 1
@@ -754,9 +936,7 @@ class LBFGSB(Optimiser):
                         c_full = c_full_from_hat(c_interior_param)
                         # Freeze z; recompute u = A(c)^{-1} z (do not detach u).
                         u = tf.apply_diff_c(z_fixed, c_full)
-                        L_c = self.loss.evaluate_z(
-                            z_fixed, u, c_full, c_interior_param
-                        )
+                        L_c = self.loss.evaluate_z(z_fixed, u, c_full, c_interior_param)
                         L_c.backward()
                         if _free_mask is not None and c_interior_param.grad is not None:
                             c_interior_param.grad[~_free_mask] = 0.0
@@ -893,6 +1073,7 @@ class LBFGSB(Optimiser):
             "n_c_closure": n_c_closure,
             "n_closure": n_u_closure + n_c_closure,
             "u_precond": "z",
+            "c_update": c_update,
             "z_steps": z_steps,
             "z_optim": z_optim,
             "z_lr": z_lr,
@@ -904,4 +1085,3 @@ class LBFGSB(Optimiser):
             "data_loss": last.get("data_loss"),
         }
         return outputs, self.loss.callback
-

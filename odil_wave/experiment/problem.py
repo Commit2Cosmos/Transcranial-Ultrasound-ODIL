@@ -12,8 +12,8 @@ Numerical behaviour mirrors the notebook helpers ``build_setup`` /
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -53,19 +53,28 @@ class Problem:
     head_mask: Optional[torch.Tensor]
     space_order: int
     pml_weight: float
-    _truth_amp_time: Optional[torch.Tensor] = None
+    # Broadband truth time field cache, keyed by the active source-ring layout
+    # (tuple of ring indices). Distinct source_offsets get their own solve; the
+    # common case (every band shares one layout) is computed once.
+    _truth_amp_time: Dict[Tuple[int, ...], torch.Tensor] = field(default_factory=dict)
 
     # -- per-band construction -------------------------------------------- #
-    def make_band(self, frequencies_hz: Sequence[float]) -> BandContext:
+    def make_band(
+        self,
+        frequencies_hz: Sequence[float],
+        source_offsets: Sequence[int] = (0,),
+    ) -> BandContext:
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
-        geom = self._geometry(freq)
+        geom = self._geometry(freq, source_offsets)
         observed = self._observed(freq, geom)
         return BandContext(
             frequencies_hz=freqs, freq=freq, geom=geom, observed_wfs=observed
         )
 
-    def _geometry(self, freq: FrequencySelection) -> AcquisitionGeometry:
+    def _geometry(
+        self, freq: FrequencySelection, source_offsets: Sequence[int] = (0,)
+    ) -> AcquisitionGeometry:
         acq = self.cfg.acquisition
         return AcquisitionGeometry(
             self.grid,
@@ -78,6 +87,7 @@ class Problem:
             b_frac=acq.b_frac,
             ring_center=self.center,
             source_spatial=acq.source_spatial,
+            source_offsets=tuple(source_offsets),
         )
 
     def _observed(
@@ -109,21 +119,26 @@ class Problem:
     def _ensure_truth_time(
         self, geom: AcquisitionGeometry, verbose: bool = False
     ) -> torch.Tensor:
-        """Broadband leapfrog time field of the truth model (computed once).
+        """Broadband leapfrog time field of the truth model.
 
         The source/receiver layout is frequency-independent, so a single
         time-domain solve is FFT'd onto every band's bins (avoids the inverse
-        crime, matching the notebook).
+        crime, matching the notebook). Computed once *per source layout* and
+        cached by the active source-ring indices, so bands sharing a layout
+        reuse it while a rotated source octet triggers its own solve.
         """
-        if self._truth_amp_time is None:
+        key = tuple(int(i) for i in geom.source_ring_indices)
+        cached = self._truth_amp_time.get(key)
+        if cached is None:
             wf = Wavefield(
                 self.grid, geom.frequency_selection, velocity_model=self.truth_velocity
             )
             solver = LeapfrogSolver(
                 wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
             )
-            self._truth_amp_time = solver.solve(verbose=verbose)
-        return self._truth_amp_time
+            cached = solver.solve(verbose=verbose)
+            self._truth_amp_time[key] = cached
+        return cached
 
     # -- warm start -------------------------------------------------------- #
     def warm_start(
@@ -145,8 +160,27 @@ class Problem:
 def _build_velocity(
     grid: Grid, spec: ModelCfg, center: Tuple[float, float]
 ) -> VelocityModel:
+    """Build a :class:`VelocityModel` from a :class:`ModelCfg`.
+
+    First-class fields (``scale``, ``skull_alpha``, ``skull_sigma``) are
+    forwarded as profile kwargs and override the same keys in ``spec.extra``.
+    ``extra.skull_smooth`` is normalised to ``skull_sigma`` when the first-class
+    ``skull_sigma`` is still at its default ``0`` (alias for
+    :class:`~odil_wave.models.VelocityModel`).
+    """
     kwargs = dict(spec.extra)
     kwargs["scale"] = spec.scale
+    kwargs["skull_alpha"] = spec.skull_alpha
+    if spec.skull_sigma != 0.0:
+        kwargs["skull_sigma"] = spec.skull_sigma
+        kwargs.pop("skull_smooth", None)
+    elif "skull_sigma" in kwargs:
+        kwargs["skull_sigma"] = float(kwargs["skull_sigma"])
+        kwargs.pop("skull_smooth", None)
+    elif "skull_smooth" in kwargs:
+        kwargs["skull_sigma"] = float(kwargs.pop("skull_smooth"))
+    else:
+        kwargs["skull_sigma"] = spec.skull_sigma
     if spec.profile == "overdensity" and "center" not in kwargs:
         kwargs["center"] = center
     pml_c = spec.pml_c

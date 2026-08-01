@@ -1,5 +1,4 @@
 from .base import LBFGSB
-from .closed_form import LBFGSClosedForm
 from .c_step_debug import debug_one_c_step
 from .frequency_continuation import (
     BandTimingStats,
@@ -25,7 +24,6 @@ from .modil import (
 
 __all__ = [
     "LBFGSB",
-    "LBFGSClosedForm",
     "debug_one_c_step",
     "HelmholtzUTransform",
     "BandTimingStats",

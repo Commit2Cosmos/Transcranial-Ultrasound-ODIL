@@ -40,7 +40,18 @@ def velocity_norm(vmin: float, vcenter: float, vmax: float):
 
 
 class VelocityModel:
-    """2D velocity field c(x, y) attached to a Grid (full extended grid)."""
+    """2D velocity field c(x, y) attached to a Grid (full extended grid).
+
+    ``shepp_logan_skull`` kwargs (via ``**profile_kwargs``):
+
+    * ``skull_alpha`` (float in ``[0, 1]``, default ``1``) — contrast scale:
+      ``c = c_water + alpha * G_σ(c_perfect - c_water)``. ``0`` = water;
+      ``1`` = full skull peak (before / after mild blur).
+    * ``skull_sigma`` (float >= 0, default ``0``) — Gaussian σ in **grid cells**
+      applied to the skull contrast. Try ``1``–``3`` for a mild soft edge;
+      ``0`` keeps a sharp rim. (Alias: ``skull_smooth`` with the same meaning.)
+    * ``c_water``, ``c_skull``, ``scale``, ``threshold``, ``interior_value``
+    """
 
     def __init__(
         self,
@@ -206,17 +217,37 @@ class VelocityModel:
             threshold = self.profile_kwargs.get("threshold", SHEPP_THRESHOLD)
             c_water = self.profile_kwargs.get("c_water", SOS_WATER)
             c_skull = self.profile_kwargs.get("c_skull", SOS_SKULL)
+            # c = c_water + α G_σ(c_perfect - c_water)
+            skull_alpha = float(self.profile_kwargs.get("skull_alpha", 1.0))
+            if skull_alpha < 0.0 or skull_alpha > 1.0:
+                raise ValueError(
+                    f"skull_alpha must be in [0, 1]; got {skull_alpha}"
+                )
+            # σ in grid cells (alias skull_smooth). Prefer 1–3 for mild edges.
+            if "skull_sigma" in self.profile_kwargs:
+                skull_sigma = float(self.profile_kwargs["skull_sigma"])
+            else:
+                skull_sigma = float(self.profile_kwargs.get("skull_smooth", 0.0))
+            if skull_sigma < 0.0:
+                raise ValueError(
+                    f"skull_sigma must be >= 0; got {skull_sigma}"
+                )
 
             phantom, head, inner, rim = self._shepp_logan_interior_phantom(
                 scale, threshold
             )
-            # Perfect-skull start (cf. stride perfect_skull_start): water
-            # everywhere except the constant skull rim; no soft-tissue features.
+            # Perfect-skull geometry; no soft-tissue features.
             interior_value = self.profile_kwargs.get("interior_value", c_water)
             model = np.full(phantom.shape, c_water, dtype=np.float32)
             if interior_value != c_water:
                 model[inner] = interior_value
             model[rim] = c_skull
+
+            cw = np.float32(c_water)
+            contrast = model - cw
+            if skull_sigma > 0.0:
+                contrast = ndi.gaussian_filter(contrast, sigma=skull_sigma)
+            model = cw + np.float32(skull_alpha) * contrast
 
             self._interior_bg = float(c_water)
             self._head_mask = self._embed_mask(head)

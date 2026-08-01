@@ -84,12 +84,25 @@ continuation:
   #     - {frequencies_hz: [50e3]}
   #     - {frequencies_hz: [60e3]}
   #     - {frequencies_hz: [70e3, 80e3]}   # multi-frequency stage
+  #
+  # source_offsets selects one or more rotated source octets on the receiver
+  # ring (step = n_receivers / n_sources); [0] is the historical single octet.
+  # source_schedule controls how multiple offsets run:
+  #   joint      - all offsets active together in this stage (e.g. 4 octets = 32 shots)
+  #   sequential - one octet after another (same freqs), carrying c between them
+  #   cyclic     - alternate offsets one octet per outer step (expands to n_iter stages)
+  # e.g. dynamic source placement over 4 rotated octets:
+  #     - {frequencies_hz: [40e3], source_offsets: [0, 2, 4, 6], source_schedule: sequential}
   bands:
     - frequencies_hz: [40e3]
       n_iter: null             # null -> optimiser.n_iter
+      source_offsets: [0]      # rotated source octets active this stage
+      source_schedule: joint   # joint | sequential | cyclic
 
 loss:
   weights: {pde: 1.0, data: 100.0, reg: 0.0}
+  # name: null | tikhonov | tv_iso | tv_aniso; params: {eps: 1.0e-8} (tv_iso).
+  # The scalar weight is weights.reg above (set > 0 to activate).
   regulariser: {name: null, params: {}}
 
 optimiser:
@@ -108,11 +121,17 @@ optimiser:
   # Block-coordinate dual L-BFGS (LBFGSB).
   lbfgsb:
     z_steps: 1
-    u_precond: null            # null | z
+    u_precond: null            # null | z  (z -> u = A(c)^-1 z reparameterisation)
+    z_optim: gd                # gd (Armijo steepest descent) | lbfgs; only used when u_precond=z
+    z_lr: 1.0                  # Armijo initial step for z_optim=gd
     c_lr: 5.0
     c_max_iter: 6
     c_history_size: 10
     reset_c_history: true
+    c_update: lbfgs            # lbfgs | closed_form (variable-projection c*)
+    c_update_every: 1          # closed_form only: apply c* every N outer iters
+    c_relax: 1.0               # closed_form only: c <- (1-a) c + a c*
+    illum_rel_floor: 1.0e-6    # closed_form only: low-illumination cells hold c
     early_stop_rtol: 0.0       # <= 0 disables early stopping
     early_stop_min_iter: 0
     early_stop_patience: 3

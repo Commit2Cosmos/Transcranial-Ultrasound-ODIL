@@ -12,6 +12,7 @@ from .config import (
     canonical_optimiser_name,
     deep_merge,
     default_config_dict,
+    expand_band_schedule,
     load_config_file,
     resolve_config,
     validate_config,
@@ -49,6 +50,7 @@ __all__ = [
     "apply_overrides",
     "deep_merge",
     "canonical_optimiser_name",
+    "expand_band_schedule",
     # problem
     "Problem",
     "BandContext",

@@ -52,10 +52,19 @@ def _summarise(cfg) -> str:
         f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
         f"data_range={cfg.metrics.ssim.data_range}"
     )
+    if cfg.optimiser.name == "lbfgsb":
+        lb = cfg.optimiser.lbfgsb
+        a(
+            f"lbfgsb          : u_precond={lb.u_precond}, z_steps={lb.z_steps}, "
+            f"z_optim={lb.z_optim}, z_lr={lb.z_lr}, c_lr={lb.c_lr}"
+        )
     a(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        a(f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})")
+        a(
+            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter}, "
+            f"source_offsets={b.source_offsets}, schedule={b.source_schedule})"
+        )
     return "\n".join(lines)
 
 

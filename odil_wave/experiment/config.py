@@ -147,14 +147,26 @@ class PhysicsCfg:
 
 @dataclass(frozen=True)
 class ModelCfg:
-    """A VelocityModel spec (truth or initial model)."""
+    """A VelocityModel spec (truth or initial model).
+
+    ``skull_alpha`` / ``skull_sigma`` apply to ``shepp_logan_skull`` only
+    (passed through as ``VelocityModel`` profile kwargs). Defaults match
+    ``odil_wave.models.velocity_models``: full contrast, no Gaussian blur.
+    ``skull_sigma`` is σ in grid cells (try ``1``–``3`` for a mild soft edge);
+    ``extra.skull_smooth`` is accepted as an alias when ``skull_sigma`` is left
+    at its default and not set explicitly via override.
+    """
 
     profile: str = "shepp_logan"
     scale: float = 0.85
     base: float = _SOS_WATER
     contrast: float = 0.4
     pml_c: Optional[float] = None
-    # extra profile_kwargs (threshold, c_water, c_skull, center, radius, ...)
+    # shepp_logan_skull: c = c_water + alpha * G_σ(c_perfect - c_water)
+    skull_alpha: float = 1.0
+    skull_sigma: float = 0.0
+    # extra profile_kwargs (threshold, c_water, c_skull, center, radius,
+    # skull_smooth alias, soft_intercept, ...)
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -172,11 +184,29 @@ class ObservationCfg:
 
 @dataclass(frozen=True)
 class BandCfg:
-    """One continuation stage. Single-frequency if ``len == 1``."""
+    """One continuation stage. Single-frequency if ``len == 1``.
+
+    ``source_offsets`` selects one or more rotated source octets on the
+    receiver ring (see :func:`odil_wave.geometry.source_ring_indices`); the
+    default ``[0]`` is the historical single-octet layout. ``source_schedule``
+    controls how multiple offsets are run (mirrors
+    :class:`odil_wave.optimisation.frequency_continuation.FrequencyBand`):
+
+      * ``"joint"`` (default): all offsets active together in this one stage.
+      * ``"sequential"``: run one octet after another (same frequencies),
+        carrying ``c`` between offsets — expands to one stage per offset.
+      * ``"cyclic"``: alternate offsets one octet per outer step — expands to
+        ``n_iter`` single-iteration stages cycling through the offsets.
+
+    ``sequential`` / ``cyclic`` expand into several concrete stages at run time
+    (see :func:`expand_band_schedule`); ``joint`` is a single stage.
+    """
 
     frequencies_hz: List[float] = field(default_factory=lambda: [40e3])
     # per-band optimiser iteration budget; None -> optimiser.n_iter.
     n_iter: Optional[int] = None
+    source_offsets: List[int] = field(default_factory=lambda: [0])
+    source_schedule: str = "joint"  # "joint" | "sequential" | "cyclic"
 
 
 @dataclass(frozen=True)
@@ -223,10 +253,22 @@ class LBFGSBCfg:
 
     z_steps: int = 1
     u_precond: Optional[str] = None  # None | "z"
+    # z-block controls (only used when u_precond == "z").
+    z_optim: str = "gd"  # "gd" (Armijo steepest descent) | "lbfgs"
+    z_lr: float = 1.0  # Armijo initial step when z_optim == "gd"
     c_lr: float = 5.0
     c_max_iter: int = 6
     c_history_size: int = 10
     reset_c_history: bool = True
+    # c-block update rule. "lbfgs" (default): the L-BFGS c-step above (with the
+    # optional c-gradient preconditioner). "closed_form": the exact per-cell
+    # variable-projection update (as in the ``cf`` optimiser) instead of L-BFGS,
+    # driven by ``c_update_every`` / ``c_relax`` / ``illum_rel_floor`` and
+    # available for both the direct and the ``u_precond='z'`` wavefield blocks.
+    c_update: str = "lbfgs"  # "lbfgs" | "closed_form"
+    c_update_every: int = 1  # closed_form only
+    c_relax: float = 1.0  # closed_form only
+    illum_rel_floor: float = 1e-6  # closed_form only
     early_stop_rtol: float = 0.0
     early_stop_min_iter: int = 0
     early_stop_patience: int = 3
@@ -236,7 +278,8 @@ class LBFGSBCfg:
 
 @dataclass(frozen=True)
 class CFCfg:
-    """Fields specific to the closed-form c update (LBFGSClosedForm)."""
+    """Fields specific to the ``cf`` optimiser: LBFGSB with a closed-form
+    (variable-projection) c-update (``c_update='closed_form'``)."""
 
     c_update_every: int = 2
     c_relax: float = 1.0
@@ -537,6 +580,82 @@ def canonical_optimiser_name(name: str) -> str:
     return _OPTIMISER_ALIASES[key]
 
 
+# Regulariser kinds accepted by :class:`odil_wave.loss.Regulariser`, plus the
+# aliases understood in configs. Kept torch-free here so ``--dry-run`` can
+# validate a regulariser name without importing the numerical stack; the actual
+# object is built in ``experiment.runner._build_regulariser``.
+_REGULARISER_ALIASES = {
+    "tikhonov": "tikhonov",
+    "l2": "tikhonov",
+    "smoothness": "tikhonov",
+    "smooth": "tikhonov",
+    "tv": "tv_iso",
+    "tv_iso": "tv_iso",
+    "tv_isotropic": "tv_iso",
+    "iso": "tv_iso",
+    "tv_aniso": "tv_aniso",
+    "tv_anisotropic": "tv_aniso",
+    "aniso": "tv_aniso",
+}
+
+
+def canonical_regulariser_name(name: str) -> str:
+    """Normalise a regulariser name to ``tikhonov`` / ``tv_iso`` / ``tv_aniso``."""
+    key = str(name).strip().lower()
+    if key not in _REGULARISER_ALIASES:
+        raise ConfigError(
+            f"unknown regulariser {name!r}; expected one of "
+            f"{sorted(set(_REGULARISER_ALIASES.values()))} (or an alias)."
+        )
+    return _REGULARISER_ALIASES[key]
+
+
+_SOURCE_SCHEDULES = ("joint", "sequential", "cyclic")
+
+
+def expand_band_schedule(
+    bands: List["BandCfg"], default_n_iter: int
+) -> List["BandCfg"]:
+    """Expand ``sequential`` / ``cyclic`` source schedules into concrete stages.
+
+    Mirrors
+    :func:`odil_wave.optimisation.frequency_continuation._expand_source_schedule`
+    at the :class:`BandCfg` level. Each returned stage is a plain ``"joint"``
+    band with a single resolved ``source_offsets`` list, so the runner's flat
+    band loop (which already carries ``c`` from one stage to the next) realises
+    the sequential / cyclic semantics. ``joint`` bands (and any band with a
+    single offset) pass through unchanged.
+    """
+    stages: List[BandCfg] = []
+    for band in bands:
+        schedule = str(band.source_schedule).lower()
+        offs = list(band.source_offsets)
+        n_iter = int(default_n_iter if band.n_iter is None else band.n_iter)
+        if schedule == "sequential" and len(offs) > 1:
+            for off in offs:
+                stages.append(
+                    BandCfg(
+                        frequencies_hz=list(band.frequencies_hz),
+                        n_iter=n_iter,
+                        source_offsets=[off],
+                        source_schedule="joint",
+                    )
+                )
+        elif schedule == "cyclic" and len(offs) > 1:
+            for k in range(n_iter):
+                stages.append(
+                    BandCfg(
+                        frequencies_hz=list(band.frequencies_hz),
+                        n_iter=1,
+                        source_offsets=[offs[k % len(offs)]],
+                        source_schedule="joint",
+                    )
+                )
+        else:
+            stages.append(band)
+    return stages
+
+
 def default_config_dict() -> Dict[str, Any]:
     """The fully-resolved default configuration as a plain dict."""
     return RunConfig().to_dict()
@@ -647,11 +766,43 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     """
     warnings: List[str] = []
 
-    canonical_optimiser_name(cfg.optimiser.name)  # raises on bad name
+    name = canonical_optimiser_name(cfg.optimiser.name)  # raises on bad name
     if cfg.optimiser.log_every < 1:
         raise ConfigError("optimiser.log_every must be >= 1")
     if cfg.optimiser.n_iter < 1:
         raise ConfigError("optimiser.n_iter must be >= 1")
+
+    if name == "lbfgsb":
+        lb = cfg.optimiser.lbfgsb
+        if lb.u_precond not in (None, "z"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.u_precond must be null or 'z', "
+                f"got {lb.u_precond!r}"
+            )
+        if str(lb.z_optim).lower() not in ("gd", "lbfgs"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.z_optim must be 'gd' or 'lbfgs', "
+                f"got {lb.z_optim!r}"
+            )
+        if lb.z_lr <= 0:
+            raise ConfigError("optimiser.lbfgsb.z_lr must be > 0")
+        if lb.z_steps < 1:
+            raise ConfigError("optimiser.lbfgsb.z_steps must be >= 1")
+        if str(lb.c_update).lower() not in ("lbfgs", "closed_form"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.c_update must be 'lbfgs' or 'closed_form', "
+                f"got {lb.c_update!r}"
+            )
+        if str(lb.c_update).lower() == "closed_form":
+            if lb.c_update_every < 1:
+                raise ConfigError(
+                    "optimiser.lbfgsb.c_update_every must be >= 1 for closed_form"
+                )
+            if lb.precond.c_precond:
+                warnings.append(
+                    "optimiser.lbfgsb.c_update='closed_form' ignores the "
+                    "c-gradient preconditioner (precond.c_precond)."
+                )
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -662,6 +813,13 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
+        if not band.source_offsets:
+            raise ConfigError(f"band {bi} source_offsets must be non-empty")
+        if str(band.source_schedule).lower() not in _SOURCE_SCHEDULES:
+            raise ConfigError(
+                f"band {bi} source_schedule must be one of "
+                f"{list(_SOURCE_SCHEDULES)}, got {band.source_schedule!r}"
+            )
 
     if cfg.observation.method not in ("leapfrog_fft", "helmholtz"):
         raise ConfigError(
@@ -687,6 +845,21 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         if key not in cfg.loss.weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
 
+    reg = cfg.loss.regulariser
+    if reg is not None and reg.name is not None:
+        canonical_regulariser_name(reg.name)  # raises ConfigError on a bad name
+        unknown = set(reg.params or {}) - {"eps"}
+        if unknown:
+            raise ConfigError(
+                f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
+                "the only accepted param is 'eps'."
+            )
+        if float(cfg.loss.weights.get("reg", 0.0)) <= 0.0:
+            warnings.append(
+                f"loss.regulariser.name={reg.name!r} is set but loss.weights['reg'] "
+                "is <= 0, so the regulariser has no effect."
+            )
+
     ws = cfg.metrics.ssim.win_size
     if ws < 3 or ws % 2 == 0:
         raise ConfigError(f"metrics.ssim.win_size must be odd and >= 3, got {ws}")
@@ -710,4 +883,47 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"truth profile {cfg.truth.profile!r} has no head mask; "
             "ssim_head_roi will be recorded as null."
         )
+
+    for label, model in (("truth", cfg.truth), ("init", cfg.init)):
+        _validate_model_cfg(label, model, warnings)
+
     return warnings
+
+
+def _validate_model_cfg(
+    label: str, model: "ModelCfg", warnings: List[str]
+) -> None:
+    """Validate skull-smoothing / profile knobs on a truth or init model."""
+    if model.skull_alpha < 0.0 or model.skull_alpha > 1.0:
+        raise ConfigError(
+            f"{label}.skull_alpha must be in [0, 1]; got {model.skull_alpha}"
+        )
+    if model.skull_sigma < 0.0:
+        raise ConfigError(
+            f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}"
+        )
+    extra = model.extra or {}
+    if "skull_smooth" in extra:
+        try:
+            smooth = float(extra["skull_smooth"])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{label}.extra.skull_smooth must be a number; "
+                f"got {extra['skull_smooth']!r}"
+            ) from exc
+        if smooth < 0.0:
+            raise ConfigError(
+                f"{label}.extra.skull_smooth must be >= 0; got {smooth}"
+            )
+    if model.profile != "shepp_logan_skull" and (
+        model.skull_alpha != 1.0
+        or model.skull_sigma != 0.0
+        or "skull_smooth" in extra
+        or "skull_alpha" in extra
+        or "skull_sigma" in extra
+    ):
+        warnings.append(
+            f"{label}.profile={model.profile!r} ignores skull_alpha / "
+            "skull_sigma (they apply only to shepp_logan_skull)."
+        )
+
