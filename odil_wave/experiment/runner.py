@@ -313,12 +313,22 @@ def run_frequency_band(
         name=f"{cfg.optimiser.name}_{label}",
         log_every=cfg.optimiser.log_every,
     )
-    loss = InverseLoss(
-        observed_wavefield=band_ctx.observed_wfs,
-        config=loss_config,
-        callback=tape,
-        normalize_data=cfg.observation.normalize_data,
-    )
+    # PML split: observations synthesised on a separate forward grid are
+    # reduced to receiver traces; otherwise use full observed wavefields.
+    if getattr(band_ctx, "observed_traces", None) is not None:
+        loss = InverseLoss(
+            observed_traces=band_ctx.observed_traces,
+            config=loss_config,
+            callback=tape,
+            normalize_data=cfg.observation.normalize_data,
+        )
+    else:
+        loss = InverseLoss(
+            observed_wavefield=band_ctx.observed_wfs,
+            config=loss_config,
+            callback=tape,
+            normalize_data=cfg.observation.normalize_data,
+        )
     tape.bind_loss(loss)
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
@@ -669,3 +679,4 @@ def run_inverse_closed_form(config: RunConfig) -> RunResult:
 
 def run_inverse_modil(config: RunConfig) -> RunResult:
     return _rerun_with_optimiser(config, "modil")
+
