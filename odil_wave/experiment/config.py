@@ -147,20 +147,40 @@ class PhysicsCfg:
 
 @dataclass(frozen=True)
 class ModelCfg:
-    """A VelocityModel spec (truth or initial model)."""
+    """A VelocityModel spec (truth or initial model).
+
+    ``skull_alpha`` / ``skull_sigma`` apply to ``shepp_logan_skull`` only
+    (passed through as ``VelocityModel`` profile kwargs). Defaults match
+    ``odil_wave.models.velocity_models``: full contrast, no Gaussian blur.
+    ``skull_sigma`` is σ in grid cells (try ``1``–``3`` for a mild soft edge);
+    ``extra.skull_smooth`` is accepted as an alias when ``skull_sigma`` is left
+    at its default and not set explicitly via override.
+    """
 
     profile: str = "shepp_logan"
     scale: float = 0.85
     base: float = _SOS_WATER
     contrast: float = 0.4
     pml_c: Optional[float] = None
-    # extra profile_kwargs (threshold, c_water, c_skull, center, radius, ...)
+    # shepp_logan_skull: c = c_water + alpha * G_σ(c_perfect - c_water)
+    skull_alpha: float = 1.0
+    skull_sigma: float = 0.0
+    # extra profile_kwargs (threshold, c_water, c_skull, center, radius,
+    # skull_smooth alias, soft_intercept, ...)
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ObservationCfg:
-    """How the observed ("true") data is synthesised and normalised."""
+    """How the observed ("true") data is synthesised and normalised.
+
+    ``pml_width`` (optional) is the absorbing-border thickness used only when
+    synthesising observations. When set and different from ``grid.pml_width``,
+    data are generated on a separate forward grid and reduced to receiver
+    traces for the inverse solve — the notebook's ``PML_FWD`` / ``PML_INV``
+    split (e.g. forward 40, inverse 60). ``null`` means use the same PML as
+    the inverse grid.
+    """
 
     # "leapfrog_fft": broadband leapfrog time solve then FFT onto each band's
     #   bins (avoids the inverse crime; notebook default).
@@ -168,6 +188,7 @@ class ObservationCfg:
     method: str = "leapfrog_fft"
     normalize_data: str = "per_receiver"  # None | "none" | "per_receiver" | "global"
     verbose: bool = False
+    pml_width: Optional[int] = None  # forward PML; null -> grid.pml_width
 
 
 @dataclass(frozen=True)
@@ -814,6 +835,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"observation.method must be 'leapfrog_fft' or 'helmholtz', "
             f"got {cfg.observation.method!r}"
         )
+    if cfg.observation.pml_width is not None and int(cfg.observation.pml_width) < 0:
+        raise ConfigError(
+            f"observation.pml_width must be >= 0 when set, "
+            f"got {cfg.observation.pml_width}"
+        )
     if cfg.continuation.warm_start not in ("helmholtz", "none"):
         raise ConfigError(
             f"continuation.warm_start must be 'helmholtz' or 'none', "
@@ -871,4 +897,47 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"truth profile {cfg.truth.profile!r} has no head mask; "
             "ssim_head_roi will be recorded as null."
         )
+
+    for label, model in (("truth", cfg.truth), ("init", cfg.init)):
+        _validate_model_cfg(label, model, warnings)
+
     return warnings
+
+
+def _validate_model_cfg(
+    label: str, model: "ModelCfg", warnings: List[str]
+) -> None:
+    """Validate skull-smoothing / profile knobs on a truth or init model."""
+    if model.skull_alpha < 0.0 or model.skull_alpha > 1.0:
+        raise ConfigError(
+            f"{label}.skull_alpha must be in [0, 1]; got {model.skull_alpha}"
+        )
+    if model.skull_sigma < 0.0:
+        raise ConfigError(
+            f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}"
+        )
+    extra = model.extra or {}
+    if "skull_smooth" in extra:
+        try:
+            smooth = float(extra["skull_smooth"])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{label}.extra.skull_smooth must be a number; "
+                f"got {extra['skull_smooth']!r}"
+            ) from exc
+        if smooth < 0.0:
+            raise ConfigError(
+                f"{label}.extra.skull_smooth must be >= 0; got {smooth}"
+            )
+    if model.profile != "shepp_logan_skull" and (
+        model.skull_alpha != 1.0
+        or model.skull_sigma != 0.0
+        or "skull_smooth" in extra
+        or "skull_alpha" in extra
+        or "skull_sigma" in extra
+    ):
+        warnings.append(
+            f"{label}.profile={model.profile!r} ignores skull_alpha / "
+            "skull_sigma (they apply only to shepp_logan_skull)."
+        )
+
