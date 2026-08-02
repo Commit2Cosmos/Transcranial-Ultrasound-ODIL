@@ -172,7 +172,15 @@ class ModelCfg:
 
 @dataclass(frozen=True)
 class ObservationCfg:
-    """How the observed ("true") data is synthesised and normalised."""
+    """How the observed ("true") data is synthesised and normalised.
+
+    ``pml_width`` (optional) is the absorbing-border thickness used only when
+    synthesising observations. When set and different from ``grid.pml_width``,
+    data are generated on a separate forward grid and reduced to receiver
+    traces for the inverse solve — the notebook's ``PML_FWD`` / ``PML_INV``
+    split (e.g. forward 40, inverse 60). ``null`` means use the same PML as
+    the inverse grid.
+    """
 
     # "leapfrog_fft": broadband leapfrog time solve then FFT onto each band's
     #   bins (avoids the inverse crime; notebook default).
@@ -180,6 +188,7 @@ class ObservationCfg:
     method: str = "leapfrog_fft"
     normalize_data: str = "per_receiver"  # None | "none" | "per_receiver" | "global"
     verbose: bool = False
+    pml_width: Optional[int] = None  # forward PML; null -> grid.pml_width
 
 
 @dataclass(frozen=True)
@@ -825,6 +834,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             f"observation.method must be 'leapfrog_fft' or 'helmholtz', "
             f"got {cfg.observation.method!r}"
+        )
+    if cfg.observation.pml_width is not None and int(cfg.observation.pml_width) < 0:
+        raise ConfigError(
+            f"observation.pml_width must be >= 0 when set, "
+            f"got {cfg.observation.pml_width}"
         )
     if cfg.continuation.warm_start not in ("helmholtz", "none"):
         raise ConfigError(
