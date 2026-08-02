@@ -129,6 +129,12 @@ class LBFGSB(Optimiser):
       ``z_optim="lbfgs"`` and ``max_iter=1`` is nearly the same as one
       steepest-descent + Wolfe step and does not improve recovery.
 
+    The closed-form c-update (``c_update="closed_form"``) requires the direct
+    wavefield block and is rejected with ``u_precond="z"``: the reparameterisation
+    slaves ``u = A(c)^{-1} z`` so the PDE residual it projects against is ``z - f``,
+    which the z-block drives to ~0 (c would never move). Use ``c_update="lbfgs"``
+    with ``u_precond="z"``, or the direct block (``u_precond=None``) for closed form.
+
     Optional early stopping (disabled by default: ``early_stop_rtol=0``):
     after ``early_stop_min_iter`` outer steps, stop if relative loss improvement
     stays below ``early_stop_rtol`` for ``early_stop_patience`` consecutive
@@ -250,6 +256,16 @@ class LBFGSB(Optimiser):
             )
         if z_lr <= 0.0:
             raise ValueError(f"z_lr must be > 0; got {z_lr}")
+        if u_precond_mode == "z" and c_update == "closed_form":
+            raise ValueError(
+                "u_precond='z' is incompatible with c_update='closed_form'. "
+                "The closed-form (variable-projection) c-update minimises the "
+                "PDE residual of a free wavefield, but the z-reparameterisation "
+                "slaves u = A(c)^-1 z, so that residual is z - f — which the "
+                "z-block drives to ~0, leaving c frozen. Use the direct "
+                "wavefield block (u_precond=None, e.g. the 'cf' optimiser) for "
+                "closed-form c, or keep u_precond='z' with c_update='lbfgs'."
+            )
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
         c_torch_opts = dict(u_torch_opts)
@@ -445,9 +461,6 @@ class LBFGSB(Optimiser):
                 c_precond_stab=c_precond_stab,
                 reset_c_history=reset_c_history,
                 c_update=c_update,
-                c_update_every=c_update_every,
-                c_relax=c_relax,
-                illum_rel_floor=illum_rel_floor,
                 early_stop_rtol=early_stop_rtol,
                 early_stop_min_iter=early_stop_min_iter,
                 early_stop_patience=early_stop_patience,
@@ -755,16 +768,19 @@ class LBFGSB(Optimiser):
         c_precond_stab: float,
         reset_c_history: bool,
         c_update: str,
-        c_update_every: int,
-        c_relax: float,
-        illum_rel_floor: float,
         early_stop_rtol: float,
         early_stop_min_iter: int,
         early_stop_patience: int,
         debug_c: bool,
         on_iteration=None,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``)."""
+        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``).
+
+        The c-block is always L-BFGS here: ``c_update='closed_form'`` is rejected
+        upstream (see :meth:`_split_opts`) because the reparameterisation zeroes
+        the PDE residual the closed form projects against. ``c_update`` is kept
+        only to record the mode in the result payload.
+        """
         if not isinstance(self.loss, InverseLoss):
             raise TypeError("u_precond='z' requires an InverseLoss")
 
@@ -776,7 +792,6 @@ class LBFGSB(Optimiser):
         n_shots = self.loss.config.geometry.n_sources
         vm_in = self.wavefield.velocity_model
         wave_eq = self.loss.config.wave_eq
-        closed_form_c = c_update == "closed_form"
 
         u_seed = self._seed_complex(n_shots, cdtype, device)
         c0_int = vm_in.c[grid.interior_slice].detach().clone().to(device=device)
@@ -817,9 +832,7 @@ class LBFGSB(Optimiser):
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
         z_optimiser = make_z_optimiser() if z_optim == "lbfgs" else None
-        c_optimiser = (
-            make_c_optimiser() if (c_steps > 0 and not closed_form_c) else None
-        )
+        c_optimiser = make_c_optimiser() if c_steps > 0 else None
 
         c_min = self.c_min / c_ref if self.c_min is not None else None
         c_max = self.c_max / c_ref if self.c_max is not None else None
@@ -879,43 +892,7 @@ class LBFGSB(Optimiser):
 
                     loss_value = z_optimiser.step(z_closure)
 
-            if closed_form_c:
-                if c_update_every > 0 and (i + 1) % c_update_every == 0:
-                    z_fixed = pack_z_detached()
-                    with torch.no_grad():
-                        # u = A(c)^{-1} z for the current medium; the closed-form
-                        # update then treats this u as fixed (direct ODIL sense).
-                        u_fixed = tf.cache.solve(z_fixed, trans="N")
-                    self._closed_form_c_update(
-                        amps_fixed=u_fixed,
-                        c_interior_param=c_interior_param,
-                        c_ref=c_ref,
-                        vm_in=vm_in,
-                        grid=grid,
-                        wave_eq=wave_eq,
-                        c_min=c_min,
-                        c_max=c_max,
-                        free_mask=_free_mask,
-                        c_frozen_init=_c_frozen_init,
-                        c_relax=c_relax,
-                        illum_rel_floor=illum_rel_floor,
-                    )
-                    with torch.no_grad():
-                        c_full_new = c_full_from_hat(c_interior_param.detach())
-                        # c changed -> refactor for the next z-stage and report
-                        # the loss at the recomputed u = A(c_new)^{-1} z.
-                        tf.rebuild(c_full_new)
-                        u_new = tf.cache.solve(pack_z_detached(), trans="N")
-                        loss_value = self.loss.evaluate_z(
-                            pack_z_detached(),
-                            u_new,
-                            c_full_new,
-                            c_interior_param.detach(),
-                        )
-                    if z_optim == "lbfgs":
-                        z_optimiser = make_z_optimiser()
-
-            elif c_steps > 0:
+            if c_steps > 0:
                 z_fixed = pack_z_detached()
                 if c_precond:
                     with torch.no_grad():

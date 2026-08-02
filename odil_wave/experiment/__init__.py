@@ -21,11 +21,13 @@ from .plots import (
     LiveVelocityView,
     animate_bands,
     load_band_velocities,
+    load_config,
     load_final_velocity,
     load_loss_tape,
     load_metrics,
     plot_run_history,
     plot_velocity_recovery,
+    rebuild_problem,
 )
 from .problem import BandContext, Problem, build_problem, grid_summary
 from .recorder import FIELDNAMES, RecordingTape, RunRecorder
@@ -64,11 +66,13 @@ __all__ = [
     "LiveVelocityView",
     "animate_bands",
     "load_band_velocities",
+    "load_config",
     "load_final_velocity",
     "load_loss_tape",
     "load_metrics",
     "plot_run_history",
     "plot_velocity_recovery",
+    "rebuild_problem",
     # runner
     "RunResult",
     "BandResult",

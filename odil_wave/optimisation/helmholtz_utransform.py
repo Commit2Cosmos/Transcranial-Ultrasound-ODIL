@@ -10,7 +10,6 @@ back-propagates data gradients into ``c`` via implicit differentiation.
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 
 from odil_wave.operator.helmholtz import HelmholtzFactorCache, HelmholtzSolver
@@ -35,8 +34,7 @@ def _apply_laplacian(cache: HelmholtzFactorCache, u: torch.Tensor) -> torch.Tens
             .cpu()
             .numpy()
             .reshape(n_shots, cache.n)
-            .T
-            .astype(np.complex128, copy=False)
+            .T.astype(cache.np_cdtype, copy=False)
         )
         LU = L @ U
         out[:, k] = torch.as_tensor(
@@ -169,4 +167,3 @@ class HelmholtzUTransform:
             "nf": self.cache.nf,
             "n_dofs": self.cache.n,
         }
-

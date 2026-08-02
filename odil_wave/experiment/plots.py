@@ -23,13 +23,66 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from odil_wave.grid import Grid
+from odil_wave.geometry import AcquisitionGeometry
+from odil_wave.grid import FrequencySelection, Grid
 from odil_wave.loss import LossTape
 from odil_wave.models import VelocityModel, velocity_norm
 from odil_wave.plot_utils import length_scale
 
+from .config import RunConfig, load_config_file
+from .problem import Problem, build_problem
+
 
 RunDirOrRecords = Union[str, Path, List[dict]]
+
+
+# --------------------------------------------------------------------------- #
+# Rebuilding the physical problem from a run's saved config
+# --------------------------------------------------------------------------- #
+def load_config(run_dir: Union[str, Path]) -> RunConfig:
+    """Reconstruct the resolved :class:`RunConfig` saved alongside a run.
+
+    Reads ``config_resolved.yaml`` (written by ``run_inverse`` before the solve
+    starts) and rebuilds the config object — the exact inverse of the dump, so
+    no defaults are re-applied.
+    """
+    path = Path(run_dir) / "config_resolved.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no config_resolved.yaml under {run_dir!r} ({path}); "
+            "cannot rebuild the problem from this run directory"
+        )
+    return RunConfig.from_dict(load_config_file(path))
+
+
+def rebuild_problem(run_dir: Union[str, Path]) -> Problem:
+    """Rebuild the physical :class:`Problem` from a run's saved config."""
+    return build_problem(load_config(run_dir))
+
+
+def _default_geometry(problem: Problem) -> AcquisitionGeometry:
+    """Acquisition geometry for the run's first configured band."""
+    bands = problem.cfg.continuation.bands
+    band = bands[0]
+    freq = FrequencySelection.from_frequencies(problem.grid, list(band.frequencies_hz))
+    return problem.make_geometry(freq, source_offsets=tuple(band.source_offsets))
+
+
+def _resolve_grid_pml(
+    run_dir: Union[str, Path], grid: Optional[Grid], pml_c: Optional[float]
+) -> Tuple[Grid, Optional[float]]:
+    """Fill missing ``grid`` / ``pml_c`` from the run's rebuilt problem.
+
+    Rebuilds the problem at most once, and only when something is missing.
+    """
+    if grid is not None and pml_c is not None:
+        return grid, pml_c
+    problem = rebuild_problem(run_dir)
+    if grid is None:
+        grid = problem.grid
+    if pml_c is None:
+        pml_c = problem.truth_velocity.pml_c
+    return grid, pml_c
 
 
 # --------------------------------------------------------------------------- #
@@ -51,9 +104,17 @@ def _records(source: RunDirOrRecords) -> List[dict]:
 
 
 def load_final_velocity(
-    run_dir: Union[str, Path], grid: Grid, pml_c: Optional[float] = None
+    run_dir: Union[str, Path],
+    grid: Optional[Grid] = None,
+    pml_c: Optional[float] = None,
 ) -> VelocityModel:
-    """Load ``final/c_final.npy`` into a :class:`VelocityModel` on ``grid``."""
+    """Load ``final/c_final.npy`` into a :class:`VelocityModel`.
+
+    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
+    config, so only the run directory is required; pass them to reuse a
+    ``Problem`` you already hold.
+    """
+    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
     path = Path(run_dir) / "final" / "c_final.npy"
     if not path.exists():
         raise FileNotFoundError(f"no final velocity at {path}")
@@ -62,12 +123,17 @@ def load_final_velocity(
 
 
 def load_band_velocities(
-    run_dir: Union[str, Path], grid: Grid, pml_c: Optional[float] = None
+    run_dir: Union[str, Path],
+    grid: Optional[Grid] = None,
+    pml_c: Optional[float] = None,
 ) -> List[Tuple[int, str, VelocityModel]]:
     """Load every ``bands/band_XX/c_final.npy`` in band order.
 
     Returns ``[(band_index, label, VelocityModel), ...]`` sorted by band index.
+    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
+    config, so only the run directory is required.
     """
+    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
     bands_dir = Path(run_dir) / "bands"
     if not bands_dir.exists():
         raise FileNotFoundError(f"no bands/ directory under {run_dir!r}")
@@ -170,8 +236,8 @@ def plot_run_history(
 
 def plot_velocity_recovery(
     run_dir: Union[str, Path],
-    truth: VelocityModel,
-    geom,
+    truth: Optional[VelocityModel] = None,
+    geom: Optional[AcquisitionGeometry] = None,
     *,
     grid: Optional[Grid] = None,
     title: str = "Velocity recovery",
@@ -179,10 +245,18 @@ def plot_velocity_recovery(
 ):
     """Truth | recovered | difference | recovery-error, from saved artifacts.
 
+    ``truth`` and ``geom`` default to the ground-truth model and first-band
+    acquisition geometry rebuilt from the run's saved config, so only the run
+    directory is required. Pass them explicitly to reuse a live ``Problem``.
+
     Loads ``final/c_final.npy`` and the ``rel_c_error`` series and delegates to
     :meth:`odil_wave.loss.LossTape.show_velocity_recovery`. Extra ``kwargs``
     (``vmin`` / ``vcenter`` / ``vmax`` / ``norm``) are forwarded to it.
     """
+    if truth is None or geom is None:
+        problem = rebuild_problem(run_dir)
+        truth = truth if truth is not None else problem.truth_velocity
+        geom = geom if geom is not None else _default_geometry(problem)
     grid = grid if grid is not None else truth.grid
     recovered = load_final_velocity(run_dir, grid, pml_c=truth.pml_c)
     tape = load_loss_tape(run_dir)
@@ -192,7 +266,7 @@ def plot_velocity_recovery(
 
 def animate_bands(
     run_dir: Union[str, Path],
-    grid: Grid,
+    grid: Optional[Grid] = None,
     *,
     filename: str = "c_bands.gif",
     pml_c: Optional[float] = None,
@@ -202,9 +276,12 @@ def animate_bands(
 ) -> str:
     """Animate the per-band recovered velocity (one frame per completed band).
 
-    Reuses :meth:`odil_wave.loss.LossTape.animate_c` with the saved
+    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
+    config, so only the run directory is required. Reuses
+    :meth:`odil_wave.loss.LossTape.animate_c` with the saved
     ``bands/band_XX/c_final.npy`` snapshots as frames.
     """
+    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
     bands = load_band_velocities(run_dir, grid, pml_c=pml_c)
     if not bands:
         raise RuntimeError(f"no per-band velocities found under {run_dir!r}")

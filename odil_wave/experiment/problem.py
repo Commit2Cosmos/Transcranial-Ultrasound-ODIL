@@ -146,6 +146,7 @@ class Problem:
         freq: FrequencySelection,
         source_offsets: Sequence[int] = (0,),
     ) -> AcquisitionGeometry:
+        """Acquisition layout for a band, *without* solving for observed data."""
         acq = self.cfg.acquisition
         return AcquisitionGeometry(
             grid,

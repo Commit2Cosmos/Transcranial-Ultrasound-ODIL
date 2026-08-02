@@ -19,17 +19,17 @@ from .spatial import _C6, _C6_CENTER, _C8, _C8_CENTER, _C10, _C10_CENTER
 from .utils import WaveEquation
 
 
+def np_complex_dtype(torch_cdtype: torch.dtype):
+    """Numpy complex dtype for the sparse Helmholtz assembly / SuperLU factor+solve."""
+    if torch_cdtype == torch.complex64:
+        return np.complex64
+    if torch_cdtype == torch.complex128:
+        return np.complex128
+    raise ValueError(f"Unsupported complex dtype for Helmholtz LU: {torch_cdtype}")
+
+
 class HelmholtzFactorCache:
-    """Cached SuperLU factors of ``H(c, ω_k)`` for a fixed medium ``c``.
-
-    One factorisation per frequency. While ``c`` is unchanged the same LU can
-    apply both forward solves ``H^{-1}`` (``trans='N'``) and Hermitian-adjoint
-    solves ``H^{-H}`` (``trans='H'``) for arbitrary multi-shot RHS.
-
-    Rebuild (or construct a new cache) whenever ``c`` changes. This is intended
-    for wavefield reparameterisation ``u = H^{-1} z`` with ``c`` frozen — not
-    for differentiating through ``c``.
-    """
+    """Cached SuperLU factors of ``H(c, ω_k)`` for a fixed medium ``c``."""
 
     def __init__(self, solver: "HelmholtzSolver", c: torch.Tensor) -> None:
         self.solver = solver
@@ -39,6 +39,7 @@ class HelmholtzFactorCache:
         self.n = self.nx * self.ny
         self.nf = wf.frequency_selection.n_frequencies
         self.cdtype = wf.cdtype
+        self.np_cdtype = np_complex_dtype(self.cdtype)
         self.device = grid.device
         self._H: list[sp.csr_matrix] = []
         self._lu: list[SuperLU] = []
@@ -84,7 +85,7 @@ class HelmholtzFactorCache:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, self.n)
-                .T.astype(np.complex128, copy=False)
+                .T.astype(self.np_cdtype, copy=False)
             )
             Z = self._H[k] @ U
             out[:, k] = torch.as_tensor(
@@ -124,7 +125,7 @@ class HelmholtzFactorCache:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, self.n)
-                .T.astype(np.complex128, copy=False)
+                .T.astype(self.np_cdtype, copy=False)
             )
             X = self._lu[k].solve(F, trans=trans)
             out[:, k] = torch.as_tensor(
@@ -243,14 +244,8 @@ def assemble_laplacian_csr(
 class HelmholtzSolver:
     """Solve H(c, ω) u = f̂' for complex frequency-domain wavefields.
 
-    Used only to generate a forward or warm-start ``u``. This is **not** an
-    ODIL preconditioner and is not applied inside L-BFGS closures.
-
-    For fixed ``c``, assembles a sparse Helmholtz matrix **once per frequency**,
-    factorises with ``splu``, then solves **all shot RHS** in one batched call::
-
-        lu = splu(H.tocsc())
-        U = lu.solve(F)   # F.shape == (n, n_shots)
+    For fixed ``c``, assembles a sparse Helmholtz matrix once per frequency,
+    factorises with ``splu``, then solves all shot RHS in one batched call.
     """
 
     def __init__(
@@ -346,16 +341,15 @@ class HelmholtzSolver:
             .astype(np.float64)
         ).reshape(-1)
 
+        cd = np_complex_dtype(self.wavefield.cdtype)
         # Diagonal: λ_tt + w (σ_sum λ_t + σ_prod)
-        diag = (lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)).astype(
-            np.complex128
-        )
+        diag = (lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)).astype(cd)
 
         L = self._laplacian_csr()
         # H = diag(a) - diag(c_nd²) @ L
-        H = sp.diags(diag, format="csr", dtype=np.complex128) - sp.diags(
-            c_nd2, format="csr"
-        ).dot(L).astype(np.complex128)
+        H = sp.diags(diag, format="csr", dtype=cd) - sp.diags(c_nd2, format="csr").dot(
+            L
+        ).astype(cd)
         assert H.shape == (n, n)
         return H.tocsr()
 
@@ -402,7 +396,7 @@ class HelmholtzSolver:
                 .cpu()
                 .numpy()
                 .reshape(n_shots, n)
-                .T.astype(np.complex128, copy=False)
+                .T.astype(np_complex_dtype(cdtype), copy=False)
             )
             t0 = time.perf_counter()
             U = lu.solve(F)
