@@ -221,6 +221,55 @@ def _build_optimiser(
             illum_rel_floor=cf.illum_rel_floor,
         )
 
+    if name == "joint":
+        # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
+        # closed-form, WRI or multigrid. data_weight is fixed (never adapted).
+        # A u-block preconditioner (u_precond != "none") selects the additive
+        # JointFreqODILUPrecond variant; the baseline path is unchanged.
+        from odil_wave.optimisation import JointFreqODIL, JointFreqODILUPrecond
+
+        jo = opt.joint
+        ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
+        joint_kw = dict(
+            clamp=opt.clamp,
+            u_init=u_init,
+            n_iter=n_iter,
+            inner_max_iter=jo.inner_max_iter,
+            history_size=jo.history_size,
+            line_search_fn=ls,
+            tolerance_grad=jo.tolerance_grad,
+            tolerance_change=jo.tolerance_change,
+            lbfgs_lr=jo.lbfgs_lr,
+            data_weight=jo.data_weight,
+            reg_weight=jo.reg_weight,
+            c_min=jo.c_min,
+            c_max=jo.c_max,
+            eps_u=jo.eps_u,
+            eps_data=jo.eps_data,
+            eps_pde=jo.eps_pde,
+            u_scale_factor=jo.u_scale_factor,
+            pde_scale_factor=jo.pde_scale_factor,
+            data_scale_factor=jo.data_scale_factor,
+            z_scale=jo.z_scale,
+            logit_clip=jo.logit_clip,
+            model_precond=jo.model_precond,
+            mp_eps=jo.mp_eps,
+            mp_scale=jo.mp_scale,
+            mp_scale_cap=jo.mp_scale_cap,
+            mp_probe=jo.mp_probe,
+            log_every=opt.log_every,
+            verbose=jo.verbose,
+        )
+        if str(jo.u_precond).lower() != "none":
+            return JointFreqODILUPrecond(
+                wf_inv,
+                loss,
+                u_precond=str(jo.u_precond).lower(),
+                helm_shift=jo.helm_shift,
+                **joint_kw,
+            )
+        return JointFreqODIL(wf_inv, loss, **joint_kw)
+
     if name == "modil":
         from odil_wave.optimisation import (
             MODILInversion,
@@ -679,4 +728,3 @@ def run_inverse_closed_form(config: RunConfig) -> RunResult:
 
 def run_inverse_modil(config: RunConfig) -> RunResult:
     return _rerun_with_optimiser(config, "modil")
-

@@ -74,6 +74,7 @@ observation:
   method: leapfrog_fft         # leapfrog_fft (no inverse crime) | helmholtz
   normalize_data: per_receiver # null | none | per_receiver | global
   verbose: false
+  pml_width: null
 
 continuation:
   warm_start: helmholtz        # helmholtz | none
@@ -100,7 +101,7 @@ continuation:
       source_schedule: joint   # joint | sequential | cyclic
 
 loss:
-  weights: {pde: 1.0, data: 100.0, reg: 0.0}
+  weights: {pde: 1.0, data: 1.0, reg: 0.0}
   # name: null | tikhonov | tv_iso | tv_aniso; params: {eps: 1.0e-8} (tv_iso).
   # The scalar weight is weights.reg above (set > 0 to activate).
   regulariser: {name: null, params: {}}

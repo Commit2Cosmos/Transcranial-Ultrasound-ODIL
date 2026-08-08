@@ -315,13 +315,76 @@ class MODILCfg:
 
 
 @dataclass(frozen=True)
+class JointODILCfg:
+    """Fields specific to the pure joint full-space solver (``JointFreqODIL``).
+
+    A single joint L-BFGS over the complex wavefield block and a squared-slowness
+    model latent ``z_m`` (bounded by a sigmoid) — no alternation / closed-form /
+    WRI / multigrid / adaptive balancing. See
+    :mod:`odil_wave.optimisation.joint_odil`.
+
+    * ``data_weight`` is the fixed run-level ``w_data`` (``w_pde = 1``); it is
+      **never** adapted during optimisation.
+    * ``c_min`` / ``c_max`` (null -> ``grid.c_min`` / ``grid.c_max``) set the
+      squared-slowness bounds ``m_min = 1/c_max**2``, ``m_max = 1/c_min**2``.
+    * ``*_scale_factor`` and ``z_scale`` are identity by default; the scaling
+      sweep perturbs them 10x up/down to probe conditioning (they change only the
+      optimisation geometry, not the physical residual).
+    * ``inner_max_iter`` L-BFGS iterations per logged outer step (default 1), with
+      persistent history across the ``n_iter`` outer steps.
+    """
+
+    data_weight: float = 1.0
+    reg_weight: float = 0.0
+    c_min: Optional[float] = None
+    c_max: Optional[float] = None
+    # Each of the ``n_iter`` outer logged steps runs one persistent-history L-BFGS
+    # ``.step`` of up to ``inner_max_iter`` iterations (total ~= n_iter*inner). A
+    # single L-BFGS iteration per step (inner=1) stalls the strong-Wolfe line
+    # search, so keep ``inner_max_iter`` >= ~5 for a genuine continuous solve.
+    inner_max_iter: int = 20
+    history_size: int = 20
+    line_search_fn: str = "strong_wolfe"
+    lbfgs_lr: float = 1.0
+    tolerance_grad: float = 1e-12
+    tolerance_change: float = 1e-14
+    # Fixed-scale floors + scaling-sweep perturbation factors.
+    eps_u: float = 1e-30
+    eps_data: float = 1e-30
+    eps_pde: float = 1e-30
+    u_scale_factor: float = 1.0
+    pde_scale_factor: float = 1.0
+    data_scale_factor: float = 1.0
+    z_scale: float = 1.0
+    logit_clip: float = 1e-6
+    # §11-E one-change: model-block (z_m) preconditioner. "none" keeps the pure
+    # baseline; "illum"/"uniform" optimise a whitened model coordinate (optimiser
+    # geometry only — the physical objective is unchanged). Separately named
+    # configuration; the baseline is never altered.
+    model_precond: str = "none"  # "none" | "illum" | "uniform"
+    mp_eps: float = 0.1
+    mp_scale: Optional[float] = None  # None -> auto-calibrate from block imbalance
+    mp_scale_cap: float = 50.0
+    mp_probe: float = 0.1
+    # u-block preconditioner (separate remedy family; JointFreqODILUPrecond).
+    # "none" is bit-identical to the baseline. "hermitian" = diag(H^H H)^{-1/2}
+    # (HPD diagonal Gauss-Newton), "correction" = exact H(m_init)^{-1} right
+    # preconditioner, "helmholtz" = complex-shifted CSLP H_beta(m_init)^{-1}.
+    # These change only the u-block optimisation geometry; the physical objective
+    # is unchanged and the model block stays unpreconditioned.
+    u_precond: str = "none"  # "none" | "hermitian" | "helmholtz" | "correction"
+    helm_shift: float = 0.5  # CSLP shift beta (only used by u_precond="helmholtz")
+    verbose: bool = False
+
+
+@dataclass(frozen=True)
 class OptimiserCfg:
     """Optimiser selection + shared block-coordinate settings.
 
-    ``name`` is one of ``lbfgsb`` / ``cf`` / ``modil`` (aliases resolved in
-    :func:`canonical_optimiser_name`). The three sub-blocks are always present
-    in the resolved config so a run records the defaults for every optimiser,
-    not only the selected one.
+    ``name`` is one of ``lbfgsb`` / ``cf`` / ``modil`` / ``joint`` (aliases resolved in
+    :func:`canonical_optimiser_name`). Every sub-block is always present in the
+    resolved config so a run records the defaults for every optimiser, not only
+    the selected one.
     """
 
     name: str = "lbfgsb"
@@ -338,6 +401,7 @@ class OptimiserCfg:
     lbfgsb: LBFGSBCfg = field(default_factory=LBFGSBCfg)
     cf: CFCfg = field(default_factory=CFCfg)
     modil: MODILCfg = field(default_factory=MODILCfg)
+    joint: JointODILCfg = field(default_factory=JointODILCfg)
 
 
 @dataclass(frozen=True)
@@ -575,6 +639,12 @@ _OPTIMISER_ALIASES = {
     "closed-form": "cf",
     "closedform": "cf",
     "modil": "modil",
+    "joint": "joint",
+    "pure_joint": "joint",
+    "pure-joint": "joint",
+    "joint_odil": "joint",
+    "joint-odil": "joint",
+    "jointfreqodil": "joint",
 }
 
 
@@ -813,6 +883,50 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                     "c-gradient preconditioner (precond.c_precond)."
                 )
 
+    if name == "joint":
+        jo = cfg.optimiser.joint
+        if jo.data_weight <= 0:
+            raise ConfigError("optimiser.joint.data_weight must be > 0")
+        if jo.inner_max_iter < 1:
+            raise ConfigError("optimiser.joint.inner_max_iter must be >= 1")
+        if jo.history_size < 1:
+            raise ConfigError("optimiser.joint.history_size must be >= 1")
+        if jo.z_scale <= 0:
+            raise ConfigError("optimiser.joint.z_scale must be > 0")
+        if not (0.0 < jo.logit_clip < 0.5):
+            raise ConfigError("optimiser.joint.logit_clip must be in (0, 0.5)")
+        for fkey in ("u_scale_factor", "pde_scale_factor", "data_scale_factor"):
+            if getattr(jo, fkey) <= 0:
+                raise ConfigError(f"optimiser.joint.{fkey} must be > 0")
+        if jo.c_min is not None and jo.c_max is not None and jo.c_min >= jo.c_max:
+            raise ConfigError("optimiser.joint.c_min must be < c_max")
+        if str(jo.model_precond).lower() not in ("none", "illum", "uniform"):
+            raise ConfigError(
+                "optimiser.joint.model_precond must be 'none', 'illum' or 'uniform'"
+            )
+        if str(jo.u_precond).lower() not in (
+            "none",
+            "hermitian",
+            "helmholtz",
+            "correction",
+        ):
+            raise ConfigError(
+                "optimiser.joint.u_precond must be 'none', 'hermitian', "
+                "'helmholtz' or 'correction'"
+            )
+        if jo.helm_shift < 0:
+            raise ConfigError("optimiser.joint.helm_shift must be >= 0")
+        if str(jo.line_search_fn).lower() not in ("strong_wolfe", "none"):
+            raise ConfigError(
+                "optimiser.joint.line_search_fn must be 'strong_wolfe' or 'none'"
+            )
+        if cfg.observation.method != "helmholtz":
+            warnings.append(
+                "optimiser.joint is designed for the inverse-crime baseline "
+                "(observation.method='helmholtz' with matched forward/inverse "
+                f"PML); got observation.method={cfg.observation.method!r}."
+            )
+
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
     for bi, band in enumerate(cfg.continuation.bands):
@@ -904,18 +1018,14 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     return warnings
 
 
-def _validate_model_cfg(
-    label: str, model: "ModelCfg", warnings: List[str]
-) -> None:
+def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> None:
     """Validate skull-smoothing / profile knobs on a truth or init model."""
     if model.skull_alpha < 0.0 or model.skull_alpha > 1.0:
         raise ConfigError(
             f"{label}.skull_alpha must be in [0, 1]; got {model.skull_alpha}"
         )
     if model.skull_sigma < 0.0:
-        raise ConfigError(
-            f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}"
-        )
+        raise ConfigError(f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}")
     extra = model.extra or {}
     if "skull_smooth" in extra:
         try:
@@ -926,9 +1036,7 @@ def _validate_model_cfg(
                 f"got {extra['skull_smooth']!r}"
             ) from exc
         if smooth < 0.0:
-            raise ConfigError(
-                f"{label}.extra.skull_smooth must be >= 0; got {smooth}"
-            )
+            raise ConfigError(f"{label}.extra.skull_smooth must be >= 0; got {smooth}")
     if model.profile != "shepp_logan_skull" and (
         model.skull_alpha != 1.0
         or model.skull_sigma != 0.0
@@ -940,4 +1048,3 @@ def _validate_model_cfg(
             f"{label}.profile={model.profile!r} ignores skull_alpha / "
             "skull_sigma (they apply only to shepp_logan_skull)."
         )
-
