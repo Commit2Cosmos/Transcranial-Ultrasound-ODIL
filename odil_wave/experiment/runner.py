@@ -35,6 +35,7 @@ from .config import (
     canonical_regulariser_name,
     deep_merge,
     expand_band_schedule,
+    resolve_band_precond,
     resolve_config,
     validate_config,
 )
@@ -157,6 +158,7 @@ def _build_optimiser(
     loss: InverseLoss,
     n_iter: int,
     u_init,
+    band_cfg: Optional[BandCfg] = None,
 ):
     cfg = problem.cfg
     opt = cfg.optimiser
@@ -177,6 +179,11 @@ def _build_optimiser(
         from odil_wave.optimisation import LBFGSB
 
         lb = opt.lbfgsb
+        precond = (
+            resolve_band_precond(lb.precond, band_cfg)
+            if band_cfg is not None
+            else lb.precond
+        )
         return LBFGSB(
             wf_inv,
             loss,
@@ -192,12 +199,13 @@ def _build_optimiser(
             reset_c_history=lb.reset_c_history,
             c_update=lb.c_update,
             c_update_every=lb.c_update_every,
+            c_param=lb.c_param,
             c_relax=lb.c_relax,
             illum_rel_floor=lb.illum_rel_floor,
-            c_precond=lb.precond.c_precond,
-            c_precond_type=lb.precond.c_precond_type,
-            c_precond_sigma=lb.precond.c_precond_sigma,
-            c_precond_stab=lb.precond.c_precond_stab,
+            c_precond=precond.c_precond,
+            c_precond_type=precond.c_precond_type,
+            c_precond_sigma=precond.c_precond_sigma,
+            c_precond_stab=precond.c_precond_stab,
             early_stop_rtol=lb.early_stop_rtol,
             early_stop_min_iter=lb.early_stop_min_iter,
             early_stop_patience=lb.early_stop_patience,
@@ -380,7 +388,7 @@ def run_frequency_band(
         )
     tape.bind_loss(loss)
 
-    opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
+    opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init, band_cfg)
 
     t_opt = time.perf_counter()
     recovered_wfs, _ = opt.minimise(on_iteration=tape.on_iteration)
@@ -430,7 +438,13 @@ def run_frequency_band(
     )
 
     _dump_band_config(
-        band_dir / "band_config.yaml", cfg, band_index, freqs, n_iter, band_ctx
+        band_dir / "band_config.yaml",
+        cfg,
+        band_index,
+        freqs,
+        n_iter,
+        band_ctx,
+        band_cfg,
     )
 
     wall_s = time.perf_counter() - t0
@@ -522,7 +536,15 @@ def _build_regulariser(cfg: RunConfig):
     return Regulariser(kind=kind, **params)
 
 
-def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, band_ctx):
+def _dump_band_config(
+    path: Path,
+    cfg: RunConfig,
+    band_index,
+    freqs,
+    n_iter,
+    band_ctx,
+    band_cfg: Optional[BandCfg] = None,
+):
     from .config import _asdict, _dump_yaml  # torch-free helpers
 
     payload = {
@@ -539,6 +561,10 @@ def _dump_band_config(path: Path, cfg: RunConfig, band_index, freqs, n_iter, ban
         "loss_weights": dict(cfg.loss.weights),
         "optimiser": _asdict(cfg.optimiser),
     }
+    name = canonical_optimiser_name(cfg.optimiser.name)
+    if name == "lbfgsb" and band_cfg is not None:
+        effective = resolve_band_precond(cfg.optimiser.lbfgsb.precond, band_cfg)
+        payload["effective_c_precond"] = _asdict(effective)
     _dump_yaml(payload, path)
 
 
