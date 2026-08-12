@@ -90,6 +90,78 @@ def _armijo_gd_step_z(
         return loss0, n_trial
 
 
+_C_PARAMS = frozenset({"velocity", "squared_slowness"})
+
+# Numerical safety rails for c_param="squared_slowness", expressed as bounds
+# on the normalised velocity ratio ĉ = c / c_ref. These are not the
+# user-facing physical c_min/c_max bounds (applied separately, via
+# _c_param_bounds, after each optimiser step) -- they only stop float32
+# overflow/NaN when an L-BFGS strong-Wolfe line search trials the raw
+# m̂ = 1/ĉ² parameter far outside any sane range (e.g. m̂ near zero maps to
+# ĉ -> +inf through rsqrt). 100x headroom in either direction is far beyond
+# any physically meaningful wavespeed contrast, so this never constrains
+# normal optimisation -- but it does protect every closure evaluation
+# (including line-search trial points, not just the accepted step) since
+# _c_hat_from_c_param is called from inside c_closure() itself.
+_SQ_SLOWNESS_RATIO_MIN = 1e-2
+_SQ_SLOWNESS_RATIO_MAX = 1e2
+_SQ_SLOWNESS_PARAM_MIN = _SQ_SLOWNESS_RATIO_MAX**-2  # = 1e-4
+_SQ_SLOWNESS_PARAM_MAX = _SQ_SLOWNESS_RATIO_MIN**-2  # = 1e4
+
+
+def _c_hat_from_c_param(raw: torch.Tensor, c_param: str) -> torch.Tensor:
+    """Map the c-block's raw optimisation variable to normalised velocity ĉ.
+
+    ``c_param="velocity"`` (default): ``raw`` already *is* ĉ — identity, so
+    every downstream call site (physics operator, regulariser, plots,
+    metrics) is unchanged from before this parametrisation existed.
+
+    ``c_param="squared_slowness"``: ``raw`` is m̂ = 1/ĉ² (squared slowness
+    normalised the same way as ĉ, i.e. by ``c_ref``). ``raw`` is clamped to
+    ``[_SQ_SLOWNESS_PARAM_MIN, _SQ_SLOWNESS_PARAM_MAX]`` first (see the
+    safety-rail note above), bounding the returned ĉ to
+    ``[_SQ_SLOWNESS_RATIO_MIN, _SQ_SLOWNESS_RATIO_MAX]``. Returns
+    ĉ = m̂^(-1/2); autograd differentiates through this transform, so
+    gradients w.r.t. ``raw`` are correctly ``dL/dm̂`` while everything else
+    (physics, regulariser, saved/plotted ``c``) still only ever sees ĉ.
+    """
+    if c_param == "squared_slowness":
+        raw_safe = raw.clamp(min=_SQ_SLOWNESS_PARAM_MIN, max=_SQ_SLOWNESS_PARAM_MAX)
+        return torch.rsqrt(raw_safe)
+    return raw
+
+
+def _init_c_param(c_hat0: torch.Tensor, c_param: str) -> torch.Tensor:
+    """Inverse of :func:`_c_hat_from_c_param`: raw parameter from initial ĉ₀.
+
+    For ``c_param="squared_slowness"``, ``c_hat0`` is clamped to
+    ``[_SQ_SLOWNESS_RATIO_MIN, _SQ_SLOWNESS_RATIO_MAX]`` first, as the same
+    numerical safety rail (protects against a near-zero initial ĉ₀ blowing
+    up m̂₀).
+    """
+    if c_param == "squared_slowness":
+        c_hat0_safe = c_hat0.clamp(
+            min=_SQ_SLOWNESS_RATIO_MIN, max=_SQ_SLOWNESS_RATIO_MAX
+        )
+        return torch.reciprocal(c_hat0_safe * c_hat0_safe)
+    return c_hat0.clone()
+
+
+def _c_param_bounds(
+    c_min: Optional[float], c_max: Optional[float], c_param: str
+) -> Tuple[Optional[float], Optional[float]]:
+    """Map ĉ bounds to raw-parameter bounds (identity unless squared_slowness).
+
+    ``m = 1/ĉ²`` is monotonically *decreasing* in ĉ, so the bounds swap:
+    ``m_min = 1/c_max²``, ``m_max = 1/c_min²``.
+    """
+    if c_param != "squared_slowness":
+        return c_min, c_max
+    m_min = None if c_max is None else 1.0 / (c_max * c_max)
+    m_max = None if c_min is None else 1.0 / (c_min * c_min)
+    return m_min, m_max
+
+
 class Optimiser(ABC):
     """Base optimiser class."""
 
@@ -166,6 +238,9 @@ class LBFGSB(Optimiser):
         # c-block rule: "lbfgs" (default) or "closed_form" variable projection.
         "c_update": "lbfgs",
         "c_update_every": 1,
+        # c-block optimisation variable: "velocity" (default, ĉ itself) or
+        # "squared_slowness" (optimise m̂ = 1/ĉ²; only valid with c_update="lbfgs").
+        "c_param": "velocity",
         "c_relax": 1.0,
         "illum_rel_floor": 1e-6,
         # Optional; early_stop_rtol <= 0 disables (default).
@@ -225,6 +300,7 @@ class LBFGSB(Optimiser):
         reset_c_history = bool(opts.pop("reset_c_history", True))
         c_update = str(opts.pop("c_update", "lbfgs")).lower()
         c_update_every = int(opts.pop("c_update_every", 1))
+        c_param = str(opts.pop("c_param", "velocity")).lower()
         c_relax = float(opts.pop("c_relax", 1.0))
         illum_rel_floor = float(opts.pop("illum_rel_floor", 1e-6))
         early_stop_rtol = float(opts.pop("early_stop_rtol", 0.0))
@@ -237,6 +313,13 @@ class LBFGSB(Optimiser):
         if c_update not in ("lbfgs", "closed_form"):
             raise ValueError(
                 f"c_update must be 'lbfgs' or 'closed_form'; got {c_update!r}"
+            )
+        if c_param not in _C_PARAMS:
+            raise ValueError(f"c_param must be one of {sorted(_C_PARAMS)}; got {c_param!r}")
+        if c_param == "squared_slowness" and c_update != "lbfgs":
+            raise ValueError(
+                "c_param='squared_slowness' is only supported with "
+                f"c_update='lbfgs'; got c_update={c_update!r}."
             )
 
         if u_precond in (None, False):
@@ -266,6 +349,11 @@ class LBFGSB(Optimiser):
                 "wavefield block (u_precond=None, e.g. the 'cf' optimiser) for "
                 "closed-form c, or keep u_precond='z' with c_update='lbfgs'."
             )
+        if u_precond_mode == "z" and c_param == "squared_slowness":
+            raise ValueError(
+                "c_param='squared_slowness' is not supported with u_precond='z' "
+                "yet; keep u_precond=None (the direct wavefield block)."
+            )
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
         c_torch_opts = dict(u_torch_opts)
@@ -290,6 +378,7 @@ class LBFGSB(Optimiser):
             reset_c_history,
             c_update,
             c_update_every,
+            c_param,
             c_relax,
             illum_rel_floor,
             early_stop_rtol,
@@ -438,6 +527,7 @@ class LBFGSB(Optimiser):
             reset_c_history,
             c_update,
             c_update_every,
+            c_param,
             c_relax,
             illum_rel_floor,
             early_stop_rtol,
@@ -494,10 +584,14 @@ class LBFGSB(Optimiser):
         if is_inverse:
             c0_int = vm_c_const[grid.interior_slice].detach().clone()
             c_ref = float(c0_int.mean().item())
-            c_interior_param = torch.nn.Parameter(c0_int / c_ref)
+            c_hat0 = c0_int / c_ref
+            # Raw c-block optimisation variable: ĉ itself (c_param="velocity",
+            # default) or m̂ = 1/ĉ² (c_param="squared_slowness"). See
+            # _c_hat_from_c_param for the (autograd-differentiable) map back to ĉ.
+            c_interior_param = torch.nn.Parameter(_init_c_param(c_hat0, c_param))
             if self.free_mask is not None:
                 _free_mask = self.free_mask.to(dtype=torch.bool, device=device)
-                _c_frozen_init = (c0_int / c_ref)[~_free_mask].clone().detach()
+                _c_frozen_init = _init_c_param(c_hat0, c_param)[~_free_mask].clone().detach()
             else:
                 _free_mask = None
                 _c_frozen_init = None
@@ -530,6 +624,10 @@ class LBFGSB(Optimiser):
             if (self.c_max is not None and c_ref is not None)
             else None
         )
+        # c_min/c_max above stay in ĉ-space (used as-is by the closed-form
+        # c-update); the lbfgs c-block clamps the raw parameter, so it needs
+        # bounds mapped into that same space (identity unless squared_slowness).
+        c_param_min, c_param_max = _c_param_bounds(c_min, c_max, c_param)
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
         _prec: Optional[torch.Tensor] = None
@@ -552,7 +650,9 @@ class LBFGSB(Optimiser):
                     amps = pack_u()
                     if is_inverse:
                         # PDE uses physical c; regulariser uses normalised ĉ.
-                        c_hat_fixed = c_interior_param.detach()
+                        c_hat_fixed = _c_hat_from_c_param(
+                            c_interior_param.detach(), c_param
+                        )
                         c_full = vm_in.build_full_c(c_hat_fixed * c_ref)
                         L = self.loss.evaluate(amps, c_full, c_hat_fixed)
                     else:
@@ -605,12 +705,17 @@ class LBFGSB(Optimiser):
                         nonlocal logged_grad_c, n_c_closure
                         n_c_closure += 1
                         c_optimiser.zero_grad()
-                        # Optimise ĉ = c / c_ref; PDE sees c = ĉ c_ref.
-                        # Pass ĉ into evaluate so Tikhonov is scale-stable.
-                        c_phys = c_interior_param * c_ref
+                        # Optimise ĉ = c / c_ref (c_param="velocity") or
+                        # m̂ = 1/ĉ² (c_param="squared_slowness"); either way,
+                        # derive ĉ from the raw parameter and feed *that* into
+                        # the physics and the regulariser, so both are always
+                        # expressed in velocity — autograd differentiates back
+                        # through the m̂ -> ĉ transform automatically.
+                        c_hat = _c_hat_from_c_param(c_interior_param, c_param)
+                        c_phys = c_hat * c_ref
                         c_full = vm_in.build_full_c(c_phys)
                         amps_fixed = pack_u_detached()
-                        L_c = self.loss.evaluate(amps_fixed, c_full, c_interior_param)
+                        L_c = self.loss.evaluate(amps_fixed, c_full, c_hat)
                         L_c.backward()
                         if _free_mask is not None and c_interior_param.grad is not None:
                             c_interior_param.grad[~_free_mask] = 0.0
@@ -638,7 +743,8 @@ class LBFGSB(Optimiser):
                                 hist.setdefault("grad_c_max", []).append(g_max)
                                 hist.setdefault("grad_c_pct_pos", []).append(pct_pos)
                                 hist.setdefault("grad_c_pct_neg", []).append(pct_neg)
-                                # Interior ĉ-gradient map (physical ∂L/∂c = g / c_ref)
+                                # Interior gradient map w.r.t. the raw c-block
+                                # parameter (ĉ, or m̂ if c_param="squared_slowness").
                                 hist.setdefault("grad_c_maps", []).append(
                                     g.detach().cpu().clone()
                                 )
@@ -660,8 +766,8 @@ class LBFGSB(Optimiser):
                     with torch.no_grad():
                         if _free_mask is not None:
                             c_interior_param.data[~_free_mask] = _c_frozen_init
-                        if c_min is not None or c_max is not None:
-                            c_interior_param.clamp_(min=c_min, max=c_max)
+                        if c_param_min is not None or c_param_max is not None:
+                            c_interior_param.clamp_(min=c_param_min, max=c_param_max)
 
                 # c changed — reset u LBFGS history
                 u_optimiser = make_u_optimiser()
@@ -669,7 +775,8 @@ class LBFGSB(Optimiser):
             should_log = (i % log_every == 0) or (i == n_iter - 1)
             c_full_now = None
             if is_inverse and (should_log or on_iteration is not None):
-                c_full_now = vm_in.build_full_c(c_interior_param.detach() * c_ref)
+                c_hat_now = _c_hat_from_c_param(c_interior_param.detach(), c_param)
+                c_full_now = vm_in.build_full_c(c_hat_now * c_ref)
 
             if on_iteration is not None:
                 on_iteration(i, c_full_now)
@@ -720,7 +827,8 @@ class LBFGSB(Optimiser):
         if isinstance(self.loss, ForwardLoss):
             vm_out = vm_in
         else:
-            c_full_final = vm_in.build_full_c(c_interior_param.detach() * c_ref)
+            c_hat_final = _c_hat_from_c_param(c_interior_param.detach(), c_param)
+            c_full_final = vm_in.build_full_c(c_hat_final * c_ref)
             vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
 
         u_final = pack_u_detached()
@@ -746,6 +854,7 @@ class LBFGSB(Optimiser):
             "n_closure": n_u_closure + n_c_closure,
             "u_precond": None,
             "c_update": c_update,
+            "c_param": c_param,
             "n_factor": 0,
             "n_forward_solves": 0,
             "n_adjoint_solves": 0,
@@ -1062,3 +1171,4 @@ class LBFGSB(Optimiser):
             "data_loss": last.get("data_loss"),
         }
         return outputs, self.loss.callback
+
