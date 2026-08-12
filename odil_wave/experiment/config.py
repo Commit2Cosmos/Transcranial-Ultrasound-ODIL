@@ -216,6 +216,14 @@ class BandCfg:
     n_iter: Optional[int] = None
     source_offsets: List[int] = field(default_factory=lambda: [0])
     source_schedule: str = "joint"  # "joint" | "sequential" | "cyclic"
+    # Per-band override of the LBFGSB c-gradient preconditioner
+    # (``optimiser.lbfgsb.precond``). A partial dict merged onto the global
+    # ``PrecondCfg`` for this band only (see :func:`resolve_band_precond`);
+    # keys are any subset of ``c_precond`` / ``c_precond_type`` /
+    # ``c_precond_sigma`` / ``c_precond_stab``, e.g. ``{"c_precond_sigma": 4.0}``
+    # or ``{"c_precond": False}``. Empty (default) -> use the global setting
+    # unchanged. Ignored by optimisers other than LBFGSB.
+    precond: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,25 @@ class PrecondCfg:
     c_precond_stab: float = 1e-2
 
 
+_PRECOND_FIELDS = {f.name for f in fields(PrecondCfg)}
+
+
+def resolve_band_precond(base: PrecondCfg, band: "BandCfg") -> PrecondCfg:
+    """Merge a band's ``precond`` override dict onto the global ``PrecondCfg``.
+
+    ``band.precond`` is a partial override (any subset of ``PrecondCfg``'s
+    fields); unset keys fall back to ``base`` (``optimiser.lbfgsb.precond``).
+    An empty/absent override returns ``base`` unchanged, so bands without a
+    ``precond`` entry behave exactly as before this field existed.
+    """
+    override = getattr(band, "precond", None) or {}
+    if not override:
+        return base
+    merged = {f: getattr(base, f) for f in _PRECOND_FIELDS}
+    merged.update(override)
+    return PrecondCfg(**merged)
+
+
 @dataclass(frozen=True)
 class LBFGSBCfg:
     """Fields specific to the block-coordinate dual L-BFGS (LBFGSB)."""
@@ -278,6 +305,13 @@ class LBFGSBCfg:
     c_update_every: int = 1  # closed_form only
     c_relax: float = 1.0  # closed_form only
     illum_rel_floor: float = 1e-6  # closed_form only
+    # c-block optimisation variable. "velocity" (default): optimise ĉ = c/c_ref
+    # directly, exactly as before this field existed. "squared_slowness":
+    # optimise m̂ = 1/ĉ² instead (only valid with c_update="lbfgs"); c is
+    # recovered as c = c_ref / sqrt(m̂) before every physics/regulariser call,
+    # and autograd differentiates through that transform. Saved/plotted c is
+    # unaffected either way.
+    c_param: str = "velocity"  # "velocity" | "squared_slowness"
     early_stop_rtol: float = 0.0
     early_stop_min_iter: int = 0
     early_stop_patience: int = 3
@@ -718,6 +752,7 @@ def expand_band_schedule(
                         n_iter=n_iter,
                         source_offsets=[off],
                         source_schedule="joint",
+                        precond=dict(band.precond),
                     )
                 )
         elif schedule == "cyclic" and len(offs) > 1:
@@ -728,6 +763,7 @@ def expand_band_schedule(
                         n_iter=1,
                         source_offsets=[offs[k % len(offs)]],
                         source_schedule="joint",
+                        precond=dict(band.precond),
                     )
                 )
         else:
@@ -882,6 +918,22 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                     "optimiser.lbfgsb.c_update='closed_form' ignores the "
                     "c-gradient preconditioner (precond.c_precond)."
                 )
+        if str(lb.c_param).lower() not in ("velocity", "squared_slowness"):
+            raise ConfigError(
+                "optimiser.lbfgsb.c_param must be 'velocity' or "
+                f"'squared_slowness', got {lb.c_param!r}"
+            )
+        if str(lb.c_param).lower() == "squared_slowness":
+            if str(lb.c_update).lower() != "lbfgs":
+                raise ConfigError(
+                    "optimiser.lbfgsb.c_param='squared_slowness' requires "
+                    f"c_update='lbfgs', got c_update={lb.c_update!r}"
+                )
+            if lb.u_precond == "z":
+                raise ConfigError(
+                    "optimiser.lbfgsb.c_param='squared_slowness' is not "
+                    "supported with u_precond='z' yet"
+                )
 
     if name == "joint":
         jo = cfg.optimiser.joint
@@ -943,6 +995,36 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 f"band {bi} source_schedule must be one of "
                 f"{list(_SOURCE_SCHEDULES)}, got {band.source_schedule!r}"
             )
+        if band.precond:
+            unknown_pc = set(band.precond) - _PRECOND_FIELDS
+            if unknown_pc:
+                raise ConfigError(
+                    f"band {bi} precond has unknown key(s) {sorted(unknown_pc)}; "
+                    f"valid keys: {sorted(_PRECOND_FIELDS)}"
+                )
+            if "c_precond_type" in band.precond and str(
+                band.precond["c_precond_type"]
+            ).lower() not in ("energy", "gaussian"):
+                raise ConfigError(
+                    f"band {bi} precond.c_precond_type must be 'energy' or "
+                    f"'gaussian', got {band.precond['c_precond_type']!r}"
+                )
+            if (
+                "c_precond_sigma" in band.precond
+                and float(band.precond["c_precond_sigma"]) <= 0
+            ):
+                raise ConfigError(f"band {bi} precond.c_precond_sigma must be > 0")
+            if (
+                "c_precond_stab" in band.precond
+                and float(band.precond["c_precond_stab"]) <= 0
+            ):
+                raise ConfigError(f"band {bi} precond.c_precond_stab must be > 0")
+            if name != "lbfgsb":
+                warnings.append(
+                    f"band {bi} sets a precond override but "
+                    f"optimiser.name={cfg.optimiser.name!r} has no c-gradient "
+                    "preconditioner; it will be ignored."
+                )
 
     if cfg.observation.method not in ("leapfrog_fft", "helmholtz"):
         raise ConfigError(
@@ -1048,3 +1130,4 @@ def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> N
             f"{label}.profile={model.profile!r} ignores skull_alpha / "
             "skull_sigma (they apply only to shepp_logan_skull)."
         )
+
