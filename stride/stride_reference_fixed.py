@@ -508,6 +508,118 @@ def load_band_history(run_dir: Path | str) -> dict:
     }
 
 
+def _load_final_vp_array(run_dir: Path) -> np.ndarray:
+    """Best available recovered velocity under a BandRunRecorder run dir."""
+    for cand in (
+        run_dir / "vp_recovered.npy",
+        run_dir / "final" / "c_final.npy",
+    ):
+        if cand.is_file():
+            return np.load(cand)
+    bands = sorted((run_dir / "bands").glob("band_*/c_final.npy"))
+    if bands:
+        return np.load(bands[-1])
+    raise FileNotFoundError(f"no recovered vp under {run_dir}")
+
+
+def plot_recovery_progress(
+    run_dir: Path | str,
+    *,
+    domain_m: float = 0.25,
+    title: str | None = None,
+    vmin: float = 1400.0,
+    vcenter: float = 1600.0,
+    vmax: float = 3000.0,
+    skip_initial: bool = True,
+    figsize: tuple[float, float] = (12, 4.5),
+    show: bool = True,
+):
+    """ODIL ``LiveVelocityView``-style figure from a finished Stride FWI run.
+
+    Left: recovered ``c`` (final / last band). Right: per-band head-ROI SSIM
+    and relative c-error read from ``metrics.jsonl``. Safe to call on another
+    machine as long as ``run_dir`` points at the saved artifacts.
+    """
+    import matplotlib.pyplot as plt
+
+    run_dir = Path(run_dir)
+    hist = load_band_history(run_dir)
+    rows = list(hist["rows"])
+    if skip_initial:
+        rows = [
+            r
+            for r in rows
+            if str(r.get("label", "")).lower() not in ("initial", "init")
+        ]
+    if not rows:
+        raise RuntimeError(f"no band metrics in {run_dir / 'metrics.jsonl'}")
+
+    c = _load_final_vp_array(run_dir)
+    # Prefer the last band snapshot if it exists (matches live-view “current band”).
+    last = rows[-1]
+    band_idx = int(last.get("band_index", len(rows) - 1))
+    lab = str(last.get("label", ""))
+    band_glob = list((run_dir / "bands").glob(f"band_{band_idx:02d}_*/c_final.npy"))
+    if band_glob:
+        c = np.load(band_glob[0])
+
+    tick_labels = [f"{int(r.get('band_index', i))}:{r.get('label', i)}" for i, r in enumerate(rows)]
+    ssim = [r.get("ssim_head_roi") for r in rows]
+    rel_err = [r.get("rel_c_error") for r in rows]
+    last_ssim = ssim[-1]
+
+    norm = sos_norm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+    extent = domain_extent_mm(domain_m)
+
+    fig, (ax_c, ax_m) = plt.subplots(1, 2, figsize=figsize)
+    im = ax_c.imshow(np.asarray(c).T, origin="lower", extent=extent, cmap="viridis", norm=norm)
+    ax_c.set_xlabel("x [mm]")
+    ax_c.set_ylabel("y [mm]")
+    ax_c.set_aspect("equal")
+    ssim_s = f"  SSIM={last_ssim:.3f}" if isinstance(last_ssim, (int, float)) else ""
+    ax_c.set_title(f"recovered c — band {band_idx} ({lab}){ssim_s}")
+    plt.colorbar(im, ax=ax_c, shrink=0.85, label="c [m/s]")
+
+    x = list(range(len(rows)))
+    if any(s is not None for s in ssim):
+        ax_m.plot(
+            x,
+            [np.nan if s is None else s for s in ssim],
+            "o-",
+            color="tab:green",
+            label="SSIM (head ROI)",
+        )
+        ax_m.set_ylabel("SSIM (head ROI)", color="tab:green")
+        ax_m.tick_params(axis="y", labelcolor="tab:green")
+    if any(e is not None for e in rel_err):
+        ax_r = ax_m.twinx()
+        ax_r.plot(
+            x,
+            [np.nan if e is None else e for e in rel_err],
+            "s--",
+            color="tab:red",
+            label="rel c-error",
+        )
+        ax_r.set_ylabel("rel c-error", color="tab:red")
+        ax_r.tick_params(axis="y", labelcolor="tab:red")
+    ax_m.set_xticks(x)
+    ax_m.set_xticklabels(tick_labels, rotation=45, ha="right")
+    ax_m.set_xlabel("completed band")
+    ax_m.set_title("progress per band")
+    ax_m.grid(alpha=0.3)
+
+    sup = title or f"Inversion progress — {run_dir.name}"
+    fig.suptitle(sup)
+    fig.tight_layout()
+    if show:
+        plt.show()
+    return fig
+
+
+
+
+
+
 def animate_band_gif(
     frames: list[np.ndarray],
     labels: list[str],
