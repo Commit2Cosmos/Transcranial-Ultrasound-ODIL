@@ -123,21 +123,30 @@ optimiser:
   lbfgsb:
     z_steps: 1
     u_precond: null            # null | z  (z -> u = A(c)^-1 z reparameterisation)
+    u_solve: optim             # optim (L-BFGS u-block) | exact (u* = u0 - H^-1 g)
     z_optim: gd                # gd (Armijo steepest descent) | lbfgs; only used when u_precond=z
     z_lr: 1.0                  # Armijo initial step for z_optim=gd
     c_lr: 5.0
     c_max_iter: 6
     c_history_size: 10
     reset_c_history: false
+    # c-gradient Gaussian smoothing width in grid cells (0 = off; the only
+    # c-gradient preconditioner). Can be overridden per band (BandCfg).
+    c_grad_smooth_sigma: 0.0
     early_stop_rtol: 0.0       # <= 0 disables early stopping
     early_stop_min_iter: 0
     early_stop_patience: 3
     debug_c: false
-    precond:
-      c_precond: false
-      c_precond_type: energy   # energy | gaussian
-      c_precond_sigma: 2.0
-      c_precond_stab: 1.0e-2
+    # Outer-loop schedulers (A4): rescale the knob every every_n outers; both
+    # inactive by default (factor or every_n == 0 -> no-op).
+    pde_weight_schedule:
+      factor: 0.0              # e.g. 10.0
+      every_n: 0               # e.g. 5
+      direction: increase      # increase | decrease
+    c_grad_smooth_sigma_schedule:
+      factor: 0.0
+      every_n: 0
+      direction: decrease
 
 metrics:
   ssim:
@@ -147,3 +156,13 @@ metrics:
     gaussian_weights: false
     sigma: 1.5
   log_c_stats: true
+
+# Block-coordinate diagnostics (LBFGSB only; off by default). When enabled the
+# run writes <run_dir>/diagnostics/{scalars.csv, summary.png, c_evolution.png,
+# outer_XX.png}. per_outer_field_maps toggles the expensive outer_XX maps
+# (u-block re-solved on clones + sparse Hessian factorised each outer).
+diagnostics:
+  enabled: false
+  per_outer_field_maps: true
+  u_depths: null               # null -> auto (1, 5, 10, ..., u_steps)
+  verify_hessian: false

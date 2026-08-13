@@ -38,6 +38,46 @@ def _gaussian_smooth_2d(g: torch.Tensor, sigma: float) -> torch.Tensor:
     return _F.conv2d(g_in, k2d).view(g.shape)
 
 
+class StepScheduler:
+    """Multiplicative outer-loop scheduler for a single scalar knob (A4).
+
+    ``value`` starts at ``base`` and, when *active*, is rescaled by ``factor``
+    (``increase``) or ``1 / factor`` (otherwise) at the start of every outer
+    whose index is a positive multiple of ``every_n``. The scheduler is
+    *inactive* — a no-op leaving ``value`` at its base for the whole run — when
+    either ``factor`` or ``every_n`` is 0 (the run-knob convention). Ported from
+    the sandbox ``run_diagnostics.StepScheduler``; carrying the current ``value``
+    lets the loop both apply it and record it per outer.
+    """
+
+    def __init__(self, base: float, factor: float, every_n: int, increase: bool):
+        self.value = float(base)
+        self.factor = float(factor)
+        self.every_n = int(every_n)
+        self.increase = bool(increase)
+
+    @classmethod
+    def from_spec(cls, base: float, spec) -> "StepScheduler":
+        """Build from a ``(factor, every_n, direction)`` tuple (direction is
+        ``"increase"`` / ``"decrease"``). ``None`` -> an inactive scheduler."""
+        if spec is None:
+            return cls(base, 0.0, 0, True)
+        factor, every_n, direction = spec
+        return cls(base, factor, every_n, str(direction).lower() != "decrease")
+
+    @property
+    def active(self) -> bool:
+        return self.factor != 0 and self.every_n != 0
+
+    def step(self, outer_i: int) -> float:
+        """Advance to outer ``outer_i`` and return the value in effect for it."""
+        if self.active and outer_i > 0 and outer_i % self.every_n == 0:
+            self.value = (
+                self.value * self.factor if self.increase else self.value / self.factor
+            )
+        return self.value
+
+
 def _armijo_gd_step_z(
     *,
     z_real: torch.nn.Parameter,
@@ -180,7 +220,25 @@ class LBFGSB(Optimiser):
     Each outer iteration updates the wavefield block then the ``c`` block
     (``u`` or ``z`` held fixed as appropriate). Complex wavefield unknowns are
     stored as two real tensors. ``c`` is always updated with L-BFGS
-    (``c_max_iter``, ``c_lr``, …).
+    (``c_max_iter``, ``c_lr``, …). The c-block gradient is optionally Gaussian
+    smoothed by ``c_grad_smooth_sigma`` (grid cells; ``0`` = off — the sole
+    c-gradient preconditioner).
+
+    Wavefield block solver (``u_solve``, direct path only):
+
+    * ``"optim"`` (default) — one fresh L-BFGS u-block step (``u_steps`` ×
+      ``max_iter``).
+    * ``"exact"`` — replace the u-block by the exact minimiser
+      ``u* = u0 - H^{-1} g(u0)`` of the frozen-c quadratic wavefield subproblem,
+      via a direct sparse factorisation of the full Hessian ``H = α AᴴA + β PᴴP``
+      (:class:`~odil_wave.optimisation.u_block_hessian.UBlockHessian`). No L-BFGS
+      runs for the u block. Inverse-only; incompatible with ``u_precond="z"``.
+
+    Outer-loop schedulers (``pde_weight_schedule`` /
+    ``c_grad_smooth_sigma_schedule``; A4): each is a ``(factor, every_n,
+    direction)`` spec (or ``None``) that multiplicatively rescales the ``pde``
+    loss weight / the c-gradient smoothing σ every ``every_n`` outers. Inactive
+    (no-op) when ``factor`` or ``every_n`` is 0.
 
     Wavefield mode (``u_precond``):
 
@@ -224,11 +282,17 @@ class LBFGSB(Optimiser):
         "c_lr": 1.0,
         "c_max_iter": 4,
         "c_history_size": 10,
-        "c_precond": False,
-        "c_precond_type": "energy",
-        "c_precond_sigma": 2.0,
-        "c_precond_stab": 1e-2,
+        # c-gradient Gaussian smoothing width in grid cells (0 = off). Replaces
+        # the former c_precond / c_precond_type / c_precond_stab machinery: the
+        # only c-gradient preconditioner is Gaussian smoothing, and 0 disables it.
+        "c_grad_smooth_sigma": 0.0,
         "reset_c_history": True,
+        # Wavefield block solver: "optim" (L-BFGS) or "exact" (u* via direct H⁻¹).
+        "u_solve": "optim",
+        # Outer-loop schedulers (A4): (factor, every_n, direction) tuples, or
+        # None for inactive. Only pde_weight and c_grad_smooth_sigma schedulable.
+        "pde_weight_schedule": None,
+        "c_grad_smooth_sigma_schedule": None,
         # c-block optimisation variable: "velocity" (default, ĉ itself) or
         # "squared_slowness" (optimise m̂ = 1/ĉ²).
         "c_param": "velocity",
@@ -282,23 +346,32 @@ class LBFGSB(Optimiser):
         c_lr = float(opts.pop("c_lr", 1.0))
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
         c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
-        c_precond = bool(opts.pop("c_precond", False))
-        c_precond_type = str(opts.pop("c_precond_type", "energy"))
-        c_precond_sigma = float(opts.pop("c_precond_sigma", 2.0))
-        c_precond_stab = float(opts.pop("c_precond_stab", 1e-2))
+        c_grad_smooth_sigma = float(opts.pop("c_grad_smooth_sigma", 0.0))
+        u_solve = str(opts.pop("u_solve", "optim")).lower()
+        pde_weight_schedule = opts.pop("pde_weight_schedule", None)
+        c_grad_smooth_sigma_schedule = opts.pop("c_grad_smooth_sigma_schedule", None)
         reset_c_history = bool(opts.pop("reset_c_history", True))
         c_param = str(opts.pop("c_param", "velocity")).lower()
         early_stop_rtol = float(opts.pop("early_stop_rtol", 0.0))
         early_stop_min_iter = int(opts.pop("early_stop_min_iter", 0))
         early_stop_patience = int(opts.pop("early_stop_patience", 3))
         debug_c = bool(opts.pop("debug_c", False))
-        # Legacy time-domain stab key (unused).
+        # Legacy keys (unused; popped so they don't leak into u_torch_opts).
         opts.pop("u_precond_stab", None)
+        for _legacy in (
+            "c_precond",
+            "c_precond_type",
+            "c_precond_sigma",
+            "c_precond_stab",
+        ):
+            opts.pop(_legacy, None)
 
         if c_param not in _C_PARAMS:
             raise ValueError(
                 f"c_param must be one of {sorted(_C_PARAMS)}; got {c_param!r}"
             )
+        if u_solve not in ("optim", "exact"):
+            raise ValueError(f"u_solve must be 'optim' or 'exact'; got {u_solve!r}")
 
         if u_precond in (None, False):
             u_precond_mode = None
@@ -322,6 +395,11 @@ class LBFGSB(Optimiser):
                 "c_param='squared_slowness' is not supported with u_precond='z' "
                 "yet; keep u_precond=None (the direct wavefield block)."
             )
+        if u_solve == "exact" and u_precond_mode == "z":
+            raise ValueError(
+                "u_solve='exact' is incompatible with u_precond='z' "
+                "(the exact solve replaces the direct wavefield block)."
+            )
 
         u_torch_opts = {k: v for k, v in opts.items() if k in self._LBFGS_KEYS}
         c_torch_opts = dict(u_torch_opts)
@@ -337,12 +415,12 @@ class LBFGSB(Optimiser):
             z_optim,
             z_lr,
             u_precond_mode,
+            u_solve,
             u_torch_opts,
             c_torch_opts,
-            c_precond,
-            c_precond_type,
-            c_precond_sigma,
-            c_precond_stab,
+            c_grad_smooth_sigma,
+            pde_weight_schedule,
+            c_grad_smooth_sigma_schedule,
             reset_c_history,
             c_param,
             early_stop_rtol,
@@ -390,9 +468,16 @@ class LBFGSB(Optimiser):
     def minimise(
         self,
         on_iteration=None,
+        diagnostics=None,
         **overrides,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Run wavefield L-BFGS then c-LBFGS block-coordinate loop."""
+        """Run wavefield L-BFGS then c-LBFGS block-coordinate loop.
+
+        ``diagnostics`` (LBFGSB direct path only) is an optional duck-typed
+        collector; when given, per-outer block-diagnostic snapshots are handed to
+        it (``bind`` / ``record_outer`` / ``finalise``) with **no** effect on the
+        trajectory. It stays ``None`` in normal runs, keeping this a no-op.
+        """
         self.opts.update(overrides)
         (
             n_iter,
@@ -402,12 +487,12 @@ class LBFGSB(Optimiser):
             z_optim,
             z_lr,
             u_precond_mode,
+            u_solve,
             u_torch_opts,
             c_torch_opts,
-            c_precond,
-            c_precond_type,
-            c_precond_sigma,
-            c_precond_stab,
+            c_grad_smooth_sigma,
+            pde_weight_schedule,
+            c_grad_smooth_sigma_schedule,
             reset_c_history,
             c_param,
             early_stop_rtol,
@@ -425,10 +510,9 @@ class LBFGSB(Optimiser):
                 z_lr=z_lr,
                 u_torch_opts=u_torch_opts,
                 c_torch_opts=c_torch_opts,
-                c_precond=c_precond,
-                c_precond_type=c_precond_type,
-                c_precond_sigma=c_precond_sigma,
-                c_precond_stab=c_precond_stab,
+                c_grad_smooth_sigma=c_grad_smooth_sigma,
+                pde_weight_schedule=pde_weight_schedule,
+                c_grad_smooth_sigma_schedule=c_grad_smooth_sigma_schedule,
                 reset_c_history=reset_c_history,
                 early_stop_rtol=early_stop_rtol,
                 early_stop_min_iter=early_stop_min_iter,
@@ -504,8 +588,6 @@ class LBFGSB(Optimiser):
         c_param_min, c_param_max = _c_param_bounds(c_min, c_max, c_param)
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
-        _prec: Optional[torch.Tensor] = None
-        _eps_prec: float = 0.0
         n_u_closure = 0
         n_c_closure = 0
         prev_loss: Optional[float] = None
@@ -513,36 +595,89 @@ class LBFGSB(Optimiser):
         stopped_early = False
         n_outer_done = 0
 
+        # A4 outer-loop schedulers. Bases are read from the freshly built loss /
+        # c-block sigma so an inactive scheduler re-writes the value it read
+        # (exact no-op). ``sigma_box`` carries the sigma the c-closure smooths
+        # with, updated once per outer.
+        base_pde_w = (
+            float(self.loss.config.weights.get("pde", 1.0)) if is_inverse else 1.0
+        )
+        pde_sched = StepScheduler.from_spec(base_pde_w, pde_weight_schedule)
+        sigma_sched = StepScheduler.from_spec(
+            float(c_grad_smooth_sigma), c_grad_smooth_sigma_schedule
+        )
+        sigma_box = [float(c_grad_smooth_sigma)]
+
+        # Block diagnostics (LBFGSB direct path). Duck-typed collector; a no-op
+        # when None. bind() supplies the run-time optimiser context; record_init
+        # stamps the warm-start state as the outer-0 reference.
+        diag_on = diagnostics is not None and is_inverse
+        if diag_on:
+            diagnostics.bind(
+                loss=self.loss,
+                wavefield=self.wavefield,
+                c_ref=c_ref,
+                c_param=c_param,
+                build_full_c=vm_in.build_full_c,
+                u_torch_opts=dict(u_torch_opts),
+                u_steps=u_steps,
+                c_torch_opts=dict(c_torch_opts),
+                c_steps=c_steps,
+                c_param_bounds=(c_param_min, c_param_max),
+                u_solve=u_solve,
+            )
+            diagnostics.record_init(
+                c_interior_param.detach().clone(),
+                u_real.detach().clone(),
+                u_imag.detach().clone(),
+            )
+
         for i in range(n_iter):
             n_outer_done = i + 1
-            for _ in range(u_steps):
 
-                def u_closure():
-                    nonlocal n_u_closure
-                    n_u_closure += 1
-                    u_optimiser.zero_grad()
-                    amps = pack_u()
-                    if is_inverse:
-                        # PDE uses physical c; regulariser uses normalised ĉ.
-                        c_hat_fixed = _c_hat_from_c_param(
-                            c_interior_param.detach(), c_param
-                        )
-                        c_full = vm_in.build_full_c(c_hat_fixed * c_ref)
-                        L = self.loss.evaluate(amps, c_full, c_hat_fixed)
-                    else:
-                        L = self.loss.evaluate(amps, vm_c_const)
-                    L.backward()
-                    return L
+            # A4 schedulers, applied at the start of the outer.
+            if is_inverse:
+                self.loss.config.weights["pde"] = pde_sched.step(i)
+            sigma_box[0] = sigma_sched.step(i)
 
-                loss_value = u_optimiser.step(u_closure)
+            if diag_on:
+                u_before_re = u_real.detach().clone()
+                u_before_im = u_imag.detach().clone()
+                c_raw_before = c_interior_param.detach().clone()
+
+            if is_inverse and u_solve == "exact":
+                # Exact frozen-c wavefield block: u* = u0 - H^{-1} g(u0). No
+                # L-BFGS runs for the u block in this mode.
+                loss_value = self._exact_u_block(
+                    u_real, u_imag, c_interior_param, c_param, c_ref, vm_in
+                )
+            else:
+                for _ in range(u_steps):
+
+                    def u_closure():
+                        nonlocal n_u_closure
+                        n_u_closure += 1
+                        u_optimiser.zero_grad()
+                        amps = pack_u()
+                        if is_inverse:
+                            # PDE uses physical c; regulariser uses normalised ĉ.
+                            c_hat_fixed = _c_hat_from_c_param(
+                                c_interior_param.detach(), c_param
+                            )
+                            c_full = vm_in.build_full_c(c_hat_fixed * c_ref)
+                            L = self.loss.evaluate(amps, c_full, c_hat_fixed)
+                        else:
+                            L = self.loss.evaluate(amps, vm_c_const)
+                        L.backward()
+                        return L
+
+                    loss_value = u_optimiser.step(u_closure)
+
+            if diag_on:
+                u_after_re = u_real.detach().clone()
+                u_after_im = u_imag.detach().clone()
 
             if is_inverse and c_steps > 0:
-                if c_precond:
-                    with torch.no_grad():
-                        u_sq = pack_u_detached().abs().square().mean(dim=(0, 1))
-                        _prec = u_sq[grid.interior_slice]
-                        _eps_prec = c_precond_stab * float(_prec.max().clamp(min=1e-30))
-
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
@@ -599,15 +734,12 @@ class LBFGSB(Optimiser):
                                 logged_grad_c = True
                         elif not debug_c:
                             logged_grad_c = True
-                        if c_precond and c_interior_param.grad is not None:
+                        _sigma = sigma_box[0]
+                        if _sigma > 0.0 and c_interior_param.grad is not None:
                             with torch.no_grad():
-                                if c_precond_type == "gaussian":
-                                    g_smooth = _gaussian_smooth_2d(
-                                        c_interior_param.grad, c_precond_sigma
-                                    )
-                                    c_interior_param.grad.copy_(g_smooth)
-                                elif _prec is not None:
-                                    c_interior_param.grad.div_(_prec + _eps_prec)
+                                c_interior_param.grad.copy_(
+                                    _gaussian_smooth_2d(c_interior_param.grad, _sigma)
+                                )
                         return L_c
 
                     loss_value = c_optimiser.step(c_closure)
@@ -619,6 +751,19 @@ class LBFGSB(Optimiser):
 
                 # c changed — reset u LBFGS history
                 u_optimiser = make_u_optimiser()
+
+            if diag_on:
+                diagnostics.record_outer(
+                    i,
+                    u_before_re,
+                    u_before_im,
+                    u_after_re,
+                    u_after_im,
+                    c_raw_before,
+                    c_interior_param.detach().clone(),
+                    c_lr=float(c_torch_opts["lr"]),
+                    c_grad_smooth_sigma=float(sigma_box[0]),
+                )
 
             should_log = (i % log_every == 0) or (i == n_iter - 1)
             c_full_now = None
@@ -672,6 +817,9 @@ class LBFGSB(Optimiser):
             if loss_scalar is not None:
                 prev_loss = loss_scalar
 
+        if diag_on:
+            diagnostics.finalise()
+
         if isinstance(self.loss, ForwardLoss):
             vm_out = vm_in
         else:
@@ -703,6 +851,7 @@ class LBFGSB(Optimiser):
             "n_c_closure": n_c_closure,
             "n_closure": n_u_closure + n_c_closure,
             "u_precond": None,
+            "u_solve": u_solve,
             "c_update": "lbfgs",
             "c_param": c_param,
             "n_factor": 0,
@@ -710,6 +859,40 @@ class LBFGSB(Optimiser):
             "n_adjoint_solves": 0,
         }
         return outputs, self.loss.callback
+
+    def _exact_u_block(
+        self, u_real, u_imag, c_interior_param, c_param, c_ref, vm_in
+    ) -> torch.Tensor:
+        """Exact frozen-c wavefield block: overwrite ``(u_real, u_imag)`` with the
+        quadratic minimiser ``u* = u0 - H^{-1} g(u0)`` (A1).
+
+        The frozen-c u-subproblem ``J(u) = w_pde·mean|A(c)u-f|² +
+        w_data·mean|Pu-d|²`` is exactly quadratic in ``u`` with constant Hessian
+        ``H = α AᴴA + β PᴴP``; its minimiser is ``u* = u0 - H^{-1} g(u0)`` for the
+        current frozen ``c`` (independent of the warm start). ``H`` is assembled +
+        factorised by :class:`UBlockHessian` at the run's current loss weights
+        (so a scheduled ``pde`` weight is honoured). Returns the loss at ``u*``.
+        """
+        from odil_wave.optimisation.u_block_hessian import UBlockHessian
+
+        c_hat_fixed = _c_hat_from_c_param(c_interior_param.detach(), c_param)
+        c_full = vm_in.build_full_c(c_hat_fixed * c_ref)
+        a = u_real.detach().clone().requires_grad_(True)
+        b = u_imag.detach().clone().requires_grad_(True)
+        L = self.loss.evaluate(torch.complex(a, b), c_full, c_hat_fixed)
+        ga, gb = torch.autograd.grad(L, (a, b))
+        g = torch.complex(ga.detach(), gb.detach())  # total weighted u-gradient at u0
+        ubh = UBlockHessian(
+            self.wavefield, self.loss, c_full, weights=dict(self.loss.config.weights)
+        )
+        u0 = torch.complex(a.detach(), b.detach())
+        u_star = u0 + ubh.du_from_grad(g)  # u0 - H^{-1} g(u0)
+        with torch.no_grad():
+            u_real.copy_(u_star.real)
+            u_imag.copy_(u_star.imag)
+        return self.loss.evaluate(
+            torch.complex(u_real.detach(), u_imag.detach()), c_full, c_hat_fixed
+        )
 
     def _minimise_z(
         self,
@@ -721,10 +904,9 @@ class LBFGSB(Optimiser):
         z_lr: float,
         u_torch_opts: dict,
         c_torch_opts: dict,
-        c_precond: bool,
-        c_precond_type: str,
-        c_precond_sigma: float,
-        c_precond_stab: float,
+        c_grad_smooth_sigma: float,
+        pde_weight_schedule,
+        c_grad_smooth_sigma_schedule,
         reset_c_history: bool,
         early_stop_rtol: float,
         early_stop_min_iter: int,
@@ -734,7 +916,9 @@ class LBFGSB(Optimiser):
     ) -> Tuple[List[Wavefield], LossTape]:
         """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``).
 
-        The c-block is always L-BFGS here.
+        The c-block is always L-BFGS here. The A4 schedulers (``pde`` weight and
+        ``c_grad_smooth_sigma``) apply here too; the exact u-solve and block
+        diagnostics do not (they are direct-path only).
         """
         if not isinstance(self.loss, InverseLoss):
             raise TypeError("u_precond='z' requires an InverseLoss")
@@ -793,8 +977,6 @@ class LBFGSB(Optimiser):
         c_max = self.c_max / c_ref if self.c_max is not None else None
         log_every = max(1, int(self.loss.callback.log_every))
         loss_value = None
-        _prec: Optional[torch.Tensor] = None
-        _eps_prec: float = 0.0
         n_u_closure = 0
         n_c_closure = 0
         prev_loss: Optional[float] = None
@@ -803,8 +985,22 @@ class LBFGSB(Optimiser):
         n_outer_done = 0
         t_wall0 = time.perf_counter()
 
+        # A4 schedulers (bases from the freshly built loss / c-block sigma).
+        pde_sched = StepScheduler.from_spec(
+            float(self.loss.config.weights.get("pde", 1.0)), pde_weight_schedule
+        )
+        sigma_sched = StepScheduler.from_spec(
+            float(c_grad_smooth_sigma), c_grad_smooth_sigma_schedule
+        )
+        sigma_box = [float(c_grad_smooth_sigma)]
+
         for i in range(n_iter):
             n_outer_done = i + 1
+
+            # A4 schedulers, applied at the start of the outer.
+            self.loss.config.weights["pde"] = pde_sched.step(i)
+            sigma_box[0] = sigma_sched.step(i)
+
             c_hat_fixed = c_interior_param.detach()
             c_full_fixed = c_full_from_hat(c_hat_fixed)
 
@@ -849,12 +1045,6 @@ class LBFGSB(Optimiser):
 
             if c_steps > 0:
                 z_fixed = pack_z_detached()
-                if c_precond:
-                    with torch.no_grad():
-                        u_sq = tf.apply(z_fixed).abs().square().mean(dim=(0, 1))
-                        _prec = u_sq[grid.interior_slice]
-                        _eps_prec = c_precond_stab * float(_prec.max().clamp(min=1e-30))
-
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
@@ -902,15 +1092,12 @@ class LBFGSB(Optimiser):
                                 logged_grad_c = True
                         elif not debug_c:
                             logged_grad_c = True
-                        if c_precond and c_interior_param.grad is not None:
+                        _sigma = sigma_box[0]
+                        if _sigma > 0.0 and c_interior_param.grad is not None:
                             with torch.no_grad():
-                                if c_precond_type == "gaussian":
-                                    g_smooth = _gaussian_smooth_2d(
-                                        c_interior_param.grad, c_precond_sigma
-                                    )
-                                    c_interior_param.grad.copy_(g_smooth)
-                                elif _prec is not None:
-                                    c_interior_param.grad.div_(_prec + _eps_prec)
+                                c_interior_param.grad.copy_(
+                                    _gaussian_smooth_2d(c_interior_param.grad, _sigma)
+                                )
                         return L_c
 
                     loss_value = c_optimiser.step(c_closure)

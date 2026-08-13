@@ -126,6 +126,12 @@ outputs/<run_id>/
   final/
     c_final.npy            # final run-level c (float32)
     run_summary.json       # status, wall time, per-band + final metrics
+  diagnostics/             # only when diagnostics.enabled (lbfgsb + ground truth)
+    band_00_40khz/
+      scalars.csv          # per-outer block cos/norms/residuals + scheduled knobs
+      summary.png          # trajectory panels built from scalars.csv
+      c_evolution.png      # interior velocity after each outer (init .. truth)
+      outer_00.png ...     # per-outer -H^-1 g maps (per_outer_field_maps only)
   failure.json             # only if the run stopped/failed mid-band
 ```
 
@@ -232,6 +238,59 @@ metrics:
 ```
 
 The existing metrics are preserved unchanged; `ssim_head_roi` is an addition.
+
+---
+
+## LBFGSB wavefield solver, c-gradient smoothing & schedulers
+
+The block-coordinate `lbfgsb` optimiser exposes three knobs under
+`optimiser.lbfgsb`:
+
+```yaml
+optimiser:
+  lbfgsb:
+    u_solve: optim              # optim (L-BFGS u-block) | exact (u* = u0 - H^-1 g)
+    c_grad_smooth_sigma: 0.0    # c-gradient Gaussian smoothing width, cells (0 = off)
+    pde_weight_schedule:            {factor: 10.0, every_n: 5, direction: increase}
+    c_grad_smooth_sigma_schedule:   {factor: 2.0,  every_n: 5, direction: decrease}
+```
+
+- **`u_solve: exact`** replaces the u-block L-BFGS with the exact minimiser of the
+  frozen-`c` quadratic wavefield subproblem, `u* = u0 - H⁻¹ g(u0)`, via a direct
+  sparse factorisation of the full Hessian `H = α AᴴA + β Pᴴ|D|²P`
+  (`odil_wave.optimisation.UBlockHessian`, which folds in the data
+  `normalize_data` scaling so `H` matches the actual loss). No L-BFGS runs for the
+  u block. It is a CPU/SuperLU path (works at any device/dtype; f64 recommended)
+  and requires `u_precond` unset.
+- **`c_grad_smooth_sigma`** is the sole c-gradient preconditioner (the former
+  `c_precond` / `c_precond_type` / `c_precond_stab` are gone): `> 0` Gaussian-
+  smooths the c-gradient (reflect-padded) each c-closure; `0` disables it. It can
+  be overridden per band via `continuation.bands[i].c_grad_smooth_sigma`.
+- **Schedulers** multiplicatively rescale their knob every `every_n` outers;
+  inactive (no-op) when `factor` or `every_n` is `0`. Only `pde_weight` (the loss
+  `weights['pde']`) and `c_grad_smooth_sigma` are schedulable.
+
+## Block diagnostics
+
+`diagnostics.enabled: true` (lbfgsb runs with a ground-truth model) captures
+per-outer block-coordinate diagnostics from inside `LBFGSB.minimise` — a no-op
+when disabled — and writes `<run_dir>/diagnostics/band_XX/` with `scalars.csv`,
+`summary.png`, `c_evolution.png` and (when `per_outer_field_maps`) the per-outer
+`outer_XX.png` `-H⁻¹ g` field maps:
+
+```yaml
+diagnostics:
+  enabled: false
+  per_outer_field_maps: true   # the expensive part: re-solves the u-block on
+                               # clones + factorises the sparse Hessian each outer
+  u_depths: null               # null -> auto (1, 5, 10, ..., u_steps)
+  verify_hessian: false        # print the sparse-H vs autograd-Hvp relative error
+```
+
+Everything is measured on clones, so the reported trajectory is never disturbed;
+term gradients are isolated through the library loss itself
+(`InverseLoss.evaluate(weights_override=...)`). See
+`odil_wave.experiment.DiagnosticsCollector`.
 
 ---
 

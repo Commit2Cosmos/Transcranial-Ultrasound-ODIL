@@ -55,8 +55,16 @@ def _summarise(cfg) -> str:
     if cfg.optimiser.name == "lbfgsb":
         lb = cfg.optimiser.lbfgsb
         a(
-            f"lbfgsb          : u_precond={lb.u_precond}, z_steps={lb.z_steps}, "
-            f"z_optim={lb.z_optim}, z_lr={lb.z_lr}, c_lr={lb.c_lr}"
+            f"lbfgsb          : u_precond={lb.u_precond}, u_solve={lb.u_solve}, "
+            f"z_steps={lb.z_steps}, z_optim={lb.z_optim}, z_lr={lb.z_lr}, "
+            f"c_lr={lb.c_lr}, c_grad_smooth_sigma={lb.c_grad_smooth_sigma}"
+        )
+    if cfg.diagnostics.enabled:
+        d = cfg.diagnostics
+        a(
+            f"diagnostics     : enabled (per_outer_field_maps="
+            f"{d.per_outer_field_maps}, u_depths={d.u_depths}, "
+            f"verify_hessian={d.verify_hessian})"
         )
     a(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):

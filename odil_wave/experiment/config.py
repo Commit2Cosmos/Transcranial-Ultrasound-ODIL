@@ -217,14 +217,11 @@ class BandCfg:
     n_iter: Optional[int] = None
     source_offsets: List[int] = field(default_factory=lambda: [0])
     source_schedule: str = "joint"  # "joint" | "sequential" | "cyclic"
-    # Per-band override of the LBFGSB c-gradient preconditioner
-    # (``optimiser.lbfgsb.precond``). A partial dict merged onto the global
-    # ``PrecondCfg`` for this band only (see :func:`resolve_band_precond`);
-    # keys are any subset of ``c_precond`` / ``c_precond_type`` /
-    # ``c_precond_sigma`` / ``c_precond_stab``, e.g. ``{"c_precond_sigma": 4.0}``
-    # or ``{"c_precond": False}``. Empty (default) -> use the global setting
+    # Per-band override of the LBFGSB c-gradient Gaussian smoothing width
+    # ``c_grad_smooth_sigma`` (grid cells; ``0`` = no smoothing). ``None``
+    # (default) uses the global ``optimiser.lbfgsb.c_grad_smooth_sigma``
     # unchanged. Ignored by optimisers other than LBFGSB.
-    precond: Dict[str, Any] = field(default_factory=dict)
+    c_grad_smooth_sigma: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -256,32 +253,22 @@ class LossCfg:
 
 
 @dataclass(frozen=True)
-class PrecondCfg:
-    """c-gradient preconditioner (LBFGSB c-block only)."""
+class SchedulerCfg:
+    """Multiplicative outer-loop scheduler for a single LBFGSB knob (A4).
 
-    c_precond: bool = False
-    c_precond_type: str = "energy"  # "energy" | "gaussian"
-    c_precond_sigma: float = 2.0
-    c_precond_stab: float = 1e-2
-
-
-_PRECOND_FIELDS = {f.name for f in fields(PrecondCfg)}
-
-
-def resolve_band_precond(base: PrecondCfg, band: "BandCfg") -> PrecondCfg:
-    """Merge a band's ``precond`` override dict onto the global ``PrecondCfg``.
-
-    ``band.precond`` is a partial override (any subset of ``PrecondCfg``'s
-    fields); unset keys fall back to ``base`` (``optimiser.lbfgsb.precond``).
-    An empty/absent override returns ``base`` unchanged, so bands without a
-    ``precond`` entry behave exactly as before this field existed.
+    The scheduled value starts at its base (the knob's configured value) and,
+    when *active*, is rescaled by ``factor`` (``direction="increase"``) or
+    ``1/factor`` (``direction="decrease"``) at the start of every outer whose
+    index is a positive multiple of ``every_n``. It is *inactive* — a no-op
+    leaving the value at its base for the whole run — when either ``factor`` or
+    ``every_n`` is ``0`` (the run-knob convention mirrored from the sandbox
+    ``run_diagnostics.StepScheduler``). Only ``pde_weight`` and
+    ``c_grad_smooth_sigma`` are schedulable.
     """
-    override = getattr(band, "precond", None) or {}
-    if not override:
-        return base
-    merged = {f: getattr(base, f) for f in _PRECOND_FIELDS}
-    merged.update(override)
-    return PrecondCfg(**merged)
+
+    factor: float = 0.0
+    every_n: int = 0
+    direction: str = "increase"  # "increase" | "decrease"
 
 
 @dataclass(frozen=True)
@@ -290,6 +277,13 @@ class LBFGSBCfg:
 
     z_steps: int = 1
     u_precond: Optional[str] = None  # None | "z"
+    # Wavefield block solver (A1). "optim" (default): one fresh L-BFGS u-block
+    # step (``u_steps`` × ``max_iter``), exactly as before. "exact": replace the
+    # u-block by the exact minimiser u* = u0 − H⁻¹ g(u0) of the frozen-c
+    # quadratic wavefield subproblem, via a direct sparse factorisation of the
+    # full Hessian H = α AᴴA + β PᴴP (see UBlockHessian). Inverse-only, and
+    # incompatible with u_precond="z". No L-BFGS runs for the u block in "exact".
+    u_solve: str = "optim"  # "optim" | "exact"
     # z-block controls (only used when u_precond == "z").
     z_optim: str = "gd"  # "gd" (Armijo steepest descent) | "lbfgs"
     z_lr: float = 1.0  # Armijo initial step when z_optim == "gd"
@@ -303,11 +297,21 @@ class LBFGSBCfg:
     # every physics/regulariser call, and autograd differentiates through that
     # transform. Saved/plotted c is unaffected either way.
     c_param: str = "velocity"  # "velocity" | "squared_slowness"
+    # c-gradient Gaussian smoothing width in grid cells (0 = off). When > 0 the
+    # c-block gradient is convolved in-place with an isotropic Gaussian (reflect
+    # padding) after backward and before the L-BFGS step consumes it — a
+    # smoothness prior on the velocity update that suppresses high-wavenumber
+    # speckle in the frozen-u WRI c-gradient. Schedulable (A4).
+    c_grad_smooth_sigma: float = 0.0
     early_stop_rtol: float = 0.0
     early_stop_min_iter: int = 0
     early_stop_patience: int = 3
     debug_c: bool = False
-    precond: PrecondCfg = field(default_factory=PrecondCfg)
+    # Outer-loop schedulers (A4). Each rescales its knob every N outers; both
+    # inactive by default (factor/every_n == 0 -> no-op). Only pde_weight (the
+    # loss ``weights['pde']``) and c_grad_smooth_sigma are schedulable.
+    pde_weight_schedule: SchedulerCfg = field(default_factory=SchedulerCfg)
+    c_grad_smooth_sigma_schedule: SchedulerCfg = field(default_factory=SchedulerCfg)
 
 
 @dataclass(frozen=True)
@@ -420,6 +424,36 @@ class MetricsCfg:
 
 
 @dataclass(frozen=True)
+class DiagnosticsCfg:
+    """Block-coordinate diagnostics (LBFGSB only; off by default).
+
+    When ``enabled`` the run captures per-outer block-diagnostic quantities from
+    inside ``LBFGSB.minimise`` (a no-op when disabled) and writes, into
+    ``<run_dir>/diagnostics/``:
+
+    * ``scalars.csv`` — per-outer cos(update,-grad) for the u/c blocks, block
+      gradient L2 norms, relative model error and relative PDE/data residuals,
+      plus the scheduled ``c_lr`` / ``c_grad_smooth_sigma`` in effect.
+    * ``summary.png`` — the trajectory panels built from those scalars.
+    * ``c_evolution.png`` — physical interior velocity after each outer.
+    * ``outer_XX.png`` — per-outer wavefield term-induced update maps
+      (du_term = −H⁻¹ g_term at several u-solve depths) + the c-gradient and
+      velocity update at the exact wavefield minimiser u*; only when
+      ``per_outer_field_maps`` (the expensive piece — re-solves the u-block on
+      clones and factorises the sparse Hessian each outer).
+
+    ``u_depths`` sets the per-outer u-solve depths (rows of ``outer_XX``);
+    ``None`` auto-selects ``1, 5, 10, …, u_steps``. ``verify_hessian`` adds the
+    sparse-H vs autograd-Hvp correctness gate (prints a relative error).
+    """
+
+    enabled: bool = False
+    per_outer_field_maps: bool = True
+    u_depths: Optional[List[int]] = None
+    verify_hessian: bool = False
+
+
+@dataclass(frozen=True)
 class RunConfig:
     """Top-level fully-resolved experiment configuration."""
 
@@ -438,6 +472,7 @@ class RunConfig:
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
+    diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
 
     # -- serialisation ----------------------------------------------------- #
     def to_dict(self) -> Dict[str, Any]:
@@ -707,7 +742,7 @@ def expand_band_schedule(
                         n_iter=n_iter,
                         source_offsets=[off],
                         source_schedule="joint",
-                        precond=dict(band.precond),
+                        c_grad_smooth_sigma=band.c_grad_smooth_sigma,
                     )
                 )
         elif schedule == "cyclic" and len(offs) > 1:
@@ -718,7 +753,7 @@ def expand_band_schedule(
                         n_iter=1,
                         source_offsets=[offs[k % len(offs)]],
                         source_schedule="joint",
-                        precond=dict(band.precond),
+                        c_grad_smooth_sigma=band.c_grad_smooth_sigma,
                     )
                 )
         else:
@@ -765,12 +800,12 @@ def _make_run_id(merged: Dict[str, Any]) -> str:
 
         <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>[_<precond>]_<f0>_<bands>
 
-    e.g. ``280726_133521_shepp-logan_125x125_cf_80_40-50-60-70`` — where
+    e.g. ``280726_133521_shepp-logan_125x125_lbfgsb_80_40-50-60-70`` — where
     ``problem`` is the truth profile, ``grid`` the interior shape, ``f0`` and
     ``bands`` are frequencies in kHz (bands joined by ``-``; multiple
     frequencies within one continuation stage joined by ``+``). The
-    ``precond`` token appears only when a c-gradient preconditioner is active
-    (LBFGSB ``c_precond``); it is omitted otherwise.
+    ``precond`` token (``smooth``) appears only when the LBFGSB c-gradient
+    smoothing is active (``c_grad_smooth_sigma`` > 0); it is omitted otherwise.
     """
     ts = time.strftime("%d%m%y_%H%M%S", time.localtime())
 
@@ -818,15 +853,18 @@ def _bands_token(bands: List[Any]) -> str:
 
 
 def _precond_token(optimiser: str, opt: Dict[str, Any]) -> str:
-    """The active c-gradient preconditioner token, or ``""`` when none.
+    """The active c-gradient smoothing token, or ``""`` when none.
 
-    Only LBFGSB exposes a c-gradient preconditioner (``c_precond`` with type
-    ``energy``/``gaussian``); other optimisers have none, so the slot is empty.
+    Only LBFGSB smooths the c-gradient (``c_grad_smooth_sigma`` > 0, Gaussian);
+    other optimisers have none, so the slot is empty.
     """
     if optimiser == "lbfgsb":
-        pc = (opt.get("lbfgsb", {}) or {}).get("precond", {}) or {}
-        if pc.get("c_precond"):
-            return _slug(str(pc.get("c_precond_type", "precond")))
+        lb = opt.get("lbfgsb", {}) or {}
+        try:
+            if float(lb.get("c_grad_smooth_sigma", 0.0)) > 0.0:
+                return "smooth"
+        except (TypeError, ValueError):
+            return ""
     return ""
 
 
@@ -868,6 +906,40 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 raise ConfigError(
                     "optimiser.lbfgsb.c_param='squared_slowness' is not "
                     "supported with u_precond='z' yet"
+                )
+        if str(lb.u_solve).lower() not in ("optim", "exact"):
+            raise ConfigError(
+                f"optimiser.lbfgsb.u_solve must be 'optim' or 'exact', "
+                f"got {lb.u_solve!r}"
+            )
+        if str(lb.u_solve).lower() == "exact" and lb.u_precond == "z":
+            raise ConfigError(
+                "optimiser.lbfgsb.u_solve='exact' is incompatible with "
+                "u_precond='z' (the exact solve replaces the direct u block)"
+            )
+        if lb.c_grad_smooth_sigma < 0:
+            raise ConfigError(
+                "optimiser.lbfgsb.c_grad_smooth_sigma must be >= 0, "
+                f"got {lb.c_grad_smooth_sigma}"
+            )
+        for sname, sch in (
+            ("pde_weight_schedule", lb.pde_weight_schedule),
+            ("c_grad_smooth_sigma_schedule", lb.c_grad_smooth_sigma_schedule),
+        ):
+            if sch.factor < 0:
+                raise ConfigError(
+                    f"optimiser.lbfgsb.{sname}.factor must be >= 0, "
+                    f"got {sch.factor}"
+                )
+            if sch.every_n < 0:
+                raise ConfigError(
+                    f"optimiser.lbfgsb.{sname}.every_n must be >= 0, "
+                    f"got {sch.every_n}"
+                )
+            if str(sch.direction).lower() not in ("increase", "decrease"):
+                raise ConfigError(
+                    f"optimiser.lbfgsb.{sname}.direction must be 'increase' "
+                    f"or 'decrease', got {sch.direction!r}"
                 )
 
     if name == "joint":
@@ -930,35 +1002,17 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 f"band {bi} source_schedule must be one of "
                 f"{list(_SOURCE_SCHEDULES)}, got {band.source_schedule!r}"
             )
-        if band.precond:
-            unknown_pc = set(band.precond) - _PRECOND_FIELDS
-            if unknown_pc:
+        if band.c_grad_smooth_sigma is not None:
+            if float(band.c_grad_smooth_sigma) < 0:
                 raise ConfigError(
-                    f"band {bi} precond has unknown key(s) {sorted(unknown_pc)}; "
-                    f"valid keys: {sorted(_PRECOND_FIELDS)}"
+                    f"band {bi} c_grad_smooth_sigma must be >= 0, "
+                    f"got {band.c_grad_smooth_sigma}"
                 )
-            if "c_precond_type" in band.precond and str(
-                band.precond["c_precond_type"]
-            ).lower() not in ("energy", "gaussian"):
-                raise ConfigError(
-                    f"band {bi} precond.c_precond_type must be 'energy' or "
-                    f"'gaussian', got {band.precond['c_precond_type']!r}"
-                )
-            if (
-                "c_precond_sigma" in band.precond
-                and float(band.precond["c_precond_sigma"]) <= 0
-            ):
-                raise ConfigError(f"band {bi} precond.c_precond_sigma must be > 0")
-            if (
-                "c_precond_stab" in band.precond
-                and float(band.precond["c_precond_stab"]) <= 0
-            ):
-                raise ConfigError(f"band {bi} precond.c_precond_stab must be > 0")
             if name != "lbfgsb":
                 warnings.append(
-                    f"band {bi} sets a precond override but "
+                    f"band {bi} sets c_grad_smooth_sigma but "
                     f"optimiser.name={cfg.optimiser.name!r} has no c-gradient "
-                    "preconditioner; it will be ignored."
+                    "smoothing; it will be ignored."
                 )
 
     if cfg.observation.method not in ("leapfrog_fft", "helmholtz"):
@@ -1025,6 +1079,20 @@ def validate_config(cfg: "RunConfig") -> List[str]:
 
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):
         _validate_model_cfg(label, model, warnings)
+
+    diag = cfg.diagnostics
+    if diag.enabled:
+        if name != "lbfgsb":
+            warnings.append(
+                f"diagnostics.enabled is set but optimiser.name="
+                f"{cfg.optimiser.name!r}; block diagnostics are only produced "
+                "for the lbfgsb optimiser and will be skipped."
+            )
+        if diag.u_depths is not None:
+            if not diag.u_depths:
+                raise ConfigError("diagnostics.u_depths must be non-empty when set")
+            if any(int(d) < 1 for d in diag.u_depths):
+                raise ConfigError("diagnostics.u_depths values must be >= 1")
 
     return warnings
 

@@ -7,6 +7,7 @@ stack.
 
 from .config import (
     ConfigError,
+    DiagnosticsCfg,
     RunConfig,
     apply_overrides,
     canonical_optimiser_name,
@@ -17,6 +18,7 @@ from .config import (
     resolve_config,
     validate_config,
 )
+from .diagnostics import DiagnosticsCollector
 from .plots import (
     LiveVelocityView,
     animate_bands,
@@ -43,6 +45,7 @@ __all__ = [
     # config
     "ConfigError",
     "RunConfig",
+    "DiagnosticsCfg",
     "resolve_config",
     "validate_config",
     "load_config_file",
@@ -51,6 +54,8 @@ __all__ = [
     "deep_merge",
     "canonical_optimiser_name",
     "expand_band_schedule",
+    # diagnostics
+    "DiagnosticsCollector",
     # problem
     "Problem",
     "BandContext",

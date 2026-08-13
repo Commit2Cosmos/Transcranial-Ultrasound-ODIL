@@ -35,7 +35,6 @@ from .config import (
     canonical_regulariser_name,
     deep_merge,
     expand_band_schedule,
-    resolve_band_precond,
     resolve_config,
     validate_config,
 )
@@ -151,6 +150,19 @@ def _final_recovery_metrics(problem: Problem, velocity_model: Any) -> Dict[str, 
 # --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
+def _effective_c_grad_smooth_sigma(lb, band_cfg: Optional[BandCfg]) -> float:
+    """Per-band ``c_grad_smooth_sigma`` override, falling back to the global one."""
+    if band_cfg is not None and band_cfg.c_grad_smooth_sigma is not None:
+        return float(band_cfg.c_grad_smooth_sigma)
+    return float(lb.c_grad_smooth_sigma)
+
+
+def _schedule_tuple(sch) -> tuple:
+    """Pack a :class:`SchedulerCfg` as the ``(factor, every_n, direction)`` tuple
+    the optimiser consumes (torch-free, so LBFGSB need not import the config)."""
+    return (float(sch.factor), int(sch.every_n), str(sch.direction).lower())
+
+
 def _build_optimiser(
     problem: Problem,
     band_ctx,
@@ -179,11 +191,7 @@ def _build_optimiser(
         from odil_wave.optimisation import LBFGSB
 
         lb = opt.lbfgsb
-        precond = (
-            resolve_band_precond(lb.precond, band_cfg)
-            if band_cfg is not None
-            else lb.precond
-        )
+        c_grad_smooth_sigma = _effective_c_grad_smooth_sigma(lb, band_cfg)
         return LBFGSB(
             wf_inv,
             loss,
@@ -191,6 +199,7 @@ def _build_optimiser(
             c_steps=opt.c_steps,
             z_steps=lb.z_steps,
             u_precond=lb.u_precond,
+            u_solve=lb.u_solve,
             z_optim=lb.z_optim,
             z_lr=lb.z_lr,
             c_lr=lb.c_lr,
@@ -198,10 +207,11 @@ def _build_optimiser(
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
             c_param=lb.c_param,
-            c_precond=precond.c_precond,
-            c_precond_type=precond.c_precond_type,
-            c_precond_sigma=precond.c_precond_sigma,
-            c_precond_stab=precond.c_precond_stab,
+            c_grad_smooth_sigma=c_grad_smooth_sigma,
+            pde_weight_schedule=_schedule_tuple(lb.pde_weight_schedule),
+            c_grad_smooth_sigma_schedule=_schedule_tuple(
+                lb.c_grad_smooth_sigma_schedule
+            ),
             early_stop_rtol=lb.early_stop_rtol,
             early_stop_min_iter=lb.early_stop_min_iter,
             early_stop_patience=lb.early_stop_patience,
@@ -330,8 +340,28 @@ def run_frequency_band(
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init, band_cfg)
 
+    minimise_kwargs: Dict[str, Any] = {"on_iteration": tape.on_iteration}
+    diag_cfg = getattr(cfg, "diagnostics", None)
+    if (
+        diag_cfg is not None
+        and diag_cfg.enabled
+        and canonical_optimiser_name(cfg.optimiser.name) == "lbfgsb"
+        and problem.truth_velocity is not None
+    ):
+        from .diagnostics import DiagnosticsCollector
+
+        diag_dir = bands_dir.parent / "diagnostics" / f"band_{band_index:02d}_{label}"
+        minimise_kwargs["diagnostics"] = DiagnosticsCollector(
+            out_dir=diag_dir,
+            truth_velocity=problem.truth_velocity,
+            grid=problem.grid,
+            per_outer_field_maps=diag_cfg.per_outer_field_maps,
+            u_depths=diag_cfg.u_depths,
+            verify_hessian=diag_cfg.verify_hessian,
+        )
+
     t_opt = time.perf_counter()
-    recovered_wfs, _ = opt.minimise(on_iteration=tape.on_iteration)
+    recovered_wfs, _ = opt.minimise(**minimise_kwargs)
     optimise_s = time.perf_counter() - t_opt
 
     recovered_velocity = recovered_wfs[0].velocity_model
@@ -502,9 +532,10 @@ def _dump_band_config(
         "optimiser": _asdict(cfg.optimiser),
     }
     name = canonical_optimiser_name(cfg.optimiser.name)
-    if name == "lbfgsb" and band_cfg is not None:
-        effective = resolve_band_precond(cfg.optimiser.lbfgsb.precond, band_cfg)
-        payload["effective_c_precond"] = _asdict(effective)
+    if name == "lbfgsb":
+        payload["effective_c_grad_smooth_sigma"] = _effective_c_grad_smooth_sigma(
+            cfg.optimiser.lbfgsb, band_cfg
+        )
     _dump_yaml(payload, path)
 
 
