@@ -1024,7 +1024,9 @@ class MODILInversion(Optimiser):
         if self.c_min is not None or self.c_max is not None:
             c_int_final = c_int_final.clamp(min=self.c_min, max=self.c_max)
         c_full_final = vm_in.build_full_c(c_int_final)
-        vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
+        vm_out = VelocityModel.from_field(
+            grid, c_full_final, pml_c=vm_in.pml_c, pml_fill=vm_in.pml_fill
+        )
 
         u_final = pack_u_detached()
         outputs: List[Wavefield] = []

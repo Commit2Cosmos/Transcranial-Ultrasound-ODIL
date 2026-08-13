@@ -696,7 +696,10 @@ class JointFreqODIL(Optimiser):
             z_final = z_of().detach()
             c_full_final = self.c_full_of_z(z_final)
             vm_out = VelocityModel.from_field(
-                self.grid, c_full_final, pml_c=self.vm_in.pml_c
+                self.grid,
+                c_full_final,
+                pml_c=self.vm_in.pml_c,
+                pml_fill=self.vm_in.pml_fill,
             )
             u_final = self.physical_u(u_re.detach(), u_im.detach())
 

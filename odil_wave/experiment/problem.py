@@ -91,9 +91,7 @@ class Problem:
 
     @property
     def observation_source(self) -> SourceSignal:
-        return (
-            self.forward_source if self.forward_source is not None else self.source
-        )
+        return self.forward_source if self.forward_source is not None else self.source
 
     @property
     def pml_split(self) -> bool:
@@ -115,15 +113,10 @@ class Problem:
             obs_source = self.observation_source
             # Same physical frequencies; bins must match (shared nt/dt).
             obs_freq = FrequencySelection.from_frequencies(obs_grid, freqs)
-            obs_geom = self._geometry(
-                obs_grid, obs_source, obs_freq, source_offsets
-            )
+            obs_geom = self._geometry(obs_grid, obs_source, obs_freq, source_offsets)
             observed_wfs = self._observed(obs_freq, obs_geom)
             traces = torch.stack(
-                [
-                    obs_geom.extract_observations(wf.amplitude)
-                    for wf in observed_wfs
-                ],
+                [obs_geom.extract_observations(wf.amplitude) for wf in observed_wfs],
                 dim=0,
             )
             return BandContext(
@@ -204,9 +197,7 @@ class Problem:
         cached = self._truth_amp_time.get(key)
         if cached is None:
             truth = self.observation_truth
-            wf = Wavefield(
-                geom.grid, geom.frequency_selection, velocity_model=truth
-            )
+            wf = Wavefield(geom.grid, geom.frequency_selection, velocity_model=truth)
             solver = LeapfrogSolver(
                 wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
             )
@@ -263,6 +254,7 @@ def _build_velocity(
         profile=spec.profile,
         base=spec.base,
         contrast=spec.contrast,
+        pml_fill=spec.pml_fill,
         **({"pml_c": pml_c} if pml_c is not None else {}),
         **kwargs,
     )
@@ -284,7 +276,9 @@ def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
     )
 
 
-def _make_grid(cfg: RunConfig, device: torch.device, dtype: torch.dtype, pml_width: int) -> Grid:
+def _make_grid(
+    cfg: RunConfig, device: torch.device, dtype: torch.dtype, pml_width: int
+) -> Grid:
     g = cfg.grid
     return Grid(
         interior_shape=tuple(g.interior_shape),
@@ -341,9 +335,10 @@ def build_problem(cfg: RunConfig) -> Problem:
     if obs_pml is not None and int(obs_pml) != int(cfg.grid.pml_width):
         forward_grid = _make_grid(cfg, device, dtype, int(obs_pml))
         # Shared time base required so FFT bins line up across the split.
-        if int(forward_grid.nt) != int(grid.nt) or abs(
-            float(forward_grid.dt) - float(grid.dt)
-        ) > 1e-18:
+        if (
+            int(forward_grid.nt) != int(grid.nt)
+            or abs(float(forward_grid.dt) - float(grid.dt)) > 1e-18
+        ):
             raise ValueError(
                 "observation/inverse grids must share nt and dt for the PML "
                 f"split; got fwd nt={forward_grid.nt} dt={float(forward_grid.dt)} "
@@ -393,4 +388,3 @@ def grid_summary(problem: Problem) -> dict:
         ),
     }
     return out
-

@@ -165,9 +165,7 @@ class BandTimingStats:
 
     def summary_line(self) -> str:
         f_label = ", ".join(f"{f * 1e-3:.0f}" for f in self.frequencies_hz)
-        loss_s = (
-            f"{self.final_loss:.6e}" if self.final_loss is not None else "n/a"
-        )
+        loss_s = f"{self.final_loss:.6e}" if self.final_loss is not None else "n/a"
         early = "yes" if self.stopped_early else "no"
         off_s = (
             f"  offsets={self.source_offsets}"
@@ -212,7 +210,7 @@ def _as_band(band: Union[FrequencyBand, Sequence[float]]) -> FrequencyBand:
 
 def _clone_velocity(vm: VelocityModel) -> VelocityModel:
     return VelocityModel.from_field(
-        vm.grid, vm.c.detach().clone(), pml_c=vm.pml_c
+        vm.grid, vm.c.detach().clone(), pml_c=vm.pml_c, pml_fill=vm.pml_fill
     )
 
 
@@ -355,9 +353,7 @@ def run_frequency_continuation(
             )
         }
     )
-    catalog_position = {
-        ring_idx: pos for pos, ring_idx in enumerate(catalog_indices)
-    }
+    catalog_position = {ring_idx: pos for pos, ring_idx in enumerate(catalog_indices)}
 
     obs_catalog = torch.as_tensor(observed_time_traces)
     if obs_catalog.ndim != 3:
@@ -389,9 +385,7 @@ def run_frequency_continuation(
             source_offsets=band.source_offsets,
             **geom_kw,
         )
-        band_obs_positions = [
-            catalog_position[idx] for idx in geom.source_ring_indices
-        ]
+        band_obs_positions = [catalog_position[idx] for idx in geom.source_ring_indices]
         obs = _fft_obs_traces(freq_sel, obs_catalog[band_obs_positions])
 
         # Snapshot for tests / diagnostics; optimiser may mutate the live model.
@@ -492,6 +486,7 @@ def run_frequency_continuation(
             grid,
             band_wfs[0].velocity_model.c.detach().clone(),
             pml_c=start_vm.pml_c,
+            pml_fill=start_vm.pml_fill,
         )
         c_current = recovered
         final_wfs = band_wfs
@@ -507,4 +502,3 @@ def run_frequency_continuation(
         bands=band_list,
         band_stats=band_stats,
     )
-

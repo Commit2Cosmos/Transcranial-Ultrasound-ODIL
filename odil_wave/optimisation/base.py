@@ -315,7 +315,9 @@ class LBFGSB(Optimiser):
                 f"c_update must be 'lbfgs' or 'closed_form'; got {c_update!r}"
             )
         if c_param not in _C_PARAMS:
-            raise ValueError(f"c_param must be one of {sorted(_C_PARAMS)}; got {c_param!r}")
+            raise ValueError(
+                f"c_param must be one of {sorted(_C_PARAMS)}; got {c_param!r}"
+            )
         if c_param == "squared_slowness" and c_update != "lbfgs":
             raise ValueError(
                 "c_param='squared_slowness' is only supported with "
@@ -591,7 +593,9 @@ class LBFGSB(Optimiser):
             c_interior_param = torch.nn.Parameter(_init_c_param(c_hat0, c_param))
             if self.free_mask is not None:
                 _free_mask = self.free_mask.to(dtype=torch.bool, device=device)
-                _c_frozen_init = _init_c_param(c_hat0, c_param)[~_free_mask].clone().detach()
+                _c_frozen_init = (
+                    _init_c_param(c_hat0, c_param)[~_free_mask].clone().detach()
+                )
             else:
                 _free_mask = None
                 _c_frozen_init = None
@@ -829,7 +833,9 @@ class LBFGSB(Optimiser):
         else:
             c_hat_final = _c_hat_from_c_param(c_interior_param.detach(), c_param)
             c_full_final = vm_in.build_full_c(c_hat_final * c_ref)
-            vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
+            vm_out = VelocityModel.from_field(
+                grid, c_full_final, pml_c=vm_in.pml_c, pml_fill=vm_in.pml_fill
+            )
 
         u_final = pack_u_detached()
         outputs: List[Wavefield] = []
@@ -1132,7 +1138,9 @@ class LBFGSB(Optimiser):
 
         wall_s = time.perf_counter() - t_wall0
         c_full_final = c_full_from_hat(c_interior_param.detach())
-        vm_out = VelocityModel.from_field(grid, c_full_final, pml_c=vm_in.pml_c)
+        vm_out = VelocityModel.from_field(
+            grid, c_full_final, pml_c=vm_in.pml_c, pml_fill=vm_in.pml_fill
+        )
         with torch.no_grad():
             u_final = tf.cache.solve(pack_z_detached(), trans="N")
         d = tf.diagnostics()
@@ -1171,4 +1179,3 @@ class LBFGSB(Optimiser):
             "data_loss": last.get("data_loss"),
         }
         return outputs, self.loss.callback
-

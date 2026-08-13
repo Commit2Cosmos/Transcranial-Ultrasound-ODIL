@@ -128,7 +128,7 @@ optimiser:
     c_lr: 5.0
     c_max_iter: 6
     c_history_size: 10
-    reset_c_history: true
+    reset_c_history: false
     c_update: lbfgs            # lbfgs | closed_form (variable-projection c*)
     c_update_every: 1          # closed_form only: apply c* every N outer iters
     c_relax: 1.0               # closed_form only: c <- (1-a) c + a c*

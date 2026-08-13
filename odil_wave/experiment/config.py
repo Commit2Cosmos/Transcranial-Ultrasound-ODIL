@@ -162,6 +162,7 @@ class ModelCfg:
     base: float = _SOS_WATER
     contrast: float = 0.4
     pml_c: Optional[float] = None
+    pml_fill: str = "edge"
     # shepp_logan_skull: c = c_water + alpha * G_σ(c_perfect - c_water)
     skull_alpha: float = 1.0
     skull_sigma: float = 0.0
@@ -1130,4 +1131,3 @@ def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> N
             f"{label}.profile={model.profile!r} ignores skull_alpha / "
             "skull_sigma (they apply only to shepp_logan_skull)."
         )
-
