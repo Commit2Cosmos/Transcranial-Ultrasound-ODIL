@@ -5,7 +5,7 @@ Examples
 --------
     python main.py --config configs/default_inverse.yaml
     python main.py --config configs/default_inverse.yaml \
-        --override optimiser.name=cf --override optimiser.n_iter=40
+        --override optimiser.name=lbfgsb --override optimiser.n_iter=40
     python main.py --config configs/default_inverse.yaml --dry-run
 
 Run with no ``--config`` to use the built-in defaults.
@@ -84,7 +84,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Dotted-key override, e.g. optimiser.name=cf (repeatable).",
+        help="Dotted-key override, e.g. optimiser.n_iter=40 (repeatable).",
     )
     parser.add_argument(
         "--dry-run",

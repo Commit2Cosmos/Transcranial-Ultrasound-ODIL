@@ -13,7 +13,7 @@ Design
   omitted value falls back to the default baked in below. The *fully resolved*
   configuration written to ``config_resolved.yaml`` therefore contains every
   value the run actually used, including code-derived defaults and the default
-  blocks for every supported optimiser (lbfgsb / cf / modil).
+  blocks for every supported optimiser (lbfgsb / joint).
 * Configs round-trip through YAML/JSON. Numeric scientific notation without an
   explicit exponent sign (e.g. ``80e3``) is parsed as a float, matching the
   Python literals used in the notebook (plain PyYAML would treat ``80e3`` as a
@@ -297,56 +297,17 @@ class LBFGSBCfg:
     c_max_iter: int = 6
     c_history_size: int = 10
     reset_c_history: bool = True
-    # c-block update rule. "lbfgs" (default): the L-BFGS c-step above (with the
-    # optional c-gradient preconditioner). "closed_form": the exact per-cell
-    # variable-projection update (as in the ``cf`` optimiser) instead of L-BFGS,
-    # driven by ``c_update_every`` / ``c_relax`` / ``illum_rel_floor`` and
-    # available for both the direct and the ``u_precond='z'`` wavefield blocks.
-    c_update: str = "lbfgs"  # "lbfgs" | "closed_form"
-    c_update_every: int = 1  # closed_form only
-    c_relax: float = 1.0  # closed_form only
-    illum_rel_floor: float = 1e-6  # closed_form only
     # c-block optimisation variable. "velocity" (default): optimise ĉ = c/c_ref
     # directly, exactly as before this field existed. "squared_slowness":
-    # optimise m̂ = 1/ĉ² instead (only valid with c_update="lbfgs"); c is
-    # recovered as c = c_ref / sqrt(m̂) before every physics/regulariser call,
-    # and autograd differentiates through that transform. Saved/plotted c is
-    # unaffected either way.
+    # optimise m̂ = 1/ĉ² instead; c is recovered as c = c_ref / sqrt(m̂) before
+    # every physics/regulariser call, and autograd differentiates through that
+    # transform. Saved/plotted c is unaffected either way.
     c_param: str = "velocity"  # "velocity" | "squared_slowness"
     early_stop_rtol: float = 0.0
     early_stop_min_iter: int = 0
     early_stop_patience: int = 3
     debug_c: bool = False
     precond: PrecondCfg = field(default_factory=PrecondCfg)
-
-
-@dataclass(frozen=True)
-class CFCfg:
-    """Fields specific to the ``cf`` optimiser: LBFGSB with a closed-form
-    (variable-projection) c-update (``c_update='closed_form'``)."""
-
-    c_update_every: int = 2
-    c_relax: float = 1.0
-    illum_rel_floor: float = 1e-6
-
-
-@dataclass(frozen=True)
-class MODILCfg:
-    """Fields specific to simultaneous multilevel inversion (MODILInversion)."""
-
-    num_levels: int = 2
-    coarsening_factor: int = 2
-    min_ppw: float = 3.0
-    c_update: str = "closed_form"  # "lbfgs" | "closed_form"
-    c_update_every: int = 2
-    c_relax: float = 1.0
-    c_lr: float = 5.0
-    c_max_iter: int = 6
-    c_history_size: int = 10
-    u_num_levels: int = 1
-    u_coarsening_factor: int = 2
-    modil_reg_weight: float = 0.0
-    illum_rel_floor: float = 1e-6
 
 
 @dataclass(frozen=True)
@@ -416,7 +377,7 @@ class JointODILCfg:
 class OptimiserCfg:
     """Optimiser selection + shared block-coordinate settings.
 
-    ``name`` is one of ``lbfgsb`` / ``cf`` / ``modil`` / ``joint`` (aliases resolved in
+    ``name`` is one of ``lbfgsb`` / ``joint`` (aliases resolved in
     :func:`canonical_optimiser_name`). Every sub-block is always present in the
     resolved config so a run records the defaults for every optimiser, not only
     the selected one.
@@ -434,8 +395,6 @@ class OptimiserCfg:
     line_search_fn: str = "strong_wolfe"
     clamp: bool = True
     lbfgsb: LBFGSBCfg = field(default_factory=LBFGSBCfg)
-    cf: CFCfg = field(default_factory=CFCfg)
-    modil: MODILCfg = field(default_factory=MODILCfg)
     joint: JointODILCfg = field(default_factory=JointODILCfg)
 
 
@@ -669,11 +628,6 @@ _OPTIMISER_ALIASES = {
     "lbfgs-b": "lbfgsb",
     "l-bfgs-b": "lbfgsb",
     "alt": "lbfgsb",
-    "cf": "cf",
-    "closed_form": "cf",
-    "closed-form": "cf",
-    "closedform": "cf",
-    "modil": "modil",
     "joint": "joint",
     "pure_joint": "joint",
     "pure-joint": "joint",
@@ -684,7 +638,7 @@ _OPTIMISER_ALIASES = {
 
 
 def canonical_optimiser_name(name: str) -> str:
-    """Normalise an optimiser name to ``lbfgsb`` / ``cf`` / ``modil``."""
+    """Normalise an optimiser name to ``lbfgsb`` / ``joint``."""
     key = str(name).strip().lower()
     if key not in _OPTIMISER_ALIASES:
         raise ConfigError(
@@ -867,7 +821,7 @@ def _precond_token(optimiser: str, opt: Dict[str, Any]) -> str:
     """The active c-gradient preconditioner token, or ``""`` when none.
 
     Only LBFGSB exposes a c-gradient preconditioner (``c_precond`` with type
-    ``energy``/``gaussian``); ``cf``/``modil`` have none, so the slot is empty.
+    ``energy``/``gaussian``); other optimisers have none, so the slot is empty.
     """
     if optimiser == "lbfgsb":
         pc = (opt.get("lbfgsb", {}) or {}).get("precond", {}) or {}
@@ -904,32 +858,12 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError("optimiser.lbfgsb.z_lr must be > 0")
         if lb.z_steps < 1:
             raise ConfigError("optimiser.lbfgsb.z_steps must be >= 1")
-        if str(lb.c_update).lower() not in ("lbfgs", "closed_form"):
-            raise ConfigError(
-                f"optimiser.lbfgsb.c_update must be 'lbfgs' or 'closed_form', "
-                f"got {lb.c_update!r}"
-            )
-        if str(lb.c_update).lower() == "closed_form":
-            if lb.c_update_every < 1:
-                raise ConfigError(
-                    "optimiser.lbfgsb.c_update_every must be >= 1 for closed_form"
-                )
-            if lb.precond.c_precond:
-                warnings.append(
-                    "optimiser.lbfgsb.c_update='closed_form' ignores the "
-                    "c-gradient preconditioner (precond.c_precond)."
-                )
         if str(lb.c_param).lower() not in ("velocity", "squared_slowness"):
             raise ConfigError(
                 "optimiser.lbfgsb.c_param must be 'velocity' or "
                 f"'squared_slowness', got {lb.c_param!r}"
             )
         if str(lb.c_param).lower() == "squared_slowness":
-            if str(lb.c_update).lower() != "lbfgs":
-                raise ConfigError(
-                    "optimiser.lbfgsb.c_param='squared_slowness' requires "
-                    f"c_update='lbfgs', got c_update={lb.c_update!r}"
-                )
             if lb.u_precond == "z":
                 raise ConfigError(
                     "optimiser.lbfgsb.c_param='squared_slowness' is not "
@@ -1080,12 +1014,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"got {cfg.metrics.ssim.mask!r}"
         )
 
-    if cfg.optimiser.name == "modil" and cfg.metrics.ssim.mask == "head_roi":
-        if cfg.truth.profile not in ("shepp_logan", "shepp_logan_skull"):
-            warnings.append(
-                "ssim mask 'head_roi' but truth profile has no head mask; "
-                "ssim_head_roi will be null."
-            )
     if (
         cfg.truth.profile not in ("shepp_logan", "shepp_logan_skull")
         and cfg.metrics.ssim.mask == "head_roi"

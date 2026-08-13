@@ -4,7 +4,7 @@
 optimiser's ``on_iteration`` hook:
 
 * ``on_iteration(i, c_full)`` fires once per **outer iteration** in every
-  optimiser (LBFGSB / CF / MODIL), *before* the tape logs. It stamps the outer
+  optimiser (LBFGSB / joint), *before* the tape logs. It stamps the outer
   iteration index and the current velocity field.
 * the inherited ``log(loss, residuals, pde_src_ratio)`` fires only at the
   optimiser's ``log_every`` cadence and carries the exact loss the solver

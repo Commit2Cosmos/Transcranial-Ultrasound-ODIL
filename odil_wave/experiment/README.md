@@ -2,10 +2,9 @@
 
 A thin, reproducible run layer over `odil_wave`. Every inversion is fully
 described by a saved, resolved configuration plus a self-contained artifact
-directory, and can be reproduced from them. It supports all implemented
-optimisers — **LBFGSB**, **closed-form (`cf`)**, and **MODIL** — behind one
-config-driven entry point. No notebook runtime is required; there are no
-interactive prompts.
+directory, and can be reproduced from them. It supports the implemented
+optimisers — **LBFGSB** and **joint** — behind one config-driven entry point.
+No notebook runtime is required; there are no interactive prompts.
 
 The numerical behaviour (physics, defaults, frequency handling, solver update
 rules) is unchanged from the notebook `sandbox/odil_2d_freq_domain.ipynb`; this
@@ -35,12 +34,10 @@ result = run_inverse(cfg)                 # -> RunResult
 print(result.metrics_summary["final_ssim_head_roi"])
 ```
 
-Force a specific solver (each returns a `RunResult`):
+Force the LBFGSB solver (returns a `RunResult`):
 
 ```python
-from odil_wave.experiment import (
-    run_inverse_lbfgsb, run_inverse_closed_form, run_inverse_modil,
-)
+from odil_wave.experiment import run_inverse_lbfgsb
 ```
 
 ## Plotting & analysis
@@ -90,7 +87,7 @@ falling back to a bare string.
 
 ```bash
 python main.py --config configs/default_inverse.yaml \
-    --override optimiser.name=cf \
+    --override optimiser.name=lbfgsb \
     --override optimiser.n_iter=40
 
 # switch to a low->high continuation schedule
@@ -115,7 +112,6 @@ One self-contained directory per run at `<output_root>/<run_id>/`:
 
 ```
 outputs/<run_id>/
-  config_input.yaml        # the raw user config (only if one was supplied)
   config_resolved.yaml     # every effective value used by the run
   metadata.json            # code/env/host/git/seed/grid tying artifacts to this run
   metrics.csv              # per-iteration metric tape (plotting-friendly)
@@ -146,7 +142,7 @@ outputs/<run_id>/
 
 `config_resolved.yaml` contains every effective value, including code-derived
 defaults and the default blocks for **all** supported optimisers (`lbfgsb`,
-`cf`, `modil`) — not just the selected one — so the exact run is reconstructable
+`joint`) — not just the selected one — so the exact run is reconstructable
 even when the input omitted fields. Derived quantities that are *outputs* rather
 than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 `metadata.json` and the per-band summaries, not in the config.
@@ -165,13 +161,13 @@ loss `callback` and as the optimiser's `on_iteration` hook. `on_iteration(i, c)`
 fires every outer iteration and stamps the outer index + current velocity field;
 the inherited `log(...)` fires only at `log_every` and carries the exact loss the
 solver reports. This needs **zero changes to any optimiser** and behaves
-identically for LBFGSB, CF and MODIL.
+identically for LBFGSB and joint.
 
 Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`:
 
 | field | meaning |
 |---|---|
-| `run_id`, `solver` | run identity + solver name (`lbfgsb`/`cf`/`modil`) |
+| `run_id`, `solver` | run identity + solver name (`lbfgsb`/`joint`) |
 | `band_index`, `band_frequencies_hz` | which continuation stage, and its Hz |
 | `solver_iter` | the **logical outer iteration** index `i` (per band) |
 | `global_iter` | cumulative logged-record index across all bands |

@@ -36,9 +36,7 @@ from .runner import (
     RunResult,
     run_frequency_band,
     run_inverse,
-    run_inverse_closed_form,
     run_inverse_lbfgsb,
-    run_inverse_modil,
 )
 
 __all__ = [
@@ -78,7 +76,5 @@ __all__ = [
     "BandResult",
     "run_inverse",
     "run_inverse_lbfgsb",
-    "run_inverse_closed_form",
-    "run_inverse_modil",
     "run_frequency_band",
 ]

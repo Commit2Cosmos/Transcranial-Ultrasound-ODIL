@@ -107,7 +107,7 @@ loss:
   regulariser: {name: null, params: {}}
 
 optimiser:
-  name: lbfgsb                 # lbfgsb | cf | modil
+  name: lbfgsb                 # lbfgsb | joint
   log_every: 5
   n_iter: 20
   u_steps: 20
@@ -129,10 +129,6 @@ optimiser:
     c_max_iter: 6
     c_history_size: 10
     reset_c_history: false
-    c_update: lbfgs            # lbfgs | closed_form (variable-projection c*)
-    c_update_every: 1          # closed_form only: apply c* every N outer iters
-    c_relax: 1.0               # closed_form only: c <- (1-a) c + a c*
-    illum_rel_floor: 1.0e-6    # closed_form only: low-illumination cells hold c
     early_stop_rtol: 0.0       # <= 0 disables early stopping
     early_stop_min_iter: 0
     early_stop_patience: 3
@@ -142,28 +138,6 @@ optimiser:
       c_precond_type: energy   # energy | gaussian
       c_precond_sigma: 2.0
       c_precond_stab: 1.0e-2
-
-  # Closed-form c update (LBFGSClosedForm).
-  cf:
-    c_update_every: 2
-    c_relax: 1.0
-    illum_rel_floor: 1.0e-6
-
-  # Simultaneous multilevel inversion (MODILInversion).
-  modil:
-    num_levels: 2
-    coarsening_factor: 2
-    min_ppw: 3.0
-    c_update: closed_form      # lbfgs | closed_form
-    c_update_every: 2
-    c_relax: 1.0
-    c_lr: 5.0
-    c_max_iter: 6
-    c_history_size: 10
-    u_num_levels: 1
-    u_coarsening_factor: 2
-    modil_reg_weight: 0.0
-    illum_rel_floor: 1.0e-6
 
 metrics:
   ssim:

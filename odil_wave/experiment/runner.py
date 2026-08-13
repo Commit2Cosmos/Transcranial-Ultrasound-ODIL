@@ -4,7 +4,7 @@ per frequency band, and write a self-contained artifact directory per run.
 Public entry points
 --------------------
 ``run_inverse(config) -> RunResult``            dispatch by ``optimiser.name``
-``run_inverse_lbfgsb / _closed_form / _modil``  force a solver, then run
+``run_inverse_lbfgsb(config) -> RunResult``      force the lbfgsb solver, then run
 ``run_frequency_band(...) -> BandResult``        one continuation stage
 ``build_problem(config) -> Problem``             (re-exported from problem.py)
 """
@@ -197,11 +197,7 @@ def _build_optimiser(
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
-            c_update=lb.c_update,
-            c_update_every=lb.c_update_every,
             c_param=lb.c_param,
-            c_relax=lb.c_relax,
-            illum_rel_floor=lb.illum_rel_floor,
             c_precond=precond.c_precond,
             c_precond_type=precond.c_precond_type,
             c_precond_sigma=precond.c_precond_sigma,
@@ -210,23 +206,6 @@ def _build_optimiser(
             early_stop_min_iter=lb.early_stop_min_iter,
             early_stop_patience=lb.early_stop_patience,
             debug_c=lb.debug_c,
-        )
-
-    if name == "cf":
-        # The closed-form c-update is LBFGSB's variable-projection c-block
-        # (u-L-BFGS + exact per-cell c*); "cf" is that path with the direct
-        # wavefield block.
-        from odil_wave.optimisation import LBFGSB
-
-        cf = opt.cf
-        return LBFGSB(
-            wf_inv,
-            loss,
-            **shared,
-            c_update="closed_form",
-            c_update_every=cf.c_update_every,
-            c_relax=cf.c_relax,
-            illum_rel_floor=cf.illum_rel_floor,
         )
 
     if name == "joint":
@@ -277,45 +256,6 @@ def _build_optimiser(
                 **joint_kw,
             )
         return JointFreqODIL(wf_inv, loss, **joint_kw)
-
-    if name == "modil":
-        from odil_wave.optimisation import (
-            MODILInversion,
-            MODILVelocityParameterization,
-            build_grid_hierarchy,
-        )
-
-        md = opt.modil
-        grid = problem.grid
-        modil_grids = build_grid_hierarchy(
-            grid,
-            num_levels=md.num_levels,
-            coarsening_factor=md.coarsening_factor,
-            nyquist_frequencies_hz=band_ctx.freq.frequencies.detach()
-            .abs()
-            .cpu()
-            .tolist(),
-            min_ppw=md.min_ppw,
-        )
-        base_c_interior = wf_inv.velocity_model.c[grid.interior_slice].detach().clone()
-        modil_param = MODILVelocityParameterization(modil_grids, base_c_interior)
-        return MODILInversion(
-            wf_inv,
-            loss,
-            modil_param,
-            **shared,
-            c_steps=opt.c_steps,
-            c_lr=md.c_lr,
-            c_max_iter=md.c_max_iter,
-            c_history_size=md.c_history_size,
-            c_update=md.c_update,
-            c_update_every=md.c_update_every,
-            c_relax=md.c_relax,
-            u_num_levels=md.u_num_levels,
-            u_coarsening_factor=md.u_coarsening_factor,
-            modil_reg_weight=md.modil_reg_weight,
-            illum_rel_floor=md.illum_rel_floor,
-        )
 
     raise ValueError(f"unhandled optimiser {name!r}")
 
@@ -579,8 +519,9 @@ def run_inverse(
 ) -> RunResult:
     """Run the full (single- or multi-band) inversion and write all artifacts.
 
-    ``input_config`` (the raw user dict before resolution) is preserved to
-    ``config_input.yaml`` when provided.
+    ``input_config`` (the raw user dict before resolution) is accepted for
+    backwards-compatible call sites but is no longer written to disk; the fully
+    resolved ``config_resolved.yaml`` is the sole recorded configuration.
 
     ``on_band_end(band_result, run_result)`` is called after every completed
     frequency band, with the freshly recovered model already recorded in
@@ -599,11 +540,9 @@ def run_inverse(
     bands_dir.mkdir(exist_ok=True)
     final_dir.mkdir(exist_ok=True)
 
-    # Configs first, so a crash still leaves the run reproducible.
-    if input_config is not None:
-        from .config import _dump_yaml
-
-        _dump_yaml(input_config, run_dir / "config_input.yaml")
+    # Config first, so a crash still leaves the run reproducible. The fully
+    # resolved config records every effective value, so it is the single source
+    # of truth for how the run was produced.
     config.to_yaml(run_dir / "config_resolved.yaml")
 
     seed_record = envinfo.seed_everything(
@@ -746,11 +685,3 @@ def _rerun_with_optimiser(config: RunConfig, name: str) -> RunResult:
 
 def run_inverse_lbfgsb(config: RunConfig) -> RunResult:
     return _rerun_with_optimiser(config, "lbfgsb")
-
-
-def run_inverse_closed_form(config: RunConfig) -> RunResult:
-    return _rerun_with_optimiser(config, "cf")
-
-
-def run_inverse_modil(config: RunConfig) -> RunResult:
-    return _rerun_with_optimiser(config, "modil")
