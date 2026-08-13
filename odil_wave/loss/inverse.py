@@ -57,9 +57,7 @@ class InverseLoss(DiscreteLoss):
             self.d_obs = tr.to(device=self.config.device)
         else:
             obs = self._stack_observations(observed_wavefield)
-            self.d_obs = torch.as_tensor(
-                obs, dtype=cdtype, device=self.config.device
-            )
+            self.d_obs = torch.as_tensor(obs, dtype=cdtype, device=self.config.device)
 
         self.normalize_data = normalize_data
         nf = self.config.wave_eq.wavefield.n_frequencies
@@ -70,12 +68,8 @@ class InverseLoss(DiscreteLoss):
                 f_weights, dtype=self.config.dtype, device=self.config.device
             ).reshape(-1)
             if w.numel() != nf:
-                raise ValueError(
-                    f"f_weights length {w.numel()} != n_frequencies {nf}"
-                )
+                raise ValueError(f"f_weights length {w.numel()} != n_frequencies {nf}")
             self._f_weights = w.view(1, nf, 1).detach()
-
-        self._trace_scale = self._compute_trace_scale()
 
     @staticmethod
     def _stack_observations(observed_wavefield):
@@ -96,23 +90,6 @@ class InverseLoss(DiscreteLoss):
         j = self.config.geometry.recv_ij[:, 1]
         return self.d_obs[:, :, i, j]
 
-    def _compute_trace_scale(self) -> torch.Tensor | None:
-        if self.normalize_data is None or self.normalize_data == "none":
-            return None
-        obs_tr = self._obs_traces()
-        if self._f_weights is not None:
-            obs_tr = obs_tr * self._f_weights
-        if self.normalize_data == "per_receiver":
-            scale = obs_tr.abs().amax(dim=1, keepdim=True)
-        elif self.normalize_data == "global":
-            scale = obs_tr.abs().amax(dim=(1, 2), keepdim=True)
-        else:
-            raise ValueError(
-                f"Invalid normalize_data {self.normalize_data!r}; "
-                "expected one of None, 'per_receiver', 'global'."
-            )
-        return scale.clamp(min=1e-12).detach()
-
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -122,9 +99,6 @@ class InverseLoss(DiscreteLoss):
         j = self.config.geometry.recv_ij[:, 1]
         syn_tr = amp[:, :, i, j]
         obs_tr = self._obs_traces()
-        if self._trace_scale is not None:
-            syn_tr = syn_tr / self._trace_scale
-            obs_tr = obs_tr / self._trace_scale
         data = syn_tr - obs_tr
         if self._f_weights is not None:
             data = data * self._f_weights
@@ -192,9 +166,6 @@ class InverseLoss(DiscreteLoss):
         j = self.config.geometry.recv_ij[:, 1]
         syn_tr = u[:, :, i, j]
         obs_tr = self._obs_traces()
-        if self._trace_scale is not None:
-            syn_tr = syn_tr / self._trace_scale
-            obs_tr = obs_tr / self._trace_scale
         r_data = syn_tr - obs_tr
         if self._f_weights is not None:
             r_data = r_data * self._f_weights
@@ -227,4 +198,3 @@ class InverseLoss(DiscreteLoss):
         }
 
         return L
-
