@@ -162,7 +162,7 @@ class ModelCfg:
     base: float = _SOS_WATER
     contrast: float = 0.4
     pml_c: Optional[float] = None
-    pml_fill: str = "edge"
+    pml_fill: str = "constant"
     # shepp_logan_skull: c = c_water + alpha * G_σ(c_perfect - c_water)
     skull_alpha: float = 1.0
     skull_sigma: float = 0.0

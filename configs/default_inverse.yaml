@@ -72,7 +72,7 @@ init:
 
 observation:
   method: leapfrog_fft         # leapfrog_fft (no inverse crime) | helmholtz
-  normalize_data: per_receiver # null | none | per_receiver | global
+  normalize_data: none # null | none | per_receiver | global
   verbose: false
   pml_width: null
 
