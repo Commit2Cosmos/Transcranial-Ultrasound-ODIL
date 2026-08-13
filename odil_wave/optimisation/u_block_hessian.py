@@ -3,21 +3,18 @@
 The frozen-``c`` wavefield objective (the u-block subproblem of :class:`LBFGSB`)
 
     J(u) = w_pde · mean|A(c) u − f|²      (mean over shots × freqs × grid)
-         + w_data · mean|D (P u − d)|²    (mean over shots × freqs × receivers)
+         + w_data · mean|P u − d|²        (mean over shots × freqs × receivers)
 
 is *exactly quadratic* in ``u``, so its Hessian is the constant sparse operator
 
-    H = α · AᴴA  +  β · Pᴴ|D|²P ,
+    H = α · AᴴA  +  β · Pᴴ P ,
         α = 2 w_pde  / N_pde ,     N_pde  = n_shots · nf · nx · ny
         β = 2 w_data / N_data ,    N_data = n_shots · nf · n_recv
 
 where ``A`` is the sparse Helmholtz operator (``HelmholtzSolver.assemble_H_sparse``
-— the same operator the matrix-free residual uses), ``P`` samples ``u`` at the
-receiver cells and ``D`` is the loss's per-element data weighting (frequency
-weights ``f_weights`` and the ``normalize_data`` trace scaling, so ``H`` matches
-the *actual* loss Hessian, not just the un-normalised sandbox form). ``Pᴴ|D|²P``
-is diagonal on the grid, non-zero only at receiver cells, and — through ``D`` —
-may differ per shot, so the objective is block-diagonal across shots.
+— the same operator the matrix-free residual uses) and ``P`` samples ``u`` at the
+receiver cells, so ``Pᴴ P = diag(receiver_mask)`` is a **uniform 0/1 mask** on the
+grid (non-zero only at receiver cells).
 
 The realised L-BFGS u-block converges to ``u* = argmin J = u0 − H⁻¹ g(u0)``, so
 the wavefield update each *term* induces (its gradient deconvolved by the shared
@@ -31,9 +28,7 @@ once with SuperLU — the *exact* ``H⁻¹``. A direct factorisation (rather tha
 PDE-only preconditioned CG) is used deliberately: ``w_data`` is averaged over
 ~``n_recv`` cells while ``w_pde`` is averaged over the whole grid, so the data
 block is enormously heavier per DOF and a PDE-only preconditioner would be
-hopeless. Factorisations are cached by ``(frequency, data-diagonal)`` so shots
-that share a data weighting (e.g. ``normalize_data`` in ``{None, "none"}``)
-reuse one factor. :meth:`verify` checks the sparse ``H`` against the autograd
+hopeless. :meth:`verify` checks the sparse ``H`` against the autograd
 Hessian-vector product (which, ``J`` being quadratic, equals ``H v`` exactly).
 
 Ported from ``sandbox/profiling/optim_block_diag/hess_split.py``.
@@ -70,8 +65,7 @@ class UBlockHessian:
         is passed explicitly to ``assemble_H_sparse``.
     loss:
         The :class:`~odil_wave.loss.InverseLoss`; supplies the geometry (receiver
-        cells), the source count, the data normalisation (``_trace_scale`` /
-        ``_f_weights``) and the default weights.
+        cells), the source count and the default weights.
     c_full:
         Physical full-grid velocity ``(nx, ny)`` at which to freeze ``H``.
     weights:
@@ -113,53 +107,26 @@ class UBlockHessian:
         self.beta = 2.0 * w_data / max(n_data, 1)
         self.n_shots = n_shots
 
-        # Receiver flat indices (x-major, row = i*ny + j — matching
-        # assemble_laplacian_csr / the batched-column convention below).
+        # Uniform receiver mask PᴴP = diag(mask), flattened x-major (row = i*ny + j,
+        # matching assemble_laplacian_csr / the batched-column convention below).
+        # Shot-independent, so a single factor per frequency serves every shot.
+        mask = np.zeros(self.n, dtype=np.float64)
         ri = recv_ij[:, 0].detach().cpu().numpy().astype(int)
         rj = recv_ij[:, 1].detach().cpu().numpy().astype(int)
-        self._recv_flat = ri * self.ny + rj
+        mask[ri * self.ny + rj] = 1.0
+        self._Mdiag = sp.diags(mask.astype(self.np_cdtype), format="csr")
 
-        # Per-(shot, freq, receiver) squared data weight |D|² = |f_w / scale|²,
-        # so β·Pᴴ|D|²P is the *actual* data Hessian (incl. normalisation).
-        w2 = np.ones((n_shots, self.nf, n_recv), dtype=np.float64)
-        fw = getattr(loss, "_f_weights", None)
-        if fw is not None:
-            w2 = w2 * (
-                fw.detach().cpu().numpy().astype(np.float64).reshape(1, -1, 1) ** 2
-            )
-        scale = getattr(loss, "_trace_scale", None)
-        if scale is not None:
-            sc = (
-                scale.detach().cpu().numpy().astype(np.float64)
-            )  # (n_shots,1,n_recv)|(…,1,1)
-            w2 = w2 / (sc**2)
-        self._w2 = w2  # (n_shots, nf, n_recv)
-
-        # Per-frequency Helmholtz operator + AᴴA (shared across shots).
+        # Assemble + factor H = α AᴴA + β PᴴP once per frequency.
         self._A: List[sp.csr_matrix] = []
         self._AhA: List[sp.csr_matrix] = []
+        self._lu: List[object] = []
         for k in range(self.nf):
             A = solver.assemble_H_sparse(c_det, k).tocsr().astype(self.np_cdtype)
+            AhA = (A.getH() @ A).tocsr()
+            H = (self.alpha * AhA + self.beta * self._Mdiag).tocsc()
             self._A.append(A)
-            self._AhA.append((A.getH() @ A).tocsr())
-
-        # Factorisation cache keyed by (freq, data-diagonal signature).
-        self._lu_cache: Dict[tuple, object] = {}
-
-    # ---- data diagonal + factor (cached per (freq, shot-weighting)) -------- #
-    def _diag_key(self, k: int, s: int) -> tuple:
-        return (k, self._w2[s, k].tobytes())
-
-    def _factor(self, k: int, s: int):
-        key = self._diag_key(k, s)
-        lu = self._lu_cache.get(key)
-        if lu is None:
-            d = np.zeros(self.n, dtype=self.np_cdtype)
-            d[self._recv_flat] = self.beta * self._w2[s, k]
-            H = (self.alpha * self._AhA[k] + sp.diags(d, format="csr")).tocsc()
-            lu = splu(H)
-            self._lu_cache[key] = lu
-        return lu
+            self._AhA.append(AhA)
+            self._lu.append(splu(H))
 
     # ---- reshape helpers (batched columns, x-major) ------------------------ #
     def _cols(self, field_k: torch.Tensor) -> np.ndarray:
@@ -181,19 +148,14 @@ class UBlockHessian:
 
     # ---- exact inverse action --------------------------------------------- #
     def solve(self, b: torch.Tensor) -> torch.Tensor:
-        """``H⁻¹ b`` for ``b`` of shape ``(n_shots, nf, nx, ny)`` (complex)."""
+        """``H⁻¹ b`` for ``b`` of shape ``(n_shots, nf, nx, ny)`` (complex).
+
+        The Hessian is shot-independent, so all shots at a frequency are solved
+        together with the single factor ``self._lu[k]``.
+        """
         out = torch.empty_like(b)
         for k in range(self.nf):
-            B = self._cols(b[:, k])  # (n, n_shots)
-            X = np.empty_like(B)
-            # Group shots that share a factor (identical data weighting) so a
-            # single solve handles them together (one factor when un-normalised).
-            groups: Dict[tuple, List[int]] = {}
-            for s in range(self.n_shots):
-                groups.setdefault(self._diag_key(k, s), []).append(s)
-            for key, shots in groups.items():
-                lu = self._factor(k, shots[0])
-                X[:, shots] = lu.solve(B[:, shots])
+            X = self._lu[k].solve(self._cols(b[:, k]))  # (n, n_shots)
             out[:, k] = self._from_cols(X)
         return out
 
@@ -206,12 +168,7 @@ class UBlockHessian:
         out = torch.empty_like(v)
         for k in range(self.nf):
             V = self._cols(v[:, k])  # (n, n_shots)
-            AhA_V = self._AhA[k] @ V
-            Z = self.alpha * AhA_V
-            for s in range(self.n_shots):
-                d = np.zeros(self.n, dtype=self.np_cdtype)
-                d[self._recv_flat] = self.beta * self._w2[s, k]
-                Z[:, s] = Z[:, s] + d * V[:, s]
+            Z = self.alpha * (self._AhA[k] @ V) + self.beta * (self._Mdiag @ V)
             out[:, k] = self._from_cols(Z)
         return out
 
