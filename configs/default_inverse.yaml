@@ -124,6 +124,7 @@ optimiser:
     z_steps: 1
     u_precond: null            # null | z  (z -> u = A(c)^-1 z reparameterisation)
     u_solve: optim             # optim (L-BFGS u-block) | exact (u* = u0 - H^-1 g)
+    c_param: velocity          # velocity | squared_slowness (c-block reparameterisation; not supported with u_precond=z)
     z_optim: gd                # gd (Armijo steepest descent) | lbfgs; only used when u_precond=z
     z_lr: 1.0                  # Armijo initial step for z_optim=gd
     c_lr: 5.0
