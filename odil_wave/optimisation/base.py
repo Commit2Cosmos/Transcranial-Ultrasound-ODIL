@@ -406,6 +406,7 @@ class LBFGSB(Optimiser):
         c_torch_opts["lr"] = c_lr
         c_torch_opts["max_iter"] = c_max_iter
         c_torch_opts["history_size"] = c_history_size
+        c_torch_opts["line_search_fn"] = None
 
         return (
             n_iter,
@@ -570,7 +571,8 @@ class LBFGSB(Optimiser):
         def make_c_optimiser():
             return torch.optim.LBFGS([c_interior_param], **c_torch_opts)
 
-        u_optimiser = make_u_optimiser()
+        u_solve_exact = is_inverse and u_solve == "exact"
+        u_optimiser = None if u_solve_exact else make_u_optimiser()
         c_optimiser = make_c_optimiser() if (is_inverse and c_steps > 0) else None
 
         c_min = (
@@ -645,9 +647,7 @@ class LBFGSB(Optimiser):
                 u_before_im = u_imag.detach().clone()
                 c_raw_before = c_interior_param.detach().clone()
 
-            if is_inverse and u_solve == "exact":
-                # Exact frozen-c wavefield block: u* = u0 - H^{-1} g(u0). No
-                # L-BFGS runs for the u block in this mode.
+            if u_solve_exact:
                 loss_value = self._exact_u_block(
                     u_real, u_imag, c_interior_param, c_param, c_ref, vm_in
                 )
@@ -749,8 +749,8 @@ class LBFGSB(Optimiser):
                         if c_param_min is not None or c_param_max is not None:
                             c_interior_param.clamp_(min=c_param_min, max=c_param_max)
 
-                # c changed — reset u LBFGS history
-                u_optimiser = make_u_optimiser()
+                if not u_solve_exact:
+                    u_optimiser = make_u_optimiser()
 
             if diag_on:
                 diagnostics.record_outer(
