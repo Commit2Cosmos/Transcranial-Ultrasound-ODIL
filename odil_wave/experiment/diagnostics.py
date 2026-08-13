@@ -33,10 +33,16 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-import matplotlib
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+
+def _new_figure(**kwargs) -> Figure:
+    """A standalone Agg-backed Figure not registered with pyplot."""
+    fig = Figure(**kwargs)
+    FigureCanvasAgg(fig)  # attaches itself as ``fig.canvas``
+    return fig
+
 
 from odil_wave.models import velocity_norm  # noqa: E402
 from odil_wave.optimisation.base import (  # noqa: E402
@@ -219,8 +225,6 @@ class DiagnosticsCollector:
         u = torch.complex(u_re.detach(), u_im.detach())
         r_pde, r_data = self.loss._residuals(u, c_full)
         obs = self.loss._obs_traces()
-        if self.loss._trace_scale is not None:
-            obs = obs / self.loss._trace_scale
         if self.loss._f_weights is not None:
             obs = obs * self.loss._f_weights
         c_int = self._c_phys_int(c_raw).double()
@@ -393,7 +397,8 @@ class DiagnosticsCollector:
         panels = list(self._c_maps) + [("truth", 0.0, truth)]
         norm = velocity_norm(_C_EVOL_VMIN, _C_EVOL_VCENTER, _C_EVOL_VMAX)
         n = len(panels)
-        fig, ax = plt.subplots(1, n, figsize=(3.0 * n, 3.4), squeeze=False)
+        fig = _new_figure(figsize=(3.0 * n, 3.4))
+        ax = fig.subplots(1, n, squeeze=False)
         for k, (label, rel_c, m) in enumerate(panels):
             a = ax[0, k]
             im = a.imshow(m.T, origin="lower", cmap="viridis", norm=norm)
@@ -405,7 +410,6 @@ class DiagnosticsCollector:
         fig.suptitle("Interior velocity c [m/s] per outer iteration", fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         fig.savefig(self.out_dir / "c_evolution.png", dpi=130)
-        plt.close(fig)
 
     def _render_summary(self) -> None:
         n = len(self._rel_c_end)
@@ -416,7 +420,8 @@ class DiagnosticsCollector:
         reld = np.array([ird] + self._rel_data_end)
         relp = np.array([irp] + self._rel_pde_end)
 
-        fig, ax = plt.subplots(2, 2, figsize=(13, 9))
+        fig = _new_figure(figsize=(13, 9))
+        ax = fig.subplots(2, 2)
         a = ax[0, 0]
         a.plot(outers, self._cos_du, "o-", c="C0", label="u block  cos(du, -g)")
         a.plot(outers, self._cos_dc, "s-", c="C3", label="c block  cos(dc, -g)")
@@ -457,7 +462,6 @@ class DiagnosticsCollector:
         fig.suptitle("LBFGSB direct-u block-coordinate trajectory", fontsize=13)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
         fig.savefig(self.out_dir / "summary.png", dpi=130)
-        plt.close(fig)
 
     def _render_outer_figure(self, i, u_before_re, u_before_im, c_raw, sigma) -> None:
         c_full = self._c_full(c_raw)
@@ -471,75 +475,90 @@ class DiagnosticsCollector:
                 f"(alpha={chk['alpha']:.2e} beta={chk['beta']:.2e})"
             )
         u0 = torch.complex(u_before_re, u_before_im)
-        fields = self._u_depths(u_before_re, u_before_im, c_raw)
+        exact = self.u_solve == "exact"
 
-        rows = []
-        for N in sorted(self.depths):
-            u_reN, u_imN = fields[N]
-            ug = self._u_block_grads(u_reN, u_imN, c_raw)
-            cg = self._c_block_grad(u_reN, u_imN, c_raw)
+        def _row(u_re, u_im, label):
+            """One figure row of term-split maps at the wavefield state (u_re,u_im)."""
+            ug = self._u_block_grads(u_re, u_im, c_raw)
+            cg = self._c_block_grad(u_re, u_im, c_raw)
             du_pde = ubh.du_from_grad(ug["g_pde_weighted"])
             du_data = ubh.du_from_grad(ug["g_data_weighted"])
             du_split = du_pde + du_data
-            du_total = torch.complex(u_reN, u_imN) - u0
-            dc_phys = self._fire_c_block(u_reN, u_imN, c_raw, sigma)
-            rows.append(
-                {
-                    "N": N,
-                    "panels": [
-                        (
-                            self._u_map(ug["g_total"]),
-                            False,
-                            "g (weighted total)",
-                            ug["norm_total_l2"],
-                        ),
-                        (
-                            self._u_map(du_pde),
-                            False,
-                            "du_pde = -H^-1 g_pde",
-                            _gnorm(du_pde),
-                        ),
-                        (
-                            self._u_map(du_data),
-                            False,
-                            "du_data = -H^-1 g_data",
-                            _gnorm(du_data),
-                        ),
-                        (
-                            self._u_map(du_split),
-                            False,
-                            "du_pde + du_data",
-                            _gnorm(du_split),
-                        ),
-                        (
-                            self._u_map(du_total),
-                            False,
-                            "du_total = u_N - u_0",
-                            _gnorm(du_total),
-                        ),
-                        (
-                            self._c_map(cg["g_total"]),
-                            True,
-                            "g_c total",
-                            cg["norm_weighted_l2"],
-                        ),
-                        (
-                            self._c_map(dc_phys),
-                            True,
-                            "dc [m/s]",
-                            float(np.linalg.norm(dc_phys.detach().cpu().numpy())),
-                        ),
-                    ],
-                }
-            )
+            du_total = torch.complex(u_re, u_im) - u0
+            dc_phys = self._fire_c_block(u_re, u_im, c_raw, sigma)
+            return {
+                "N": label,
+                "panels": [
+                    (
+                        self._u_map(ug["g_total"]),
+                        False,
+                        "g (weighted total)",
+                        ug["norm_total_l2"],
+                    ),
+                    (
+                        self._u_map(du_pde),
+                        False,
+                        "du_pde = -H^-1 g_pde",
+                        _gnorm(du_pde),
+                    ),
+                    (
+                        self._u_map(du_data),
+                        False,
+                        "du_data = -H^-1 g_data",
+                        _gnorm(du_data),
+                    ),
+                    (
+                        self._u_map(du_split),
+                        False,
+                        "du_pde + du_data",
+                        _gnorm(du_split),
+                    ),
+                    (
+                        self._u_map(du_total),
+                        False,
+                        "du_total = u_N - u_0",
+                        _gnorm(du_total),
+                    ),
+                    (
+                        self._c_map(cg["g_total"]),
+                        True,
+                        "g_c total",
+                        cg["norm_weighted_l2"],
+                    ),
+                    (
+                        self._c_map(dc_phys),
+                        True,
+                        "dc [m/s]",
+                        float(np.linalg.norm(dc_phys.detach().cpu().numpy())),
+                    ),
+                ],
+            }
 
-        # exact minimiser u* = u0 - H^{-1} g(u0) and the c-gradient / dc it drives.
-        ug0 = self._u_block_grads(u_before_re, u_before_im, c_raw)
-        u_star = u0 + ubh.du_from_grad(ug0["g_total"])
-        cg_star = self._c_block_grad(u_star.real, u_star.imag, c_raw)
-        gc_star_map = self._c_map(cg_star["g_total"])
-        dc_star = self._fire_c_block(u_star.real, u_star.imag, c_raw, sigma)
-        dc_star_map = self._c_map(dc_star)
+        # In exact mode the run reaches u* = u0 - H^{-1} g(u0) in a single direct
+        # step (no iterative L-BFGS), so collapse the depth sweep to one row
+        # evaluated at u* itself. Otherwise show the iterative u-solve depths.
+        rows = []
+        if exact:
+            ug0 = self._u_block_grads(u_before_re, u_before_im, c_raw)
+            u_star = u0 + ubh.du_from_grad(ug0["g_total"])
+            rows.append(_row(u_star.real, u_star.imag, "exact"))
+        else:
+            fields = self._u_depths(u_before_re, u_before_im, c_raw)
+            for N in sorted(self.depths):
+                u_reN, u_imN = fields[N]
+                rows.append(_row(u_reN, u_imN, N))
+
+        # Reference bottom row: c-gradient / dc at the exact minimiser u*. Optim
+        # path only — in exact mode the single row above already *is* u*, so this
+        # would duplicate its g_c / dc columns.
+        star_row = not exact
+        if star_row:
+            ug0 = self._u_block_grads(u_before_re, u_before_im, c_raw)
+            u_star = u0 + ubh.du_from_grad(ug0["g_total"])
+            cg_star = self._c_block_grad(u_star.real, u_star.imag, c_raw)
+            gc_star_map = self._c_map(cg_star["g_total"])
+            dc_star = self._fire_c_block(u_star.real, u_star.imag, c_raw, sigma)
+            dc_star_map = self._c_map(dc_star)
 
         ncol = len(rows[0]["panels"])
         nrow = len(rows)
@@ -559,8 +578,9 @@ class DiagnosticsCollector:
             ),
             ncol - 1,
         )
-        fig = plt.figure(figsize=(2.9 * ncol, 2.7 * (nrow + 1)))
-        gs = fig.add_gridspec(nrow + 1, ncol)
+        n_extra = 1 if star_row else 0
+        fig = _new_figure(figsize=(2.9 * ncol, 2.7 * (nrow + 1)))
+        gs = fig.add_gridspec(nrow + n_extra, ncol)
         ax = np.empty((nrow, ncol), dtype=object)
         for r in range(nrow):
             for c in range(ncol):
@@ -581,34 +601,42 @@ class DiagnosticsCollector:
                 )
             ax[r, 0].set_ylabel(f"N={row['N']}", fontsize=11)
 
-        tag = "actual c-block grad" if self.u_solve == "exact" else "fully-minimised u"
-        a = fig.add_subplot(gs[nrow, gc_col])
-        v = float(np.nanpercentile(np.abs(gc_star_map), 99.5)) or 1.0
-        im = a.imshow(gc_star_map.T, origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
-        fig.colorbar(im, ax=a, fraction=0.046, pad=0.04)
-        a.set_xticks([])
-        a.set_yticks([])
-        a.set_title(
-            f"g_c(u*)  [{tag}]\n||.||={cg_star['norm_weighted_l2']:.1e}", fontsize=8
-        )
+        if star_row:
+            a = fig.add_subplot(gs[nrow, gc_col])
+            v = float(np.nanpercentile(np.abs(gc_star_map), 99.5)) or 1.0
+            im = a.imshow(gc_star_map.T, origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
+            fig.colorbar(im, ax=a, fraction=0.046, pad=0.04)
+            a.set_xticks([])
+            a.set_yticks([])
+            a.set_title(
+                f"g_c(u*)  [fully-minimised u]\n"
+                f"||.||={cg_star['norm_weighted_l2']:.1e}",
+                fontsize=8,
+            )
 
-        a = fig.add_subplot(gs[nrow, dc_col])
-        dc_star_norm = float(np.linalg.norm(dc_star.detach().cpu().numpy()))
-        v = float(np.nanpercentile(np.abs(dc_star_map), 99.5)) or 1.0
-        im = a.imshow(dc_star_map.T, origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
-        fig.colorbar(im, ax=a, fraction=0.046, pad=0.04)
-        a.set_xticks([])
-        a.set_yticks([])
-        a.set_title(
-            f"dc(u*) [m/s]  [from g_c(u*)]\n||.||={dc_star_norm:.1e}", fontsize=8
-        )
+            a = fig.add_subplot(gs[nrow, dc_col])
+            dc_star_norm = float(np.linalg.norm(dc_star.detach().cpu().numpy()))
+            v = float(np.nanpercentile(np.abs(dc_star_map), 99.5)) or 1.0
+            im = a.imshow(dc_star_map.T, origin="lower", cmap="RdBu_r", vmin=-v, vmax=v)
+            fig.colorbar(im, ax=a, fraction=0.046, pad=0.04)
+            a.set_xticks([])
+            a.set_yticks([])
+            a.set_title(
+                f"dc(u*) [m/s]  [from g_c(u*)]\n||.||={dc_star_norm:.1e}", fontsize=8
+            )
 
-        fig.suptitle(
-            f"Outer {i}: term-induced wavefield updates (du_term = -H^-1 g_term) & "
-            f"c updates (c frozen at c_{i}); bottom: g_c at exact u* and the dc it "
-            f"drives (u_solve={self.u_solve})",
-            fontsize=12,
-        )
+        if exact:
+            suptitle = (
+                f"Outer {i}: exact wavefield step u* = u0 - H^-1 g(u0) "
+                f"(c frozen at c_{i}); single row = term-split maps at the reached "
+                f"u* (u_solve=exact, no iterative L-BFGS)"
+            )
+        else:
+            suptitle = (
+                f"Outer {i}: term-induced wavefield updates (du_term = -H^-1 "
+                f"g_term) & c updates (c frozen at c_{i}); bottom: g_c at exact u* "
+                f"and the dc it drives (u_solve={self.u_solve})"
+            )
+        fig.suptitle(suptitle, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.98])
         fig.savefig(self.out_dir / f"outer_{i:02d}.png", dpi=120)
-        plt.close(fig)
