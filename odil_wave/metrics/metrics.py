@@ -9,6 +9,7 @@ from odil_wave.grid import Grid
 
 
 def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
+    """Coerce a torch tensor or numpy array to a float64 numpy array."""
     if isinstance(arr, torch.Tensor):
         return arr.detach().cpu().numpy().astype(np.float64)
     return np.asarray(arr, dtype=np.float64)
@@ -39,7 +40,8 @@ def mse(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean Squared Error over the interior of (predicted - true).
+    """Mean squared error over the interior of (predicted - true).
+
     Evaluated on the interior region only, excluding the PML sponge ring.
     """
     p = _interior(_to_numpy(pred), grid)
@@ -52,7 +54,8 @@ def mae(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean Absolute Error over the interior of (predicted - true).
+    """Mean absolute error over the interior of (predicted - true).
+
     Evaluated on the interior region only, excluding the PML sponge ring.
     """
     p = _interior(_to_numpy(pred), grid)
@@ -68,17 +71,11 @@ def ssim(
     **kwargs,
 ) -> float:
     """Structural Similarity Index between predicted and true.
+
     Evaluated on the interior region only, excluding the PML sponge ring.
-    data_range is inferred from true when not supplied explicitly.
-
-    When ``mask`` is given (e.g. the region inside the skull), SSIM is scored
-    only over that region: the per-pixel SSIM map is computed on the full
-    interior and averaged over the mask, and ``data_range`` defaults to the
-    peak-to-peak of the true field within the mask.
-
-    Could be considered passing additional kwargs:
-        gaussian_weights=True, sigma=1.5
-        win_size=<int>                    (patch size, default 7)
+    data_range is inferred from true when not given. If mask is given,
+    scoring is restricted to that region. kwargs are forwarded to skimage's
+    structural_similarity.
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
@@ -100,11 +97,10 @@ def ssim_map(
     **kwargs,
 ) -> np.ndarray:
     """Per-pixel SSIM map between predicted and true. Plots and returns the map.
-    Green = well recovered (near 1), red = poorly recovered (near -1).
 
-    When ``mask`` is given, ``data_range`` defaults to the true field's
-    peak-to-peak within the mask and cells outside the mask are blanked (NaN)
-    so only the region inside the skull is shown.
+    Green = well recovered (near 1), red = poorly recovered (near -1). If
+    mask is given, cells outside it are blanked (NaN) and data_range is
+    taken from the true field within the mask.
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
