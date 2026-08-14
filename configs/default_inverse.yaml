@@ -1,158 +1,151 @@
 # Default frequency-domain FWI configuration.
 #
-# This reproduces the notebook's single-band Shepp-Logan run: a 40 kHz LBFGSB
-# inversion (SETUP_SHEPP), truth = shepp_logan, initial model = shepp_logan_skull,
-# observed data synthesised by a broadband leapfrog time solve then FFT onto the
-# band's bins (no inverse crime).
-#
 # Any field omitted here falls back to the code default in
 # odil_wave/experiment/config.py; the fully-resolved config (every effective
 # value) is written to <run_dir>/config_resolved.yaml.
 #
-# Scientific notation such as 40e3 is parsed as a float (matching the notebook).
 
 run:
   # blank -> auto: <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>[_<precond>]_<f0>_<bands>
   run_id: ""
   output_root: outputs
-  seed: 0
-  tags: []
-  notes: ""
+  seed: 0                   # int; RNG seed for reproducibility
+  tags: []                 # list[str]; free-form labels recorded in the config
+  notes: ""                # str; free-form description
 
 runtime:
   device: cpu           # cpu | cuda | mps
   dtype: float32        # float32 | float64
-  torch_num_threads: null
-  deterministic: false
+  torch_num_threads: null   # null -> torch default | int >= 1
+  deterministic: false      # true | false; force deterministic torch kernels
 
 grid:
-  interior_shape: [125, 125]
-  c_min: 1300.0
-  c_max: 3100.0
-  interior_extent: [[0.0, 0.25], [0.0, 0.25]]   # metres
-  t_max: 0.0005         # 500 us
-  init_nt: 1300
-  pml_width: 40
-  pml_power: 3
-  pml_R0: 1.0e-6
-  cfl_safety: 0.9
-  L0: null
-  c0: null
+  interior_shape: [125, 125]              # [ny, nx] interior cells (PML added outside)
+  c_min: 1300.0                           # m/s; lower velocity bound (must be < c_max)
+  c_max: 3100.0                           # m/s; upper velocity bound
+  interior_extent: [[0.0, 0.25], [0.0, 0.25]]  # metres; [[y0, y1], [x0, x1]] physical domain
+  t_max: 0.0005                           # s; forward time window (leapfrog observation)
+  init_nt: 1300                           # null -> CFL-derived | int >= 1; number of time steps
+  pml_width: 40                           # cells; absorbing-border thickness (inverse grid)
+  pml_power: 3                            # PML grading polynomial order (typ. 2-4)
+  pml_R0: 1.0e-6                          # target PML reflection coeff (small, e.g. 1e-4 .. 1e-8)
+  cfl_safety: 0.9                         # (0, 1]; CFL fraction used to pick dt
+  L0: null                                # null -> auto | float > 0; length non-dimensionalisation
+  c0: null                                # null -> auto | float > 0; velocity non-dimensionalisation
 
 source:
-  kind: tone_burst
-  f0: 80e3
-  amplitude: 1.0
-  n_cycles: 3.0
-  envelope: gaussian
-  offset: 0
-  t0: null
-  dimensionless: true
+  kind: tone_burst        # tone_burst | ricker
+  f0: 80e3                # Hz
+  amplitude: 1.0          # source amplitude scale
+  n_cycles: 3.0           # tone_burst only; number of cycles in the burst
+  envelope: gaussian      # tone_burst only: gaussian | rectangular
+  offset: 0               # int; sample offset delaying the wavelet
+  t0: null                # null -> auto (1/f0 for ricker) | float; wavelet time centre [s]
+  dimensionless: true     # true | false; emit in non-dimensional units
 
 acquisition:
-  n_receivers: 64
-  n_sources: 8
-  a_frac: 0.9
-  b_frac: 0.9
-  ring_center: grid_center     # "grid_center" or [x, y]
-  sigma_s: null
-  source_spatial: gaussian
+  n_receivers: 64         # int >= 1; receivers on the ring
+  n_sources: 8            # int >= 1; sources on the ring
+  a_frac: 0.9             # (0, 1]; ring semi-axis as fraction of half-extent (x)
+  b_frac: 0.9             # (0, 1]; ring semi-axis as fraction of half-extent (y)
+  ring_center: grid_center   # "grid_center" | [x, y] in metres
+  sigma_s: null           # null -> auto | float > 0; Gaussian source width in cells (source_spatial=gaussian)
+  source_spatial: gaussian   # gaussian | point
 
 physics:
-  space_order: 2
-  time_order: 2
-  pml_weight: 1.0
+  space_order: 2          # spatial FD stencil order: 2 | 4 | 6 | 8 (higher = more accurate, costlier)
+  time_order: 2           # temporal FD order (leapfrog: 2)
+  pml_weight: 1.0         # >= 0; PML-residual weight in the PDE loss
 
+# truth = observed ("true") model; 
+# init = starting model for the inverse solve.
+# profile options: homogeneous | overdensity | shepp_logan | shepp_logan_skull | skull
 truth:
   profile: shepp_logan
-  scale: 0.85
-  # PML velocity fill: edge (replicate interior boundary; c continuous across
-  # the interior<->PML interface) | constant (legacy fixed pml_c pad).
-  pml_fill: edge
+  scale: 0.85             # phantom contrast scale
+  pml_fill: edge          # edge (replicate interior boundary) | constant (pad with pml_c)
 init:
   profile: shepp_logan_skull
   scale: 0.85
   pml_fill: edge
 
 observation:
-  method: leapfrog_fft         # leapfrog_fft (no inverse crime) | helmholtz
-  normalize_data: per_receiver # null | none | per_receiver
-  verbose: false
-  pml_width: 70
+  method: leapfrog_fft        # leapfrog_fft (broadband time solve + FFT) | helmholtz (freq-domain)
+  normalize_data: per_receiver   # null | none | per_receiver
+  verbose: false              # true | false
+  pml_width: 70               # null -> grid.pml_width | int >= 0
 
 continuation:
-  warm_start: helmholtz        # helmholtz | none
-  # Single band by default. For low->high multiscale continuation, list several
-  # single-frequency (or multi-frequency) stages; each recovered model warm
-  # starts the next, e.g.:
+  warm_start: helmholtz       # helmholtz (re-solve u each band) | none (start from wavefield seed)
+  # Ordered list of continuation stages. Each stage:
+  #   frequencies_hz     : list[float > 0] (multiple freqs in one stage = joint multi-frequency)
+  #   n_iter             : null -> optimiser.n_iter | int >= 1 (per-stage iteration budget)
+  #   c_grad_smooth_sigma: null -> lbfgsb.c_grad_smooth_sigma | float >= 0 (lbfgsb only, per-stage)
+  # Example multi-stage low-to-high sweep:
   #   bands:
-  #     - {frequencies_hz: [50e3]}
-  #     - {frequencies_hz: [60e3]}
-  #     - {frequencies_hz: [70e3, 80e3]}   # multi-frequency stage
+  #     - frequencies_hz: [40e3]         # stage 1
+  #       n_iter: 30
+  #     - frequencies_hz: [50e3, 60e3]   # stage 2 (two frequencies jointly)
+  #       n_iter: 20
   bands:
     - frequencies_hz: [40e3]
-      n_iter: null             # null -> optimiser.n_iter
+      n_iter: null
 
 loss:
-  weights: {pde: 1.0, data: 1.0, reg: 0.0}
-  # name: null | tikhonov | tv_iso | tv_aniso; params: {eps: 1.0e-8} (tv_iso).
-  # The scalar weight is weights.reg above (set > 0 to activate).
-  regulariser: {name: null, params: {}}
+  weights: {pde: 1.0, data: 1.0, reg: 0.0}   # each >= 0; PDE-residual / data-misfit / regulariser weights
+  regulariser: {
+    name: null,   # null | tikhonov | tv_iso | tv_aniso  (aliases: l2/smooth, tv/iso, aniso)
+    params: {}    # only 'eps' accepted, e.g. {eps: 1.0e-6} (used by the TV regularisers)
+  }
 
 optimiser:
-  name: lbfgsb                 # lbfgsb | joint
-  log_every: 5
-  n_iter: 20
-  u_steps: 20
-  c_steps: 1
-  max_iter: 20
-  history_size: 10
-  tolerance_grad: 1.0e-7
-  tolerance_change: 1.0e-9
-  line_search_fn: strong_wolfe
-  clamp: true
+  name: lbfgsb            # lbfgsb (block-coordinate dual L-BFGS) | joint (full-space joint L-BFGS)
+  log_every: 5            # int >= 1; metric-logging cadence in outers
+  n_iter: 20             # int >= 1; outer iterations (per band unless band.n_iter is set)
+  u_steps: 20            # wavefield-block L-BFGS steps per outer
+  c_steps: 1             # model-block updates per outer
+  max_iter: 20           # L-BFGS max iterations per block step
+  history_size: 10       # L-BFGS history length (memory)
+  tolerance_grad: 1.0e-7    # gradient-norm stopping tolerance
+  tolerance_change: 1.0e-9  # objective/param change stopping tolerance
+  line_search_fn: strong_wolfe   # strong_wolfe | none
+  clamp: true            # true | false; enforce [c_min, c_max] via logistic reparam
 
-  # Block-coordinate dual L-BFGS (LBFGSB).
-  lbfgsb:
-    z_steps: 1
-    u_precond: null            # null | z  (z -> u = A(c)^-1 z reparameterisation)
-    u_solve: optim             # optim (L-BFGS u-block) | exact (u* = u0 - H^-1 g)
-    c_param: velocity          # velocity | squared_slowness (c-block reparameterisation; not supported with u_precond=z)
-    z_optim: gd                # gd (Armijo steepest descent) | lbfgs; only used when u_precond=z
-    z_lr: 1.0                  # Armijo initial step for z_optim=gd
-    c_lr: 5.0
-    c_max_iter: 6
-    c_history_size: 10
-    reset_c_history: false
-    # c-gradient Gaussian smoothing width in grid cells (0 = off; the only
-    # c-gradient preconditioner). Can be overridden per band (BandCfg).
-    c_grad_smooth_sigma: 0.0
-    # Outer-loop schedulers (A4): rescale the knob every every_n outers; both
-    # inactive by default (factor or every_n == 0 -> no-op).
+  lbfgsb:                    # used when optimiser.name == lbfgsb
+    z_steps: 1               # int >= 1; z-block substeps per outer (u_precond=z only)
+    u_precond: null          # null | z  (z = reduced-space source-extension preconditioner)
+    u_solve: optim           # optim (L-BFGS u-block) | exact (direct sparse Hessian solve; not with u_precond=z)
+    c_param: velocity        # velocity (optimise c) | squared_slowness (optimise 1/c^2; not with u_precond=z)
+    z_optim: gd              # gd (Armijo steepest descent) | lbfgs  (u_precond=z only)
+    z_lr: 1.0                # > 0; z-block initial step (z_optim=gd)
+    c_lr: 5.0                # model-block L-BFGS learning rate
+    c_max_iter: 6            # model-block L-BFGS max iterations
+    c_history_size: 10       # model-block L-BFGS history length
+    reset_c_history: false   # true | false; reset model-block L-BFGS history each outer
+    c_grad_smooth_sigma: 0.0 # >= 0; Gaussian smoothing of the c-gradient in cells (0 = off; try 1-3)
+    # Outer-loop schedulers. Each rescales its knob every_n outers; inactive
+    # (no-op) whenever factor == 0 or every_n == 0. Example to ramp the PDE
+    # weight up 2x every 5 outers: {factor: 2.0, every_n: 5, direction: increase}
     pde_weight_schedule:
-      factor: 0.0              # e.g. 10.0
-      every_n: 0               # e.g. 5
-      direction: increase      # increase | decrease
+      factor: 0.0            # >= 0; multiplier applied to loss.weights.pde
+      every_n: 0             # >= 0; cadence in outers
+      direction: increase    # increase (x factor) | decrease (/ factor)
     c_grad_smooth_sigma_schedule:
-      factor: 0.0
-      every_n: 0
-      direction: decrease
+      factor: 0.0            # >= 0; multiplier applied to c_grad_smooth_sigma
+      every_n: 0             # >= 0; cadence in outers
+      direction: decrease    # increase (x factor) | decrease (/ factor)
 
 metrics:
   ssim:
-    mask: head_roi             # head_roi | interior | none
-    data_range: auto           # "auto" or a float
-    win_size: 7
-    gaussian_weights: false
-    sigma: 1.5
-  log_c_stats: true
+    mask: head_roi             # head_roi (intracranial) | interior (non-PML) | none
+    data_range: auto           # "auto" (peak-to-peak of truth in mask) | float
+    win_size: 7                # odd int >= 3; SSIM window size
+    gaussian_weights: false    # true | false; Gaussian vs uniform SSIM window
+    sigma: 1.5                 # Gaussian window std (gaussian_weights=true)
+  log_c_stats: true            # true | false; log per-iteration velocity statistics
 
-# Block-coordinate diagnostics (LBFGSB only; off by default). When enabled the
-# run writes <run_dir>/diagnostics/{scalars.csv, summary.png, c_evolution.png,
-# outer_XX.png}. per_outer_field_maps toggles the expensive outer_XX maps
-# (u-block re-solved on clones + sparse Hessian factorised each outer).
 diagnostics:
-  enabled: false
-  per_outer_field_maps: true
-  u_depths: null               # null -> auto (1, 5, 10, ..., u_steps)
-  verify_hessian: false
+  enabled: false               # true | false; block-coordinate diagnostics (lbfgsb only; expensive)
+  per_outer_field_maps: true   # true | false; per-outer wavefield/c maps (the costly piece)
+  u_depths: null               # null -> 1, 5, 10, ..., u_steps | list[int >= 1]; u-solve depths to map
+  verify_hessian: false        # true | false; sparse-H vs autograd-Hvp correctness gate
