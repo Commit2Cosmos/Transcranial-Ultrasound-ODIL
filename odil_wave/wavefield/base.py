@@ -29,14 +29,15 @@ def _normalize_amplitude(amp: np.ndarray, mode: str | None) -> np.ndarray:
 
 @dataclass
 class Wavefield:
-    """Complex frequency-domain wavefield u(ω, x, y) on a `Grid`.
+    """Complex frequency-domain wavefield u(omega, x, y) on a `Grid`.
 
     Amplitude shape is ``(n_frequencies, nx, ny)`` complex for a single shot.
     Multi-shot batches used by losses/optimisers are
     ``(n_shots, n_frequencies, nx, ny)``.
 
-    ``init_ut`` is retained only for the leapfrog *time-domain reference*
-    generator used in FFT sanity tests; it is unused by the frequency ODIL path.
+    ``init_ut`` is the initial condition ``u_t(x, y, t=0)`` and is retained
+    only for the leapfrog time-domain reference generator used in FFT
+    sanity tests; it is unused by the frequency ODIL path.
     """
 
     grid: Grid
@@ -51,6 +52,12 @@ class Wavefield:
     cdtype: torch.dtype = field(init=False)
 
     def __post_init__(self) -> None:
+        """Validate grid/frequency_selection compatibility and allocate tensors.
+
+        Copies ``device``/``dtype`` from ``grid``, then initialises the
+        complex amplitude tensor from ``init_amplitude`` (or zeros) and the
+        real initial-velocity tensor from ``init_velocity`` (or zeros).
+        """
         if self.frequency_selection.grid is not self.grid:
             # Allow equal grids constructed separately if metadata matches
             if (
@@ -90,22 +97,34 @@ class Wavefield:
 
     @property
     def init_ut(self) -> torch.Tensor:
+        """Initial (dimensional) time-derivative field ``u_t(x, y, t=0)``."""
         return self._init_ut
 
     @property
     def init_ut_nd(self) -> torch.Tensor:
+        """Initial time-derivative field non-dimensionalised by ``grid.t0``."""
         return self._init_ut * self.grid.t0
 
     @property
     def n_frequencies(self) -> int:
+        """Number of frequencies carried by ``frequency_selection``."""
         return self.frequency_selection.n_frequencies
 
     @property
     def amplitude(self) -> torch.Tensor:
+        """Complex amplitude tensor, shape ``(n_frequencies, nx, ny)``."""
         return self._amplitude
 
     @amplitude.setter
     def amplitude(self, value: np.ndarray | torch.Tensor) -> None:
+        """Set the amplitude tensor, casting to ``cdtype``/``device`` and
+        reshaping to ``(n_frequencies, nx, ny)``.
+
+        Args:
+            value: New amplitude data, as a numpy array or torch tensor,
+                with a number of elements matching
+                ``n_frequencies * nx * ny``.
+        """
         nf = self.n_frequencies
         Nx, Ny = self.grid.shape
         amp = (
@@ -117,10 +136,6 @@ class Wavefield:
         )
         self._amplitude = amp.reshape(nf, Nx, Ny)
 
-    @property
-    def wavespeed(self) -> torch.Tensor:
-        return self.velocity_model.c
-
     def show(
         self,
         idx: int,
@@ -130,16 +145,25 @@ class Wavefield:
         """Show frequency slice ``idx`` as a 2x2 panel of the complex field.
 
         Panels are ``|u|`` (magnitude), ``Re(u)``, ``Im(u)`` and the phase
-        ``arg(u)``. ``normalize`` (``None`` | ``"global"`` | ``"per_frame"``)
-        rescales the complex field by its peak magnitude before the magnitude /
-        real / imaginary panels are drawn; the phase panel is unaffected.
+        ``arg(u)``.
+
+        Args:
+            idx: Frequency index to plot, in ``[0, n_frequencies)``.
+            title: Figure suptitle prefix; the plotted frequency is appended.
+            normalize: ``None``/``"none"`` to plot the raw field, or
+                ``"global"``/``"per_frame"`` to rescale the complex field by
+                its peak magnitude before the magnitude/real/imaginary panels
+                are drawn (both modes are equivalent for a single slice); the
+                phase panel is unaffected.
+
+        Raises:
+            ValueError: If ``idx`` is out of range or ``normalize`` is not
+                one of ``None``, ``"none"``, ``"global"``, ``"per_frame"``.
         """
         if not (0 <= idx < self.n_frequencies):
             raise ValueError(f"idx should be in [0, {self.n_frequencies}), got {idx}.")
         amp = self.amplitude[idx].detach().cpu().numpy()
-        # A single 2D slice, so "global" and "per_frame" both reduce to scaling
-        # by this slice's peak |u|; normalise the complex field once so the
-        # Re/Im panels stay on a common, comparable scale.
+        # Normalise by this slice's peak magnitude.
         if normalize in ("global", "per_frame"):
             scale = float(np.max(np.abs(amp)))
             if scale > 0:
@@ -190,7 +214,18 @@ class Wavefield:
         title: str = "Wavefield |u|(f)",
         normalize: str | None = None,
     ) -> str:
-        """Animate ``|u|`` over frequency index."""
+        """Animate ``|u|`` over frequency index and save as a GIF.
+
+        Args:
+            filename: Output path for the saved GIF.
+            fps: Frames per second.
+            cmap: Colormap for the ``|u|`` panel.
+            title: Title prefix; the frame's frequency is appended.
+            normalize: See :func:`_normalize_amplitude`.
+
+        Returns:
+            ``filename``.
+        """
         amp = np.abs(self.amplitude.detach().cpu().numpy())
         amp = _normalize_amplitude(amp, normalize)
         nf = self.n_frequencies
@@ -216,6 +251,7 @@ class Wavefield:
         plt.colorbar(im, ax=ax, label="|u|", shrink=0.85)
 
         def update(frame: int):
+            """Update the image and title for animation frame ``frame``."""
             im.set_data(amp[frame].T)
             ttl.set_text(f"{title}  (f = {freqs[frame] * f_mult:.3g} {f_unit})")
             return im, ttl
