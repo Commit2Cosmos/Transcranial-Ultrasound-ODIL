@@ -52,13 +52,3 @@ def length_scale(l_max: float) -> Tuple[float, str]:
 def frequency_scale(f: float) -> Tuple[float, str]:
     """Multiplier and unit label for a frequency value ``f`` in hertz."""
     return _pick(f, _FREQ_PREFIXES)
-
-
-def format_time(t: float, unit: str | None = None, fmt: str = ".2f") -> str:
-    """Format a time value with an auto-picked SI prefix (e.g. ``"123.45 µs"``)."""
-    if unit is None:
-        mult, unit = time_scale(t)
-    else:
-        # Look up the multiplier for the requested unit.
-        mult = next((1.0 / b for b, lbl in _TIME_PREFIXES if lbl == unit), 1.0)
-    return f"{t * mult:{fmt}} {unit}"

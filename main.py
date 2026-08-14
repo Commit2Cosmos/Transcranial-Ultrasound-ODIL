@@ -69,10 +69,7 @@ def _summarise(cfg) -> str:
     a(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        a(
-            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter}, "
-            f"source_offsets={b.source_offsets}, schedule={b.source_schedule})"
-        )
+        a(f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})")
     return "\n".join(lines)
 
 

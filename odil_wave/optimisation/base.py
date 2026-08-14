@@ -254,16 +254,10 @@ class LBFGSB(Optimiser):
       - ``z_lr``: Armijo initial step when ``z_optim="gd"`` (recommended: 1.0).
 
       PDE loss is ``mean(|z-f|^2)``; data loss is ``mean(|P A(c)^{-1} z - d|^2)``.
-      Recommended weights (caller-side): ``w_pde=100``, ``w_data=1``.
+      Recommended weights (caller-side): ``pde_weight=100``, ``data_weight=1``.
       Prefer ``z_optim="gd"``: with the usual per-outer z-history reset,
       ``z_optim="lbfgs"`` and ``max_iter=1`` is nearly the same as one
       steepest-descent + Wolfe step and does not improve recovery.
-
-    Optional early stopping (disabled by default: ``early_stop_rtol=0``):
-    after ``early_stop_min_iter`` outer steps, stop if relative loss improvement
-    stays below ``early_stop_rtol`` for ``early_stop_patience`` consecutive
-    outer iterations. Existing call sites are unchanged unless these kwargs
-    are set explicitly.
     """
 
     _DEFAULT_OPTS = {
@@ -296,12 +290,6 @@ class LBFGSB(Optimiser):
         # c-block optimisation variable: "velocity" (default, ĉ itself) or
         # "squared_slowness" (optimise m̂ = 1/ĉ²).
         "c_param": "velocity",
-        # Optional; early_stop_rtol <= 0 disables (default).
-        "early_stop_rtol": 0.0,
-        "early_stop_min_iter": 0,
-        "early_stop_patience": 3,
-        # Print / store per-outer [grad_c] diagnostics (off by default).
-        "debug_c": False,
     }
     _LBFGS_KEYS = frozenset(
         {
@@ -322,7 +310,6 @@ class LBFGSB(Optimiser):
         loss: DiscreteLoss,
         clamp: bool = False,
         u_init=None,
-        free_mask=None,
         **opts,
     ) -> None:
         super().__init__(wavefield, loss)
@@ -330,7 +317,6 @@ class LBFGSB(Optimiser):
         self.c_min = grid.c_min if clamp else None
         self.c_max = grid.c_max if clamp else None
         self.u_init = u_init
-        self.free_mask = free_mask
         self.opts = dict(self._DEFAULT_OPTS)
         self.opts.update(opts)
 
@@ -352,10 +338,6 @@ class LBFGSB(Optimiser):
         c_grad_smooth_sigma_schedule = opts.pop("c_grad_smooth_sigma_schedule", None)
         reset_c_history = bool(opts.pop("reset_c_history", True))
         c_param = str(opts.pop("c_param", "velocity")).lower()
-        early_stop_rtol = float(opts.pop("early_stop_rtol", 0.0))
-        early_stop_min_iter = int(opts.pop("early_stop_min_iter", 0))
-        early_stop_patience = int(opts.pop("early_stop_patience", 3))
-        debug_c = bool(opts.pop("debug_c", False))
         # Legacy keys (unused; popped so they don't leak into u_torch_opts).
         opts.pop("u_precond_stab", None)
         for _legacy in (
@@ -424,10 +406,6 @@ class LBFGSB(Optimiser):
             c_grad_smooth_sigma_schedule,
             reset_c_history,
             c_param,
-            early_stop_rtol,
-            early_stop_min_iter,
-            early_stop_patience,
-            debug_c,
         )
 
     def _seed_complex(self, n_shots, cdtype, device) -> torch.Tensor:
@@ -496,10 +474,6 @@ class LBFGSB(Optimiser):
             c_grad_smooth_sigma_schedule,
             reset_c_history,
             c_param,
-            early_stop_rtol,
-            early_stop_min_iter,
-            early_stop_patience,
-            debug_c,
         ) = self._split_opts()
 
         if u_precond_mode == "z":
@@ -515,10 +489,6 @@ class LBFGSB(Optimiser):
                 pde_weight_schedule=pde_weight_schedule,
                 c_grad_smooth_sigma_schedule=c_grad_smooth_sigma_schedule,
                 reset_c_history=reset_c_history,
-                early_stop_rtol=early_stop_rtol,
-                early_stop_min_iter=early_stop_min_iter,
-                early_stop_patience=early_stop_patience,
-                debug_c=debug_c,
                 on_iteration=on_iteration,
             )
 
@@ -551,18 +521,8 @@ class LBFGSB(Optimiser):
             # default) or m̂ = 1/ĉ² (c_param="squared_slowness"). See
             # _c_hat_from_c_param for the (autograd-differentiable) map back to ĉ.
             c_interior_param = torch.nn.Parameter(_init_c_param(c_hat0, c_param))
-            if self.free_mask is not None:
-                _free_mask = self.free_mask.to(dtype=torch.bool, device=device)
-                _c_frozen_init = (
-                    _init_c_param(c_hat0, c_param)[~_free_mask].clone().detach()
-                )
-            else:
-                _free_mask = None
-                _c_frozen_init = None
         else:
             c_ref = None
-            _free_mask = None
-            _c_frozen_init = None
             c_interior_param = None
 
         def make_u_optimiser():
@@ -592,9 +552,6 @@ class LBFGSB(Optimiser):
         loss_value = None
         n_u_closure = 0
         n_c_closure = 0
-        prev_loss: Optional[float] = None
-        stall_count = 0
-        stopped_early = False
         n_outer_done = 0
 
         # A4 outer-loop schedulers. Bases are read from the freshly built loss /
@@ -681,11 +638,10 @@ class LBFGSB(Optimiser):
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
-                logged_grad_c = False
                 for _ in range(c_steps):
 
                     def c_closure():
-                        nonlocal logged_grad_c, n_c_closure
+                        nonlocal n_c_closure
                         n_c_closure += 1
                         c_optimiser.zero_grad()
                         # Optimise ĉ = c / c_ref (c_param="velocity") or
@@ -700,40 +656,6 @@ class LBFGSB(Optimiser):
                         amps_fixed = pack_u_detached()
                         L_c = self.loss.evaluate(amps_fixed, c_full, c_hat)
                         L_c.backward()
-                        if _free_mask is not None and c_interior_param.grad is not None:
-                            c_interior_param.grad[~_free_mask] = 0.0
-                        if (
-                            debug_c
-                            and c_interior_param.grad is not None
-                            and not logged_grad_c
-                        ):
-                            with torch.no_grad():
-                                g = c_interior_param.grad
-                                n = g.numel()
-                                pct_pos = 100.0 * float((g > 0).sum()) / n
-                                pct_neg = 100.0 * float((g < 0).sum()) / n
-                                g_mean = float(g.mean())
-                                g_min = float(g.min())
-                                g_max = float(g.max())
-                                print(
-                                    f"    [grad_c] mean={g_mean:+.3e}  "
-                                    f"min={g_min:+.3e}  max={g_max:+.3e}  "
-                                    f"pos={pct_pos:.1f}%  neg={pct_neg:.1f}%"
-                                )
-                                hist = self.loss.callback.history
-                                hist.setdefault("grad_c_mean", []).append(g_mean)
-                                hist.setdefault("grad_c_min", []).append(g_min)
-                                hist.setdefault("grad_c_max", []).append(g_max)
-                                hist.setdefault("grad_c_pct_pos", []).append(pct_pos)
-                                hist.setdefault("grad_c_pct_neg", []).append(pct_neg)
-                                # Interior gradient map w.r.t. the raw c-block
-                                # parameter (ĉ, or m̂ if c_param="squared_slowness").
-                                hist.setdefault("grad_c_maps", []).append(
-                                    g.detach().cpu().clone()
-                                )
-                                logged_grad_c = True
-                        elif not debug_c:
-                            logged_grad_c = True
                         _sigma = sigma_box[0]
                         if _sigma > 0.0 and c_interior_param.grad is not None:
                             with torch.no_grad():
@@ -744,8 +666,6 @@ class LBFGSB(Optimiser):
 
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
-                        if _free_mask is not None:
-                            c_interior_param.data[~_free_mask] = _c_frozen_init
                         if c_param_min is not None or c_param_max is not None:
                             c_interior_param.clamp_(min=c_param_min, max=c_param_max)
 
@@ -790,33 +710,6 @@ class LBFGSB(Optimiser):
                     f"|r_pde|/|src| = {ratio:.3e}"
                 )
 
-            # Relative loss improvement early stop (disabled when rtol <= 0).
-            if (
-                early_stop_rtol > 0.0
-                and loss_scalar is not None
-                and prev_loss is not None
-            ):
-                denom = max(abs(prev_loss), 1e-30)
-                rel_improve = (prev_loss - loss_scalar) / denom
-                if rel_improve < early_stop_rtol:
-                    stall_count += 1
-                else:
-                    stall_count = 0
-                if (
-                    n_outer_done >= early_stop_min_iter
-                    and stall_count >= early_stop_patience
-                ):
-                    stopped_early = True
-                    print(
-                        f"  early stop at outer iter {i}: "
-                        f"rel_improve < {early_stop_rtol:g} for "
-                        f"{early_stop_patience} iters "
-                        f"(min_iter={early_stop_min_iter})"
-                    )
-                    break
-            if loss_scalar is not None:
-                prev_loss = loss_scalar
-
         if diag_on:
             diagnostics.finalise()
 
@@ -846,7 +739,6 @@ class LBFGSB(Optimiser):
             ),
             "n_outer_iter": n_outer_done,
             "n_outer_budget": n_iter,
-            "stopped_early": stopped_early,
             "n_u_closure": n_u_closure,
             "n_c_closure": n_c_closure,
             "n_closure": n_u_closure + n_c_closure,
@@ -866,8 +758,8 @@ class LBFGSB(Optimiser):
         """Exact frozen-c wavefield block: overwrite ``(u_real, u_imag)`` with the
         quadratic minimiser ``u* = u0 - H^{-1} g(u0)`` (A1).
 
-        The frozen-c u-subproblem ``J(u) = w_pde·mean|A(c)u-f|² +
-        w_data·mean|Pu-d|²`` is exactly quadratic in ``u`` with constant Hessian
+        The frozen-c u-subproblem ``J(u) = pde_weight·mean|A(c)u-f|² +
+        data_weight·mean|Pu-d|²`` is exactly quadratic in ``u`` with constant Hessian
         ``H = α AᴴA + β PᴴP``; its minimiser is ``u* = u0 - H^{-1} g(u0)`` for the
         current frozen ``c`` (independent of the warm start). ``H`` is assembled +
         factorised by :class:`UBlockHessian` at the run's current loss weights
@@ -908,10 +800,6 @@ class LBFGSB(Optimiser):
         pde_weight_schedule,
         c_grad_smooth_sigma_schedule,
         reset_c_history: bool,
-        early_stop_rtol: float,
-        early_stop_min_iter: int,
-        early_stop_patience: int,
-        debug_c: bool,
         on_iteration=None,
     ) -> Tuple[List[Wavefield], LossTape]:
         """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``).
@@ -936,12 +824,6 @@ class LBFGSB(Optimiser):
         c0_int = vm_in.c[grid.interior_slice].detach().clone().to(device=device)
         c_ref = float(c0_int.mean().item())
         c_interior_param = torch.nn.Parameter(c0_int / c_ref)
-        if self.free_mask is not None:
-            _free_mask = self.free_mask.to(dtype=torch.bool, device=device)
-            _c_frozen_init = (c0_int / c_ref)[~_free_mask].clone().detach()
-        else:
-            _free_mask = None
-            _c_frozen_init = None
 
         def c_full_from_hat(c_hat: torch.Tensor) -> torch.Tensor:
             return vm_in.build_full_c(c_hat * c_ref)
@@ -979,9 +861,6 @@ class LBFGSB(Optimiser):
         loss_value = None
         n_u_closure = 0
         n_c_closure = 0
-        prev_loss: Optional[float] = None
-        stall_count = 0
-        stopped_early = False
         n_outer_done = 0
         t_wall0 = time.perf_counter()
 
@@ -1048,11 +927,10 @@ class LBFGSB(Optimiser):
                 if reset_c_history:
                     c_optimiser = make_c_optimiser()
 
-                logged_grad_c = False
                 for _ in range(c_steps):
 
                     def c_closure():
-                        nonlocal logged_grad_c, n_c_closure
+                        nonlocal n_c_closure
                         n_c_closure += 1
                         c_optimiser.zero_grad()
                         c_full = c_full_from_hat(c_interior_param)
@@ -1060,38 +938,6 @@ class LBFGSB(Optimiser):
                         u = tf.apply_diff_c(z_fixed, c_full)
                         L_c = self.loss.evaluate_z(z_fixed, u, c_full, c_interior_param)
                         L_c.backward()
-                        if _free_mask is not None and c_interior_param.grad is not None:
-                            c_interior_param.grad[~_free_mask] = 0.0
-                        if (
-                            debug_c
-                            and c_interior_param.grad is not None
-                            and not logged_grad_c
-                        ):
-                            with torch.no_grad():
-                                g = c_interior_param.grad
-                                n = g.numel()
-                                pct_pos = 100.0 * float((g > 0).sum()) / n
-                                pct_neg = 100.0 * float((g < 0).sum()) / n
-                                g_mean = float(g.mean())
-                                g_min = float(g.min())
-                                g_max = float(g.max())
-                                print(
-                                    f"    [grad_c] mean={g_mean:+.3e}  "
-                                    f"min={g_min:+.3e}  max={g_max:+.3e}  "
-                                    f"pos={pct_pos:.1f}%  neg={pct_neg:.1f}%"
-                                )
-                                hist = self.loss.callback.history
-                                hist.setdefault("grad_c_mean", []).append(g_mean)
-                                hist.setdefault("grad_c_min", []).append(g_min)
-                                hist.setdefault("grad_c_max", []).append(g_max)
-                                hist.setdefault("grad_c_pct_pos", []).append(pct_pos)
-                                hist.setdefault("grad_c_pct_neg", []).append(pct_neg)
-                                hist.setdefault("grad_c_maps", []).append(
-                                    g.detach().cpu().clone()
-                                )
-                                logged_grad_c = True
-                        elif not debug_c:
-                            logged_grad_c = True
                         _sigma = sigma_box[0]
                         if _sigma > 0.0 and c_interior_param.grad is not None:
                             with torch.no_grad():
@@ -1102,8 +948,6 @@ class LBFGSB(Optimiser):
 
                     loss_value = c_optimiser.step(c_closure)
                     with torch.no_grad():
-                        if _free_mask is not None:
-                            c_interior_param.data[~_free_mask] = _c_frozen_init
                         if c_min is not None or c_max is not None:
                             c_interior_param.clamp_(min=c_min, max=c_max)
 
@@ -1137,32 +981,6 @@ class LBFGSB(Optimiser):
                     f"|r_pde|/|src| = {ratio:.3e}"
                 )
 
-            if (
-                early_stop_rtol > 0.0
-                and loss_scalar is not None
-                and prev_loss is not None
-            ):
-                denom = max(abs(prev_loss), 1e-30)
-                rel_improve = (prev_loss - loss_scalar) / denom
-                if rel_improve < early_stop_rtol:
-                    stall_count += 1
-                else:
-                    stall_count = 0
-                if (
-                    n_outer_done >= early_stop_min_iter
-                    and stall_count >= early_stop_patience
-                ):
-                    stopped_early = True
-                    print(
-                        f"  early stop at outer iter {i}: "
-                        f"rel_improve < {early_stop_rtol:g} for "
-                        f"{early_stop_patience} iters "
-                        f"(min_iter={early_stop_min_iter})"
-                    )
-                    break
-            if loss_scalar is not None:
-                prev_loss = loss_scalar
-
         wall_s = time.perf_counter() - t_wall0
         c_full_final = c_full_from_hat(c_interior_param.detach())
         vm_out = VelocityModel.from_field(
@@ -1189,7 +1007,6 @@ class LBFGSB(Optimiser):
             ),
             "n_outer_iter": n_outer_done,
             "n_outer_budget": n_iter,
-            "stopped_early": stopped_early,
             "n_u_closure": n_u_closure,
             "n_c_closure": n_c_closure,
             "n_closure": n_u_closure + n_c_closure,

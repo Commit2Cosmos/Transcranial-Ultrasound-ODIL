@@ -2,14 +2,14 @@
 
 The frozen-``c`` wavefield objective (the u-block subproblem of :class:`LBFGSB`)
 
-    J(u) = w_pde · mean|A(c) u − f|²      (mean over shots × freqs × grid)
-         + w_data · mean|P u − d|²        (mean over shots × freqs × receivers)
+    J(u) = pde_weight · mean|A(c) u − f|²      (mean over shots × freqs × grid)
+         + data_weight · mean|P u − d|²        (mean over shots × freqs × receivers)
 
 is *exactly quadratic* in ``u``, so its Hessian is the constant sparse operator
 
     H = α · AᴴA  +  β · Pᴴ P ,
-        α = 2 w_pde  / N_pde ,     N_pde  = n_shots · nf · nx · ny
-        β = 2 w_data / N_data ,    N_data = n_shots · nf · n_recv
+        α = 2 pde_weight  / N_pde ,     N_pde  = n_shots · nf · nx · ny
+        β = 2 data_weight / N_data ,    N_data = n_shots · nf · n_recv
 
 where ``A`` is the sparse Helmholtz operator (``HelmholtzSolver.assemble_H_sparse``
 — the same operator the matrix-free residual uses) and ``P`` samples ``u`` at the
@@ -25,8 +25,8 @@ is a global Green's-function operator.
 
 Implementation: assemble ``H`` per frequency as a sparse matrix and factorise it
 once with SuperLU — the *exact* ``H⁻¹``. A direct factorisation (rather than a
-PDE-only preconditioned CG) is used deliberately: ``w_data`` is averaged over
-~``n_recv`` cells while ``w_pde`` is averaged over the whole grid, so the data
+PDE-only preconditioned CG) is used deliberately: ``data_weight`` is averaged over
+~``n_recv`` cells while ``pde_weight`` is averaged over the whole grid, so the data
 block is enormously heavier per DOF and a PDE-only preconditioner would be
 hopeless. :meth:`verify` checks the sparse ``H`` against the autograd
 Hessian-vector product (which, ``J`` being quadratic, equals ``H v`` exactly).
@@ -97,14 +97,14 @@ class UBlockHessian:
         # Term weights + mean-normalisation element counts (mean over the full
         # tensor, matching InverseLoss.evaluate's mean_abs_sq).
         w = dict(weights) if weights is not None else dict(loss.config.weights)
-        w_pde, w_data = float(w.get("pde", 1.0)), float(w.get("data", 1.0))
+        pde_weight, data_weight = float(w.get("pde", 1.0)), float(w.get("data", 1.0))
         n_shots = int(loss.sources.shape[0])
         recv_ij = loss.config.geometry.recv_ij
         n_recv = int(recv_ij.shape[0])
         n_pde = n_shots * self.nf * self.n
         n_data = n_shots * self.nf * n_recv
-        self.alpha = 2.0 * w_pde / max(n_pde, 1)
-        self.beta = 2.0 * w_data / max(n_data, 1)
+        self.alpha = 2.0 * pde_weight / max(n_pde, 1)
+        self.beta = 2.0 * data_weight / max(n_data, 1)
         self.n_shots = n_shots
 
         # Uniform receiver mask PᴴP = diag(mask), flattened x-major (row = i*ny + j,

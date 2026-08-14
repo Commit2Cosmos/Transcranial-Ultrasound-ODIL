@@ -34,7 +34,6 @@ from .config import (
     canonical_optimiser_name,
     canonical_regulariser_name,
     deep_merge,
-    expand_band_schedule,
     resolve_config,
     validate_config,
 )
@@ -212,18 +211,12 @@ def _build_optimiser(
             c_grad_smooth_sigma_schedule=_schedule_tuple(
                 lb.c_grad_smooth_sigma_schedule
             ),
-            early_stop_rtol=lb.early_stop_rtol,
-            early_stop_min_iter=lb.early_stop_min_iter,
-            early_stop_patience=lb.early_stop_patience,
-            debug_c=lb.debug_c,
         )
 
     if name == "joint":
         # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
         # closed-form, WRI or multigrid. data_weight is fixed (never adapted).
-        # A u-block preconditioner (u_precond != "none") selects the additive
-        # JointFreqODILUPrecond variant; the baseline path is unchanged.
-        from odil_wave.optimisation import JointFreqODIL, JointFreqODILUPrecond
+        from odil_wave.optimisation import JointFreqODIL
 
         jo = opt.joint
         ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
@@ -249,22 +242,9 @@ def _build_optimiser(
             data_scale_factor=jo.data_scale_factor,
             z_scale=jo.z_scale,
             logit_clip=jo.logit_clip,
-            model_precond=jo.model_precond,
-            mp_eps=jo.mp_eps,
-            mp_scale=jo.mp_scale,
-            mp_scale_cap=jo.mp_scale_cap,
-            mp_probe=jo.mp_probe,
             log_every=opt.log_every,
             verbose=jo.verbose,
         )
-        if str(jo.u_precond).lower() != "none":
-            return JointFreqODILUPrecond(
-                wf_inv,
-                loss,
-                u_precond=str(jo.u_precond).lower(),
-                helm_shift=jo.helm_shift,
-                **joint_kw,
-            )
         return JointFreqODIL(wf_inv, loss, **joint_kw)
 
     raise ValueError(f"unhandled optimiser {name!r}")
@@ -295,7 +275,7 @@ def run_frequency_band(
     )
 
     t0 = time.perf_counter()
-    band_ctx = problem.make_band(freqs, band_cfg.source_offsets)
+    band_ctx = problem.make_band(freqs)
 
     t_warm = time.perf_counter()
     u_init = problem.warm_start(velocity_model, band_ctx)
@@ -367,8 +347,7 @@ def run_frequency_band(
     recovered_velocity = recovered_wfs[0].velocity_model
     opt_result = dict(getattr(tape, "result", None) or {})
     n_iter_run = int(opt_result.get("n_outer_iter", n_iter))
-    stopped_early = bool(opt_result.get("stopped_early", False))
-    termination = "early_stop" if stopped_early else "budget_exhausted"
+    termination = "budget_exhausted"
 
     recovery = _final_recovery_metrics(problem, recovered_velocity)
     hist = tape.history
@@ -427,8 +406,6 @@ def run_frequency_band(
         "n_iter_requested": n_iter,
         "n_iter_run": n_iter_run,
         "termination_reason": termination,
-        "source_offsets": list(band_ctx.geom.source_offsets),
-        "source_schedule": band_cfg.source_schedule,
         "n_shots": int(band_ctx.geom.n_sources),
         "t_start_epoch_s": t0,
         "wall_s": wall_s,
@@ -522,7 +499,6 @@ def _dump_band_config(
         "frequencies_hz": freqs,
         "n_iter_effective": n_iter,
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
-        "source_offsets": list(band_ctx.geom.source_offsets),
         "n_shots": int(band_ctx.geom.n_sources),
         "warm_start": cfg.continuation.warm_start,
         "observation_method": cfg.observation.method,
@@ -589,11 +565,7 @@ def run_inverse(
         seed=config.run.seed,
         repo_root=Path(__file__).resolve().parents[2],
     )
-    # Expand sequential / cyclic source schedules into concrete "joint" stages;
-    # each expanded stage is one entry in the flat band loop below.
-    band_stages = expand_band_schedule(
-        list(config.continuation.bands), config.optimiser.n_iter
-    )
+    band_stages = list(config.continuation.bands)
     meta["seed_record"] = seed_record
     meta["n_bands"] = len(band_stages)
     meta["n_config_bands"] = len(config.continuation.bands)

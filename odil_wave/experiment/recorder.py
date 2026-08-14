@@ -236,10 +236,10 @@ class RunRecorder:
             has_regulariser = (
                 getattr(tape._loss_obj.config, "regulariser", None) is not None
             )
-        w_pde = float(weights.get("pde", 1.0))
-        w_data = float(weights.get("data", 1.0))
-        pde_term = None if pde_loss is None else w_pde * pde_loss
-        data_term = None if data_loss is None else w_data * data_loss
+        pde_weight = float(weights.get("pde", 1.0))
+        data_weight = float(weights.get("data", 1.0))
+        pde_term = None if pde_loss is None else pde_weight * pde_loss
+        data_term = None if data_loss is None else data_weight * data_loss
         # The weighted regularisation contribution. With no regulariser this is
         # exactly 0. We do NOT derive it as (loss - pde_term - data_term): the
         # solver-reported ``loss`` (start of the last block step) and the

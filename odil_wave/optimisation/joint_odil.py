@@ -34,11 +34,11 @@ Formulation
 
 * Objective (means over the count of **real** scalar residual entries):
 
-      Phi = w_pde  * mean|r_pde  / pde_scale |^2
-          + w_data * mean|r_data / data_scale|^2
+      Phi = pde_weight  * mean|r_pde  / pde_scale |^2
+          + data_weight * mean|r_data / data_scale|^2
           + w_reg  * R(c_interior)
 
-  with ``w_pde = 1``, ``w_data = data_weight``, ``w_reg = reg_weight`` (default
+  with ``pde_weight = 1``, ``data_weight = data_weight``, ``w_reg = reg_weight`` (default
   0). ``data_weight`` is a fixed run-level hyperparameter (never adapted).
 
 * One persistent ``torch.optim.LBFGS([u_re, u_im, z_m])`` (strong-Wolfe) — a
@@ -168,7 +168,6 @@ class JointFreqODIL(Optimiser):
         *,
         clamp: bool = True,  # bounds always via latent map; kept for API parity
         u_init=None,
-        free_mask: Optional[torch.Tensor] = None,
         n_iter: int = 50,
         inner_max_iter: int = 20,
         history_size: int = 20,
@@ -191,13 +190,6 @@ class JointFreqODIL(Optimiser):
         z_scale: float = 1.0,
         logit_clip: float = 1e-6,
         eps_grad: float = 1e-30,
-        # §11-E one-change: model-block (z_m) preconditioner (optimiser geometry
-        # only; the physical objective is unchanged). "none" = baseline.
-        model_precond: str = "none",  # "none" | "illum" | "uniform"
-        mp_eps: float = 0.1,
-        mp_scale: Optional[float] = None,  # None -> auto-calibrate from block imbalance
-        mp_scale_cap: float = 50.0,
-        mp_probe: float = 0.1,
         log_every: int = 1,
         verbose: bool = False,
     ) -> None:
@@ -218,7 +210,6 @@ class JointFreqODIL(Optimiser):
         self.c0 = float(grid.c0)
 
         self.u_init = u_init
-        self.free_mask = free_mask
         self.n_iter = int(n_iter)
         self.inner_max_iter = int(inner_max_iter)
         self.history_size = int(history_size)
@@ -227,18 +218,13 @@ class JointFreqODIL(Optimiser):
         self.tolerance_change = float(tolerance_change)
         self.lbfgs_lr = float(lbfgs_lr)
         self.data_weight = float(data_weight)
-        # Run-level PDE-penalty weight w_pde (default 1.0 -> bit-identical to the
+        # Run-level PDE-penalty weight pde_weight (default 1.0 -> bit-identical to the
         # established objective). A *predeclared, run-level* schedule may set this
         # per continuation stage (Question A); it is never adapted from the
         # instantaneous losses. lambda_data (== data_weight) stays fixed.
         self.pde_weight = float(pde_weight)
         self.reg_weight = float(reg_weight)
         self.eps_grad = float(eps_grad)
-        self.model_precond = str(model_precond).lower()
-        self.mp_eps = float(mp_eps)
-        self.mp_scale = mp_scale
-        self.mp_scale_cap = float(mp_scale_cap)
-        self.mp_probe = float(mp_probe)
         self.log_every = max(1, int(log_every))
         self.verbose = bool(verbose)
 
@@ -510,68 +496,6 @@ class JointFreqODIL(Optimiser):
             "grad_ratio": gz / max(gu, self.eps_grad),
         }
 
-    # ------------------------------------------------------------------ #
-    def _setup_model_precond(self, u_re0, u_im0, z0):
-        """Return (z_base, Dvec, zp0) for ``z_m = z_base + Dvec * zp``.
-
-        Baseline (``model_precond='none'``): identity — ``z_base=0``, ``Dvec=1``,
-        ``zp0=z0`` (the L-BFGS parameter *is* ``z_m``). Preconditioned: optimise a
-        whitened coordinate ``zp`` (init 0) with a fixed diagonal ``Dvec`` = global
-        scale ``s_z`` × spatial factor ``P̂``. ``P̂`` is the inverse-sqrt
-        illumination pseudo-Hessian from ``u_init`` (unit-mean); ``s_z`` balances
-        the initial u-/z-block gradient norms. This is a change of variables — the
-        physical objective ``Φ(u, m(z))`` is unchanged; only L-BFGS geometry moves.
-        """
-        if self.model_precond in ("none", "", "off", "false"):
-            self._mp_info = {"model_precond": "none"}
-            return torch.zeros_like(z0), torch.ones_like(z0), z0.clone()
-        with torch.no_grad():
-            illum = (self.u_seed.abs() ** 2).mean(dim=(0, 1))[self._interior_slice]
-            illum = illum / illum.mean().clamp_min(1e-30)
-            if self.model_precond == "uniform":
-                phat = torch.ones_like(illum)
-            else:  # "illum"
-                phat = (illum + self.mp_eps).rsqrt()
-                phat = phat / phat.mean().clamp_min(1e-30)
-        s_z = (
-            float(self.mp_scale)
-            if self.mp_scale is not None
-            else self._calibrate_scale(u_re0, u_im0, z0)
-        )
-        Dvec = (s_z * phat).to(z0)
-        self._mp_info = {
-            "model_precond": self.model_precond,
-            "s_z": s_z,
-            "phat_min": float(phat.min()),
-            "phat_max": float(phat.max()),
-            "mp_eps": self.mp_eps,
-            "auto_scale": self.mp_scale is None,
-        }
-        return z0.clone(), Dvec, torch.zeros_like(z0)
-
-    def _calibrate_scale(self, u_re0, u_im0, z0) -> float:
-        """s_z = |∇_u Φ| / |∇_z Φ| at a deterministic off-manifold u-perturbation.
-
-        The warm start has ``r_pde≈0`` so ``∇_zΦ≈0`` there; a fixed seeded push of
-        ``u`` off the Helmholtz manifold gives a meaningful block imbalance to
-        calibrate against (measured once, then fixed; not tuned to the answer).
-        """
-        g = torch.Generator().manual_seed(12345)
-        a = (
-            u_re0
-            + self.mp_probe * torch.randn(u_re0.shape, generator=g, dtype=u_re0.dtype)
-        ).requires_grad_(True)
-        b = (
-            u_im0
-            + self.mp_probe * torch.randn(u_im0.shape, generator=g, dtype=u_im0.dtype)
-        ).requires_grad_(True)
-        c = z0.clone().requires_grad_(True)
-        L = self.objective(a, b, c, record=False)
-        ga, gb, gc = torch.autograd.grad(L, (a, b, c))
-        gu = math.sqrt(float(ga.pow(2).sum() + gb.pow(2).sum()))
-        gz = float(gc.norm())
-        return float(min(max(gu / max(gz, 1e-30), 1.0), self.mp_scale_cap))
-
     def _diag_grads(self, u_re_val, u_im_val, z_m_val):
         """Φ and *physical* block-gradient norms (∇_u, ∇_{z_m}) at a point.
 
@@ -598,16 +522,15 @@ class JointFreqODIL(Optimiser):
         for k, v in overrides.items():
             setattr(self, k, v)
         u_re0, u_im0, z0 = self.init_params()
-        z_base, Dvec, zp0 = self._setup_model_precond(u_re0, u_im0, z0)
         u_re = torch.nn.Parameter(u_re0)
         u_im = torch.nn.Parameter(u_im0)
-        zp = torch.nn.Parameter(zp0)
+        z_param = torch.nn.Parameter(z0)
 
         def z_of():
-            return z_base + Dvec * zp
+            return z_param
 
         opt = torch.optim.LBFGS(
-            [u_re, u_im, zp],
+            [u_re, u_im, z_param],
             lr=self.lbfgs_lr,
             max_iter=self.inner_max_iter,
             history_size=self.history_size,
@@ -724,13 +647,11 @@ class JointFreqODIL(Optimiser):
             "loss": (float(loss_value.detach()) if loss_value is not None else None),
             "n_outer_iter": self.n_iter,
             "n_outer_budget": self.n_iter,
-            "stopped_early": False,
             "n_closure": self._n_eval,
             "n_evaluations": self._n_eval,
             "wall_s": wall_s,
             "method": "joint",
             "data_weight": self.data_weight,
-            "model_precond": getattr(self, "_mp_info", {"model_precond": "none"}),
             "n_factor": 0,
             "n_forward_solves": 0,
             "n_adjoint_solves": 0,

@@ -1,8 +1,6 @@
 from .base import LBFGSB, StepScheduler
 from .joint_odil import JointFreqODIL, SlownessLatent
 
-# from .joint_u_precond import JointFreqODILUPrecond
-from .c_step_debug import debug_one_c_step
 from .frequency_continuation import (
     BandTimingStats,
     FrequencyBand,
@@ -16,9 +14,7 @@ __all__ = [
     "LBFGSB",
     "StepScheduler",
     "JointFreqODIL",
-    # "JointFreqODILUPrecond",
     "SlownessLatent",
-    "debug_one_c_step",
     "HelmholtzUTransform",
     "UBlockHessian",
     "BandTimingStats",

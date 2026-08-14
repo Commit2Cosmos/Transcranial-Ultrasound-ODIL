@@ -65,7 +65,7 @@ def _default_geometry(problem: Problem) -> AcquisitionGeometry:
     bands = problem.cfg.continuation.bands
     band = bands[0]
     freq = FrequencySelection.from_frequencies(problem.grid, list(band.frequencies_hz))
-    return problem.make_geometry(freq, source_offsets=tuple(band.source_offsets))
+    return problem._geometry(problem.grid, problem.source, freq)
 
 
 def _resolve_grid_pml(

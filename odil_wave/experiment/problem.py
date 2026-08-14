@@ -71,9 +71,8 @@ class Problem:
     forward_truth: Optional[VelocityModel] = None
     forward_source: Optional[SourceSignal] = None
     # Broadband truth time field cache, keyed by the active source-ring layout
-    # (tuple of ring indices). Distinct source_offsets get their own solve; the
-    # common case (every band shares one layout) is computed once.
-    # Values live on the observation grid (forward when split, else inverse).
+    # (tuple of ring indices). Every band shares one layout, so it is computed
+    # once. Values live on the observation grid (forward when split, else inverse).
     _truth_amp_time: Dict[Tuple[int, ...], torch.Tensor] = field(default_factory=dict)
 
     @property
@@ -102,18 +101,17 @@ class Problem:
     def make_band(
         self,
         frequencies_hz: Sequence[float],
-        source_offsets: Sequence[int] = (0,),
     ) -> BandContext:
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
-        geom = self._geometry(self.grid, self.source, freq, source_offsets)
+        geom = self._geometry(self.grid, self.source, freq)
 
         if self.pml_split:
             obs_grid = self.observation_grid
             obs_source = self.observation_source
             # Same physical frequencies; bins must match (shared nt/dt).
             obs_freq = FrequencySelection.from_frequencies(obs_grid, freqs)
-            obs_geom = self._geometry(obs_grid, obs_source, obs_freq, source_offsets)
+            obs_geom = self._geometry(obs_grid, obs_source, obs_freq)
             observed_wfs = self._observed(obs_freq, obs_geom)
             traces = torch.stack(
                 [obs_geom.extract_observations(wf.amplitude) for wf in observed_wfs],
@@ -137,7 +135,6 @@ class Problem:
         grid: Grid,
         source: SourceSignal,
         freq: FrequencySelection,
-        source_offsets: Sequence[int] = (0,),
     ) -> AcquisitionGeometry:
         """Acquisition layout for a band, *without* solving for observed data."""
         acq = self.cfg.acquisition
@@ -152,7 +149,6 @@ class Problem:
             b_frac=acq.b_frac,
             ring_center=self.center,
             source_spatial=acq.source_spatial,
-            source_offsets=tuple(source_offsets),
         )
 
     def _observed(

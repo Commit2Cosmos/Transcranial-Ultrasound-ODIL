@@ -225,8 +225,6 @@ class DiagnosticsCollector:
         u = torch.complex(u_re.detach(), u_im.detach())
         r_pde, r_data = self.loss._residuals(u, c_full)
         obs = self.loss._obs_traces()
-        if self.loss._f_weights is not None:
-            obs = obs * self.loss._f_weights
         c_int = self._c_phys_int(c_raw).double()
         rel_c = _gnorm(c_int - self._truth_int) / max(_gnorm(self._truth_int), _TINY)
         return {

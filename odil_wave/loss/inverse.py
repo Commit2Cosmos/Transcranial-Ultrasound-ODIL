@@ -11,8 +11,8 @@ from .utils import LossConfig, LossTape
 class InverseLoss(DiscreteLoss):
     """Joint (u, c) inverse-problem loss in the frequency domain.
 
-    L = w_pde  * mean(|r_pde|²)   # over shots, frequencies, space
-      + w_data * mean(|r_data|²)  # over shots, frequencies, receivers
+    L = pde_weight  * mean(|r_pde|²)   # over shots, frequencies, space
+      + data_weight * mean(|r_data|²)  # over shots, frequencies, receivers
       + w_reg  * R(c_interior)
 
     Global means keep the loss / gradient scale invariant to ``N_f`` and
@@ -34,7 +34,6 @@ class InverseLoss(DiscreteLoss):
         observed_traces=None,
         callback: LossTape | None = None,
         normalize_data: str | None = None,
-        f_weights: torch.Tensor | None = None,
     ):
         super().__init__(config, callback)
 
@@ -60,16 +59,6 @@ class InverseLoss(DiscreteLoss):
             self.d_obs = torch.as_tensor(obs, dtype=cdtype, device=self.config.device)
 
         self.normalize_data = normalize_data
-        nf = self.config.wave_eq.wavefield.n_frequencies
-        if f_weights is None:
-            self._f_weights = None
-        else:
-            w = torch.as_tensor(
-                f_weights, dtype=self.config.dtype, device=self.config.device
-            ).reshape(-1)
-            if w.numel() != nf:
-                raise ValueError(f"f_weights length {w.numel()} != n_frequencies {nf}")
-            self._f_weights = w.view(1, nf, 1).detach()
 
     @staticmethod
     def _stack_observations(observed_wavefield):
@@ -100,8 +89,6 @@ class InverseLoss(DiscreteLoss):
         syn_tr = amp[:, :, i, j]
         obs_tr = self._obs_traces()
         data = syn_tr - obs_tr
-        if self._f_weights is not None:
-            data = data * self._f_weights
         return pde, data
 
     def evaluate(
@@ -167,8 +154,6 @@ class InverseLoss(DiscreteLoss):
         syn_tr = u[:, :, i, j]
         obs_tr = self._obs_traces()
         r_data = syn_tr - obs_tr
-        if self._f_weights is not None:
-            r_data = r_data * self._f_weights
 
         w = self.config.weights
         if weights_override is not None:

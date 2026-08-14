@@ -12,12 +12,11 @@ class ForwardLoss(DiscreteLoss):
 
     def evaluate(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
         r = self._residuals(amp, wsp)
-        w_pde = self.config.weights["pde"]
-        L = w_pde * mean_abs_sq(r)  # global mean over shots, frequencies, space
+        pde_weight = self.config.weights["pde"]
+        L = pde_weight * mean_abs_sq(r)  # global mean over shots, frequencies, space
         if L.is_complex():
             L = L.real
 
         self.evaluations += 1
         self._last_residuals = (r.detach(),)
         return L
-

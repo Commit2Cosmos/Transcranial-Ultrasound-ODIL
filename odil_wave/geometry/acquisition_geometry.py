@@ -1,4 +1,4 @@
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import math
 import torch
@@ -12,79 +12,22 @@ from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
 
 
-def canonicalize_source_offsets(
+def source_ring_indices(
     n_receivers: int,
     n_sources_per_offset: int,
-    offsets: Sequence[int],
-) -> Tuple[int, ...]:
-    """Map offsets into ``0 .. step-1`` and reject empty / duplicate octets.
+) -> List[int]:
+    """Receiver-ring indices for the source octet.
 
-    With ``step = n_receivers // n_sources_per_offset``, offset ``k`` and
-    ``k + step`` select the same ring positions (cyclically reordered).
-
-    Non-divisible ``n_receivers / n_sources_per_offset`` is only allowed for
-    the legacy default ``source_offsets=(0,)`` (historical subsample).
+    Places sources at ``i * step`` for ``i = 0 .. n_sources_per_offset-1`` with
+    ``step = n_receivers // n_sources_per_offset`` (the ``recv[::step][:n_sources]``
+    subsample), so the sources are an evenly spaced octet on the receiver ring.
     """
     if n_sources_per_offset <= 0:
         raise ValueError(
             f"n_sources_per_offset must be positive, got {n_sources_per_offset}."
         )
-    if not offsets:
-        raise ValueError("source_offsets must contain at least one offset.")
-
-    divisible = n_receivers % n_sources_per_offset == 0
-    if not divisible:
-        # path: only the historical single octet at offset 0.
-        step = max(1, n_receivers // n_sources_per_offset)
-        raw = tuple(int(o) % step for o in offsets)
-        if raw != (0,):
-            raise ValueError(
-                f"n_receivers ({n_receivers}) must be divisible by "
-                f"n_sources_per_offset ({n_sources_per_offset}) when using "
-                f"rotated source_offsets={tuple(offsets)!r}."
-            )
-        return (0,)
-
-    step = n_receivers // n_sources_per_offset
-    canonical: List[int] = []
-    seen: set[int] = set()
-    for raw in offsets:
-        off = int(raw) % step
-        if off in seen:
-            raise ValueError(
-                f"duplicate source offset {off} after canonicalisation "
-                f"(step={step}); got source_offsets={tuple(offsets)!r}."
-            )
-        seen.add(off)
-        canonical.append(off)
-    return tuple(canonical)
-
-
-def source_ring_indices(
-    n_receivers: int,
-    n_sources_per_offset: int,
-    offsets: Sequence[int] = (0,),
-) -> List[int]:
-    """Receiver-ring indices for one or more rotated source octets.
-
-    For each canonical offset ``off``, places sources at
-    ``(off + i * step) % n_receivers`` for ``i = 0 .. n_sources_per_offset-1``.
-    Multiple offsets are concatenated in the given (canonicalised) order.
-
-    If ``n_receivers`` is not divisible by ``n_sources_per_offset``, only the
-    legacy ``source_offsets=(0,)`` layout is supported (same as the pre-offset
-    ``recv[::step][:n_sources]`` subsample).
-    """
-    offs = canonicalize_source_offsets(n_receivers, n_sources_per_offset, offsets)
-    if n_receivers % n_sources_per_offset != 0:
-        step = max(1, n_receivers // n_sources_per_offset)
-        return list(range(0, n_receivers, step))[:n_sources_per_offset]
-    step = n_receivers // n_sources_per_offset
-    return [
-        (off + i * step) % n_receivers
-        for off in offs
-        for i in range(n_sources_per_offset)
-    ]
+    step = max(1, n_receivers // n_sources_per_offset)
+    return list(range(0, n_receivers, step))[:n_sources_per_offset]
 
 
 def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
@@ -94,7 +37,6 @@ def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
       - None / "none":    pass-through
       - "per_receiver":   divide each column (one receiver's trace) by its
                           own max-abs — the standard seismic balancing.
-      - "global":         divide the whole gather by a single max-abs.
     """
     if mode is None or mode == "none":
         return traces
@@ -102,11 +44,8 @@ def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
         scale = np.max(np.abs(traces), axis=0, keepdims=True)
         scale = np.where(scale > 0, scale, 1.0)
         return traces / scale
-    if mode == "global":
-        scale = float(np.max(np.abs(traces)))
-        return traces / scale if scale > 0 else traces
     raise ValueError(
-        f"Invalid normalize mode {mode!r}; expected one of None, 'per_receiver', 'global'."
+        f"Invalid normalize mode {mode!r}; expected one of None, 'per_receiver'."
     )
 
 
@@ -130,7 +69,6 @@ class AcquisitionGeometry:
         b_frac: float = 0.70,
         ring_center: Tuple[float, float] = (0.0, 0.0),
         source_spatial: str = "gaussian",
-        source_offsets: Sequence[int] = (0,),
     ):
         self.grid = grid
         self.source = source
@@ -141,9 +79,7 @@ class AcquisitionGeometry:
 
         self.n_receivers = n_receivers
         # Configured octet size; active shot count is len(source_ring_indices).
-        self.n_sources_per_offset = (
-            n_receivers if n_sources is None else int(n_sources)
-        )
+        self.n_sources_per_offset = n_receivers if n_sources is None else int(n_sources)
         self.sigma_s = (
             self._default_sigma_s(grid, source) if sigma_s is None else sigma_s
         )
@@ -153,11 +89,8 @@ class AcquisitionGeometry:
         self.source_spatial = source_spatial
 
         self.recv_ij = self._place_ellipse(self.n_receivers)
-        self.source_offsets = canonicalize_source_offsets(
-            self.n_receivers, self.n_sources_per_offset, source_offsets
-        )
         self.source_ring_indices = source_ring_indices(
-            self.n_receivers, self.n_sources_per_offset, self.source_offsets
+            self.n_receivers, self.n_sources_per_offset
         )
         # Solvers / losses treat n_sources as the active batch size.
         self.n_sources = len(self.source_ring_indices)
@@ -250,9 +183,9 @@ class AcquisitionGeometry:
         wavefield :
             A `Wavefield`, a `(NT, NX, NY)` amplitude tensor/array, or a list
             of either (one entry per shot). A list produces a subplot grid.
-        normalize : {"per_receiver", "global", None}, default "per_receiver"
+        normalize : {"per_receiver", None}, default "per_receiver"
             Per-receiver max-abs balancing (default — emphasises weak
-            channels), single global max-abs, or no rescaling.
+            channels) or no rescaling.
         """
         # Coerce input to a list and remember whether it was originally one.
         is_list = isinstance(wavefield, (list, tuple))
@@ -302,13 +235,8 @@ class AcquisitionGeometry:
         fig, axes = plt.subplots(
             nrows, ncols, figsize=(6.5 * ncols, 3.5 * nrows), squeeze=False
         )
-        global_vmax = max(float(np.max(np.abs(tr))) for tr in traces_per_shot) or 1.0
         for k, (ax_k, traces) in enumerate(zip(axes.flat, traces_per_shot)):
-            vmax = (
-                global_vmax
-                if normalize == "global"
-                else (float(np.max(np.abs(traces))) or 1.0)
-            )
+            vmax = float(np.max(np.abs(traces))) or 1.0
             im = ax_k.imshow(
                 traces.T,
                 origin="lower",

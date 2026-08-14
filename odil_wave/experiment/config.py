@@ -155,6 +155,12 @@ class ModelCfg:
     ``skull_sigma`` is σ in grid cells (try ``1``–``3`` for a mild soft edge);
     ``extra.skull_smooth`` is accepted as an alias when ``skull_sigma`` is left
     at its default and not set explicitly via override.
+
+    ``pml_fill`` controls how ``VelocityModel.build_full_c`` fills the PML ring:
+    ``'edge'`` (default) replicates the interior boundary outward so ``c`` is
+    continuous across the interior↔PML interface (and tracks the interior as it
+    is optimised); ``'constant'`` pads with the fixed ``pml_c`` (legacy). The
+    default matches ``odil_wave.models.velocity_models``.
     """
 
     profile: str = "shepp_logan"
@@ -162,7 +168,7 @@ class ModelCfg:
     base: float = _SOS_WATER
     contrast: float = 0.4
     pml_c: Optional[float] = None
-    pml_fill: str = "constant"
+    pml_fill: str = "edge"
     # shepp_logan_skull: c = c_water + alpha * G_σ(c_perfect - c_water)
     skull_alpha: float = 1.0
     skull_sigma: float = 0.0
@@ -187,36 +193,18 @@ class ObservationCfg:
     #   bins (avoids the inverse crime; notebook default).
     # "helmholtz":    frequency-domain Helmholtz solve on the truth model.
     method: str = "leapfrog_fft"
-    normalize_data: str = "per_receiver"  # None | "none" | "per_receiver" | "global"
+    normalize_data: str = "per_receiver"  # None | "none" | "per_receiver"
     verbose: bool = False
     pml_width: Optional[int] = None  # forward PML; null -> grid.pml_width
 
 
 @dataclass(frozen=True)
 class BandCfg:
-    """One continuation stage. Single-frequency if ``len == 1``.
-
-    ``source_offsets`` selects one or more rotated source octets on the
-    receiver ring (see :func:`odil_wave.geometry.source_ring_indices`); the
-    default ``[0]`` is the historical single-octet layout. ``source_schedule``
-    controls how multiple offsets are run (mirrors
-    :class:`odil_wave.optimisation.frequency_continuation.FrequencyBand`):
-
-      * ``"joint"`` (default): all offsets active together in this one stage.
-      * ``"sequential"``: run one octet after another (same frequencies),
-        carrying ``c`` between offsets — expands to one stage per offset.
-      * ``"cyclic"``: alternate offsets one octet per outer step — expands to
-        ``n_iter`` single-iteration stages cycling through the offsets.
-
-    ``sequential`` / ``cyclic`` expand into several concrete stages at run time
-    (see :func:`expand_band_schedule`); ``joint`` is a single stage.
-    """
+    """One continuation stage. Single-frequency if ``len == 1``."""
 
     frequencies_hz: List[float] = field(default_factory=lambda: [40e3])
     # per-band optimiser iteration budget; None -> optimiser.n_iter.
     n_iter: Optional[int] = None
-    source_offsets: List[int] = field(default_factory=lambda: [0])
-    source_schedule: str = "joint"  # "joint" | "sequential" | "cyclic"
     # Per-band override of the LBFGSB c-gradient Gaussian smoothing width
     # ``c_grad_smooth_sigma`` (grid cells; ``0`` = no smoothing). ``None``
     # (default) uses the global ``optimiser.lbfgsb.c_grad_smooth_sigma``
@@ -303,10 +291,6 @@ class LBFGSBCfg:
     # smoothness prior on the velocity update that suppresses high-wavenumber
     # speckle in the frozen-u WRI c-gradient. Schedulable (A4).
     c_grad_smooth_sigma: float = 0.0
-    early_stop_rtol: float = 0.0
-    early_stop_min_iter: int = 0
-    early_stop_patience: int = 3
-    debug_c: bool = False
     # Outer-loop schedulers (A4). Each rescales its knob every N outers; both
     # inactive by default (factor/every_n == 0 -> no-op). Only pde_weight (the
     # loss ``weights['pde']``) and c_grad_smooth_sigma are schedulable.
@@ -323,7 +307,7 @@ class JointODILCfg:
     WRI / multigrid / adaptive balancing. See
     :mod:`odil_wave.optimisation.joint_odil`.
 
-    * ``data_weight`` is the fixed run-level ``w_data`` (``w_pde = 1``); it is
+    * ``data_weight`` is the fixed run-level ``data_weight`` (``pde_weight = 1``); it is
       **never** adapted during optimisation.
     * ``c_min`` / ``c_max`` (null -> ``grid.c_min`` / ``grid.c_max``) set the
       squared-slowness bounds ``m_min = 1/c_max**2``, ``m_max = 1/c_min**2``.
@@ -357,23 +341,6 @@ class JointODILCfg:
     data_scale_factor: float = 1.0
     z_scale: float = 1.0
     logit_clip: float = 1e-6
-    # §11-E one-change: model-block (z_m) preconditioner. "none" keeps the pure
-    # baseline; "illum"/"uniform" optimise a whitened model coordinate (optimiser
-    # geometry only — the physical objective is unchanged). Separately named
-    # configuration; the baseline is never altered.
-    model_precond: str = "none"  # "none" | "illum" | "uniform"
-    mp_eps: float = 0.1
-    mp_scale: Optional[float] = None  # None -> auto-calibrate from block imbalance
-    mp_scale_cap: float = 50.0
-    mp_probe: float = 0.1
-    # u-block preconditioner (separate remedy family; JointFreqODILUPrecond).
-    # "none" is bit-identical to the baseline. "hermitian" = diag(H^H H)^{-1/2}
-    # (HPD diagonal Gauss-Newton), "correction" = exact H(m_init)^{-1} right
-    # preconditioner, "helmholtz" = complex-shifted CSLP H_beta(m_init)^{-1}.
-    # These change only the u-block optimisation geometry; the physical objective
-    # is unchanged and the model block stays unpreconditioned.
-    u_precond: str = "none"  # "none" | "hermitian" | "helmholtz" | "correction"
-    helm_shift: float = 0.5  # CSLP shift beta (only used by u_precond="helmholtz")
     verbose: bool = False
 
 
@@ -713,54 +680,6 @@ def canonical_regulariser_name(name: str) -> str:
     return _REGULARISER_ALIASES[key]
 
 
-_SOURCE_SCHEDULES = ("joint", "sequential", "cyclic")
-
-
-def expand_band_schedule(
-    bands: List["BandCfg"], default_n_iter: int
-) -> List["BandCfg"]:
-    """Expand ``sequential`` / ``cyclic`` source schedules into concrete stages.
-
-    Mirrors
-    :func:`odil_wave.optimisation.frequency_continuation._expand_source_schedule`
-    at the :class:`BandCfg` level. Each returned stage is a plain ``"joint"``
-    band with a single resolved ``source_offsets`` list, so the runner's flat
-    band loop (which already carries ``c`` from one stage to the next) realises
-    the sequential / cyclic semantics. ``joint`` bands (and any band with a
-    single offset) pass through unchanged.
-    """
-    stages: List[BandCfg] = []
-    for band in bands:
-        schedule = str(band.source_schedule).lower()
-        offs = list(band.source_offsets)
-        n_iter = int(default_n_iter if band.n_iter is None else band.n_iter)
-        if schedule == "sequential" and len(offs) > 1:
-            for off in offs:
-                stages.append(
-                    BandCfg(
-                        frequencies_hz=list(band.frequencies_hz),
-                        n_iter=n_iter,
-                        source_offsets=[off],
-                        source_schedule="joint",
-                        c_grad_smooth_sigma=band.c_grad_smooth_sigma,
-                    )
-                )
-        elif schedule == "cyclic" and len(offs) > 1:
-            for k in range(n_iter):
-                stages.append(
-                    BandCfg(
-                        frequencies_hz=list(band.frequencies_hz),
-                        n_iter=1,
-                        source_offsets=[offs[k % len(offs)]],
-                        source_schedule="joint",
-                        c_grad_smooth_sigma=band.c_grad_smooth_sigma,
-                    )
-                )
-        else:
-            stages.append(band)
-    return stages
-
-
 def default_config_dict() -> Dict[str, Any]:
     """The fully-resolved default configuration as a plain dict."""
     return RunConfig().to_dict()
@@ -959,22 +878,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 raise ConfigError(f"optimiser.joint.{fkey} must be > 0")
         if jo.c_min is not None and jo.c_max is not None and jo.c_min >= jo.c_max:
             raise ConfigError("optimiser.joint.c_min must be < c_max")
-        if str(jo.model_precond).lower() not in ("none", "illum", "uniform"):
-            raise ConfigError(
-                "optimiser.joint.model_precond must be 'none', 'illum' or 'uniform'"
-            )
-        if str(jo.u_precond).lower() not in (
-            "none",
-            "hermitian",
-            "helmholtz",
-            "correction",
-        ):
-            raise ConfigError(
-                "optimiser.joint.u_precond must be 'none', 'hermitian', "
-                "'helmholtz' or 'correction'"
-            )
-        if jo.helm_shift < 0:
-            raise ConfigError("optimiser.joint.helm_shift must be >= 0")
         if str(jo.line_search_fn).lower() not in ("strong_wolfe", "none"):
             raise ConfigError(
                 "optimiser.joint.line_search_fn must be 'strong_wolfe' or 'none'"
@@ -995,13 +898,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
-        if not band.source_offsets:
-            raise ConfigError(f"band {bi} source_offsets must be non-empty")
-        if str(band.source_schedule).lower() not in _SOURCE_SCHEDULES:
-            raise ConfigError(
-                f"band {bi} source_schedule must be one of "
-                f"{list(_SOURCE_SCHEDULES)}, got {band.source_schedule!r}"
-            )
         if band.c_grad_smooth_sigma is not None:
             if float(band.c_grad_smooth_sigma) < 0:
                 raise ConfigError(
@@ -1024,6 +920,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             f"observation.pml_width must be >= 0 when set, "
             f"got {cfg.observation.pml_width}"
+        )
+    if cfg.observation.normalize_data not in (None, "none", "per_receiver"):
+        raise ConfigError(
+            f"observation.normalize_data must be null, 'none' or 'per_receiver', "
+            f"got {cfg.observation.normalize_data!r}"
         )
     if cfg.continuation.warm_start not in ("helmholtz", "none"):
         raise ConfigError(

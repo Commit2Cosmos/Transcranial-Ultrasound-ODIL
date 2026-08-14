@@ -7,7 +7,6 @@ from odil_wave.grid import (
 from odil_wave.source import SourceSignal
 from odil_wave.geometry import (
     AcquisitionGeometry,
-    canonicalize_source_offsets,
     source_ring_indices,
 )
 from odil_wave.models import VelocityModel
@@ -22,7 +21,6 @@ from odil_wave.loss import (
 )
 from odil_wave.optimisation import (
     LBFGSB,
-    debug_one_c_step,
     BandTimingStats,
     FrequencyBand,
     FrequencyContinuationResult,
@@ -36,7 +34,6 @@ __all__ = [
     "usable_frequency_limits",
     "SourceSignal",
     "AcquisitionGeometry",
-    "canonicalize_source_offsets",
     "source_ring_indices",
     "VelocityModel",
     "Wavefield",
@@ -49,7 +46,6 @@ __all__ = [
     "InverseLoss",
     "Regulariser",
     "LBFGSB",
-    "debug_one_c_step",
     "BandTimingStats",
     "FrequencyBand",
     "FrequencyContinuationResult",

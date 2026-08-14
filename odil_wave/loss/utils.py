@@ -22,7 +22,7 @@ class LossConfig:
     """Configuration for the loss function.
 
     `weights` multiplies the (already mean-reduced) per-block losses:
-    `w_pde * mean(r_pde**2) + w_data * mean(r_data**2) + w_reg * R(c_int)`.
+    `pde_weight * mean(r_pde**2) + data_weight * mean(r_data**2) + w_reg * R(c_int)`.
     Missing keys default to 1.0.
 
     The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
