@@ -1,4 +1,4 @@
-from .base import SparseOperator, DenseOperator
+from .base import DenseOperator
 from .conditions import (
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,
@@ -18,7 +18,6 @@ from .leapfrog import LeapfrogSolver
 from .helmholtz import HelmholtzFactorCache, HelmholtzSolver
 
 __all__ = [
-    "SparseOperator",
     "DenseOperator",
     "Laplacian2ndOrder",
     "Laplacian4thOrder",
