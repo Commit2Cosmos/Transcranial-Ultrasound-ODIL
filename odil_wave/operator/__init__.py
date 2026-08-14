@@ -3,7 +3,6 @@ from .conditions import (
     NeumannMirrorBC2nd,
     NeumannMirrorBC4th,
     Sponge,
-    PML,
 )
 from .spatial import (
     Laplacian2ndOrder,
@@ -27,7 +26,6 @@ __all__ = [
     "NeumannMirrorBC2nd",
     "NeumannMirrorBC4th",
     "Sponge",
-    "PML",
     "TimeOperator2ndOrder",
     "TimeOperator4thOrder",
     "WaveEquation",
