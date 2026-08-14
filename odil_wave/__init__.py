@@ -1,8 +1,6 @@
 from odil_wave.grid import (
     Grid,
-    FrequencyLimits,
     FrequencySelection,
-    usable_frequency_limits,
 )
 from odil_wave.source import SourceSignal
 from odil_wave.geometry import (
@@ -29,9 +27,7 @@ from odil_wave.optimisation import (
 
 __all__ = [
     "Grid",
-    "FrequencyLimits",
     "FrequencySelection",
-    "usable_frequency_limits",
     "SourceSignal",
     "AcquisitionGeometry",
     "source_ring_indices",
