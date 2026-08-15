@@ -92,15 +92,44 @@ def _armijo_gd_step_z(
     """One steepest-descent step on complex ``z`` with Armijo backtracking.
 
     Assumes ``z_real.grad`` / ``z_imag.grad`` are already populated at the
-    current point and ``loss0`` is that point's loss. Updates parameters
-    in place.
+    current point and ``loss0`` is that point's loss. Updates ``z_real`` /
+    ``z_imag`` in place; if no step is accepted, they are restored to their
+    starting values.
+
+    Parameters
+    ----------
+    z_real, z_imag :
+        Real/imaginary parts of ``z``, updated in place.
+    pack_z :
+        Zero-argument callable returning the current complex ``z`` from
+        ``z_real`` / ``z_imag``.
+    apply_u :
+        Callable mapping a trial ``z`` to the corresponding ``u``.
+    eval_loss :
+        Callable taking ``(z, u)`` and returning the scalar loss tensor for
+        that point.
+    loss0 :
+        Loss at the current point, before this step.
+    lr :
+        Initial step size; halved on each rejected backtrack.
+    armijo_c :
+        Armijo sufficient-decrease constant.
+    max_backtracks :
+        Maximum number of step-size halvings to try before reverting to
+        the starting point.
 
     Returns
     -------
-    loss :
-        Loss at the accepted point (or ``loss0`` if no step accepted).
-    n_trial_evals :
-        Number of line-search loss evaluations (excluding ``loss0``).
+    loss : torch.Tensor
+        Loss at the accepted point (or ``loss0`` if no step was accepted).
+    n_trial_evals : int
+        Number of line-search loss evaluations performed (excluding ``loss0``).
+
+    Raises
+    ------
+    RuntimeError
+        If ``z_real.grad`` or ``z_imag.grad`` is ``None`` (gradients not
+        populated before calling).
     """
     g_r = z_real.grad
     g_i = z_imag.grad
@@ -448,10 +477,35 @@ class LBFGSB(Optimiser):
     ) -> Tuple[List[Wavefield], LossTape]:
         """Run wavefield L-BFGS then c-LBFGS block-coordinate loop.
 
-        ``diagnostics`` (LBFGSB direct path only) is an optional duck-typed
-        collector; when given, per-outer block-diagnostic snapshots are handed to
-        it (``bind`` / ``record_outer`` / ``finalise``) with no effect on the
-        trajectory. It stays ``None`` in normal runs, keeping this a no-op.
+        Dispatches to the direct ``u``-block path, or to the internal
+        z-reparametrised path when ``u_precond="z"`` (see the class
+        docstring for the two paths' semantics).
+
+        Parameters
+        ----------
+        on_iteration :
+            Optional callback ``on_iteration(i, c_full)`` invoked once per
+            accepted outer iteration with the iteration index and the
+            current full ``c`` field.
+        diagnostics :
+            Direct ``u``-block path only. Optional duck-typed collector;
+            when given, per-outer block-diagnostic snapshots are handed to
+            it (``bind`` / ``record_outer`` / ``finalise``) with no effect
+            on the trajectory. ``None`` (the default) keeps this a no-op.
+        **overrides :
+            Per-call overrides merged into ``self.opts`` before splitting
+            (see ``_DEFAULT_OPTS`` / ``_split_opts``), e.g. ``n_iter``,
+            ``c_lr``, ``u_precond``.
+
+        Returns
+        -------
+        wavefields : List[Wavefield]
+            One solved ``Wavefield`` per shot, holding the final amplitude
+            and recovered ``c``.
+        tape : LossTape
+            The loss callback passed at construction, with a ``.result``
+            dict of summary stats attached (iteration/closure counts,
+            final loss, ...).
         """
         self.opts.update(overrides)
         (
@@ -796,11 +850,63 @@ class LBFGSB(Optimiser):
         reset_c_history: bool,
         on_iteration=None,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``).
+        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond="z"``).
 
         The c-block is always L-BFGS here. The outer-loop schedulers (``pde``
         weight and ``c_grad_smooth_sigma``) apply here too; the exact u-solve
-        and block diagnostics do not (they are direct-path only).
+        and block diagnostics do not (they are direct-path only). Called by
+        ``minimise`` when ``u_precond="z"``; not intended to be called
+        directly.
+
+        Parameters
+        ----------
+        n_iter :
+            Number of outer block-coordinate iterations.
+        z_steps :
+            Number of z-block optimiser steps per outer iteration.
+        c_steps :
+            Number of c-block L-BFGS steps per outer iteration.
+        z_optim :
+            z-block optimiser: ``"gd"`` (Armijo-backtracked steepest
+            descent) or ``"lbfgs"``.
+        z_lr :
+            Initial step size for Armijo backtracking when ``z_optim="gd"``.
+        u_torch_opts :
+            ``torch.optim.LBFGS`` kwargs for the z-block when
+            ``z_optim="lbfgs"``.
+        c_torch_opts :
+            ``torch.optim.LBFGS`` kwargs for the c-block.
+        c_grad_smooth_sigma :
+            Gaussian smoothing width (grid cells) applied to the c-block
+            gradient before each step; ``0`` disables it.
+        pde_weight_schedule :
+            Optional ``(factor, every_n, direction)`` schedule for the PDE
+            loss weight, or ``None`` for no schedule.
+        c_grad_smooth_sigma_schedule :
+            Optional ``(factor, every_n, direction)`` schedule for
+            ``c_grad_smooth_sigma``, or ``None`` for no schedule.
+        reset_c_history :
+            Whether to reset the c-block L-BFGS history at the start of
+            each outer iteration.
+        on_iteration :
+            Optional callback ``on_iteration(i, c_full)`` invoked once per
+            accepted outer iteration.
+
+        Returns
+        -------
+        wavefields : List[Wavefield]
+            One solved ``Wavefield`` per shot, holding the final amplitude
+            and recovered ``c``.
+        tape : LossTape
+            The loss callback passed at construction, with a ``.result``
+            dict of summary stats attached (iteration/closure counts,
+            factorisation and solve counts, final loss, ...).
+
+        Raises
+        ------
+        TypeError
+            If ``self.loss`` is not an ``InverseLoss`` (the z-reparametrised
+            path requires it).
         """
         if not isinstance(self.loss, InverseLoss):
             raise TypeError("u_precond='z' requires an InverseLoss")
