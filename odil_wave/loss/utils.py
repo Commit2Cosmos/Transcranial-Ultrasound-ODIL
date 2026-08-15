@@ -40,6 +40,14 @@ class LossConfig:
     dtype: torch.dtype = field(init=False)
 
     def __post_init__(self):
+        """Merge default weights and derive device, dtype and DOF offsets.
+
+        Notes
+        -----
+        Fills missing ``weights`` keys with 1.0 and computes
+        ``speed_offset``, the number of real wavefield DOFs preceding the
+        velocity parameters in a packed optimisation vector.
+        """
         wf = self.wave_eq.wavefield
         Nx, Ny = wf.grid.shape
         nf = wf.n_frequencies
@@ -56,6 +64,13 @@ class LossConfig:
 
     @property
     def wavefield(self) -> Wavefield:
+        """Wavefield attached to the wave equation.
+
+        Returns
+        -------
+        Wavefield
+            ``self.wave_eq.wavefield``.
+        """
         return self.wave_eq.wavefield
 
 
@@ -91,13 +106,21 @@ class LossTape:
         residuals,
         pde_src_ratio: float | None = None,
     ) -> None:
-        """Log only scalar diagnostics.
+        """Log scalar loss and residual diagnostics for one iteration.
 
-        Accepts either:
-          - residuals as dict, e.g. {"pde_rms": ..., "data_rms": ...}
-          - residuals as tuple of tensors, e.g. (r_pde, r_data)
+        Parameters
+        ----------
+        loss : float
+            Scalar loss value.
+        residuals : dict or tuple of torch.Tensor
+            Either ``{"pde_rms": ..., "data_rms": ...}`` or a tuple
+            ``(r_pde, r_data)`` from which RMS values are derived.
+        pde_src_ratio : float, optional
+            PDE-to-source RMS ratio to append.
 
-        In both cases, only floats are stored.
+        Notes
+        -----
+        Only floats are stored; full residual tensors are never retained.
         """
         self.history["loss"].append(float(loss))
 
@@ -130,8 +153,15 @@ class LossTape:
     def log_c(self, c_arr: np.ndarray) -> None:
         """Record a snapshot of the full-grid velocity field.
 
-        This is much smaller than storing PDE residuals, but can still grow
-        if logged every iteration on a fine grid.
+        Parameters
+        ----------
+        c_arr : np.ndarray
+            Full-grid velocity field to snapshot (stored as float32).
+
+        Notes
+        -----
+        No-op when ``store_c_history`` is False or the iteration count is not
+        a multiple of ``c_history_every``.
         """
         if not self.store_c_history:
             return
@@ -146,13 +176,24 @@ class LossTape:
     def from_records(cls, records, name: str = "loaded run") -> "LossTape":
         """Rebuild a tape's *scalar* history from saved metric records.
 
-        ``records`` is the list of per-iteration dicts written by
-        :class:`odil_wave.experiment.RunRecorder` (``metrics.jsonl`` rows). This
-        lets the plotting methods (``show`` / ``show_velocity_recovery``) run
-        against a finished, saved run without re-executing the solve. Full-grid
-        ``c_history`` is *not* stored per iteration by that scheme, so it stays
-        empty (see :func:`odil_wave.experiment.plots.animate_bands` for the
-        per-band velocity animation).
+        Parameters
+        ----------
+        records : sequence of dict
+            Per-iteration metric dicts (``metrics.jsonl`` rows) written by
+            :class:`odil_wave.experiment.RunRecorder`.
+        name : str
+            Name for the reconstructed tape.
+
+        Returns
+        -------
+        LossTape
+            Tape carrying the scalar series present in ``records``.
+
+        Notes
+        -----
+        Lets ``show`` / ``show_velocity_recovery`` run against a finished run
+        without re-solving. Full-grid ``c_history`` is not stored per record,
+        so it stays empty.
         """
         # (history key, record key) — records use ``loss_total`` for the loss.
         key_map = [
@@ -177,6 +218,18 @@ class LossTape:
         return tape
 
     def show(self, title: str = "Loss History"):
+        """Plot loss and PDE/data RMS residual histories.
+
+        Parameters
+        ----------
+        title : str
+            Figure suptitle.
+
+        Notes
+        -----
+        Asserts that a loss history exists; the data-RMS panel is shown only
+        when a data-residual series was logged.
+        """
         assert len(self.history["loss"]) > 0, "No loss history to show."
 
         has_data = len(self.history.get("data_rms", [])) > 0
@@ -215,8 +268,32 @@ class LossTape:
     ) -> str:
         """Render the ``c(x, y)`` snapshots in ``c_history`` to an animated GIF.
 
-        ``frame_labels`` optionally names each frame (e.g. per-band labels);
-        when omitted the frame index is shown.
+        Parameters
+        ----------
+        grid : Grid
+            Grid providing the physical extent for the axes.
+        filename : str
+            Output GIF path.
+        fps : int
+            Frames per second.
+        cmap : str
+            Matplotlib colormap name.
+        title : str
+            Base plot title.
+        norm : matplotlib.colors.Normalize, optional
+            Colour normalisation; derived from the data range if omitted.
+        frame_labels : sequence of str, optional
+            Per-frame labels; the frame index is shown when omitted.
+
+        Returns
+        -------
+        str
+            The written ``filename``.
+
+        Notes
+        -----
+        Raises ``RuntimeError`` if ``c_history`` is empty and ``ValueError``
+        if ``frame_labels`` length does not match the number of frames.
         """
         history = self.history["c_history"]
         if not history:
@@ -296,13 +373,28 @@ class LossTape:
         vcenter: float = 1600.0,
         vmax: float = 3000.0,
     ):
-        """4-panel: truth | recovered | recovered-truth | c-history error.
+        """Plot truth, recovered, difference and c-recovery-error panels.
 
-        The truth/recovered colourbar uses a two-slope normalisation: the
-        ranges ``[vmin, vcenter]`` and ``[vcenter, vmax]`` each occupy half of
-        the colourbar (defaults 1400 / 1600 / 3000 m/s, so water-to-soft-tissue
-        contrast gets the lower half and soft-tissue-to-skull the upper half).
-        Pass an explicit ``norm`` to override.
+        Parameters
+        ----------
+        truth : VelocityModel
+            Ground-truth velocity model.
+        recovered : VelocityModel
+            Recovered velocity model.
+        geom : AcquisitionGeometry
+            Geometry providing source/receiver positions to overlay.
+        title : str
+            Figure suptitle.
+        norm : matplotlib.colors.Normalize, optional
+            Colour normalisation for the velocity panels.
+        vmin, vcenter, vmax : float
+            Two-slope normalisation bounds in m/s used when ``norm`` is None.
+
+        Notes
+        -----
+        The velocity colourbar splits ``[vmin, vcenter]`` and
+        ``[vcenter, vmax]`` across its two halves. The error panel prefers the
+        recorded ``rel_c_error`` series and falls back to ``c_history``.
         """
         grid = truth.grid
         c_true_np = truth.c.detach().cpu().numpy()
@@ -351,8 +443,8 @@ class LossTape:
             plt.colorbar(im, ax=ax, shrink=0.85)
 
         ax_err = axes[1, 1]
-        # Prefer the per-iteration relative-error series recorded to disk (new
-        # logging scheme); otherwise recompute it from any in-memory c_history.
+        # Prefer the recorded per-iteration relative-error series; otherwise
+        # recompute it from any in-memory c_history.
         rel_hist = [
             e
             for e in self.history.get("rel_c_error", [])
@@ -385,8 +477,22 @@ class LossTape:
 
     @property
     def result(self):
+        """Optional result object attached to this tape.
+
+        Returns
+        -------
+        object or None
+            The stored result, or None if unset.
+        """
         return self._result
 
     @result.setter
     def result(self, value):
+        """Attach a result object to this tape.
+
+        Parameters
+        ----------
+        value : object
+            Result to store.
+        """
         self._result = value
