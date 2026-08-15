@@ -11,23 +11,7 @@ from odil_wave.plot_utils import frequency_scale, time_scale
 
 
 class SourceSignal:
-    """Temporal source waveform s(t) for an ODIL shot.
-
-    Split out from `AcquisitionGeometry` so the same transducer ring can
-    drive multiple frequencies (e.g. a low-frequency pass to resolve the
-    skull, then a higher-frequency pass to sharpen the interior).
-
-    Supported kinds
-    ---------------
-    ``"ricker"``
-        Parameters: ``f0``, ``t0``, ``amplitude``.
-
-    ``"tone_burst"``
-        Gaussian (or rectangular) enveloped sinusoidal burst, matching
-        ``stride.utils.wavelets.tone_burst``.
-        Parameters: ``f0``, ``n_cycles``, ``envelope``, ``offset``,
-        ``amplitude``.
-    """
+    """Temporal source waveform s(t) for an ODIL shot."""
 
     def __init__(
         self,
