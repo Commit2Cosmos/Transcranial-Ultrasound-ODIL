@@ -267,7 +267,21 @@ class HelmholtzSolver:
         return self._L_csr
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
-        """Stencil CSR for ``H`` at one frequency (matches matrix-free residual)."""
+        """Assemble the sparse Helmholtz matrix H for one frequency.
+
+        Parameters
+        ----------
+        c :
+            Full-grid velocity field to assemble H at.
+        freq_idx :
+            Index into the wavefield's frequency selection.
+
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            Sparse Helmholtz matrix H at that frequency (matches the
+            matrix-free residual).
+        """
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
