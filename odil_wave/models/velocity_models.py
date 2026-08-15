@@ -30,7 +30,22 @@ _PML_FILL_MODES = ("constant", "edge")
 
 
 def _normalise_pml_fill(mode: str) -> str:
-    """Validate a PML-fill mode; accept ``'replicate'`` as an alias for ``'edge'``."""
+    """Validate and canonicalise a PML-fill mode.
+
+    Parameters
+    ----------
+    mode : str
+        Fill mode; ``'replicate'`` is accepted as an alias for ``'edge'``.
+
+    Returns
+    -------
+    str
+        Either ``'constant'`` or ``'edge'``.
+
+    Notes
+    -----
+    Raises ``ValueError`` for an unrecognised mode.
+    """
     m = str(mode).lower()
     if m == "replicate":
         m = "edge"
@@ -43,12 +58,23 @@ def _normalise_pml_fill(mode: str) -> str:
 
 
 def velocity_norm(vmin: float, vcenter: float, vmax: float):
-    """Non-linear colorbar normalisation for velocity fields.
+    """Two-slope colorbar normalisation for velocity fields.
 
-    Maps half the colormap to [vmin, vcenter] and the other half to
-    [vcenter, vmax]. (e.g. water at 1500 m/s vs skull at 3000 m/s), so
-    low-velocity contrast is not visually crushed by the high-velocity range.
+    Parameters
+    ----------
+    vmin, vcenter, vmax : float
+        Lower bound, split point and upper bound in m/s.
 
+    Returns
+    -------
+    matplotlib.colors.TwoSlopeNorm
+        Normalisation mapping ``[vmin, vcenter]`` and ``[vcenter, vmax]`` to
+        each half of the colormap.
+
+    Notes
+    -----
+    Keeps low-velocity contrast from being visually crushed by a wide
+    high-velocity range (e.g. water at 1500 vs skull at 3000 m/s).
     """
     from matplotlib.colors import TwoSlopeNorm
 
@@ -79,6 +105,27 @@ class VelocityModel:
         pml_fill: str = "edge",
         **profile_kwargs,
     ):
+        """Build a velocity field for the given profile on the full grid.
+
+        Parameters
+        ----------
+        grid : Grid
+            Grid the field lives on.
+        profile : str
+            One of ``homogeneous``, ``overdensity``, ``shepp_logan`` or
+            ``shepp_logan_skull``.
+        base : float
+            Background speed in m/s.
+        contrast : float
+            Anomaly contrast added to ``base`` for the ``overdensity`` profile.
+        pml_c : float, optional
+            Fixed PML speed; defaults to the interior background (skull
+            profiles) or the field minimum otherwise.
+        pml_fill : str
+            PML fill mode passed to :meth:`build_full_c`.
+        **profile_kwargs
+            Extra per-profile parameters (see the class docstring).
+        """
         self.grid = grid
         self.profile = profile
         self.base = base
@@ -102,7 +149,24 @@ class VelocityModel:
         pml_c: Optional[float] = None,
         pml_fill: str = "edge",
     ) -> "VelocityModel":
-        """Build a VelocityModel from an already-computed full-grid c tensor."""
+        """Build a VelocityModel from an already-computed full-grid ``c`` tensor.
+
+        Parameters
+        ----------
+        grid : Grid
+            Grid the field lives on.
+        c : torch.Tensor
+            Full-grid velocity field; reshaped to ``grid.shape``.
+        pml_c : float, optional
+            Fixed PML speed; defaults to the field minimum.
+        pml_fill : str
+            PML fill mode.
+
+        Returns
+        -------
+        VelocityModel
+            Model wrapping ``c`` with the ``"custom"`` profile and no masks.
+        """
         vm = cls.__new__(cls)
         vm.grid = grid
         vm.profile = "custom"
@@ -119,14 +183,23 @@ class VelocityModel:
         return vm
 
     def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:
-        """Embed `(interior_nx, interior_ny)` c into the full grid, filling the PML.
+        """Embed an interior ``c`` into the full grid, filling the PML ring.
 
-        ``pml_fill='edge'`` (default) replicates the interior boundary outward so
-        ``c`` is continuous across the interior-PML interface.
+        Parameters
+        ----------
+        c_interior : torch.Tensor
+            Interior field ``(interior_nx, interior_ny)``.
 
-        ``pml_fill='constant'`` pads with the fixed ``pml_c`` (legacy behaviour);
-        this leaves a velocity jump at the interface once the interior edge drifts
-        away from ``pml_c``.
+        Returns
+        -------
+        torch.Tensor
+            Full-grid velocity field.
+
+        Notes
+        -----
+        ``pml_fill='edge'`` replicates the interior boundary outward so ``c`` is
+        continuous across the interface. ``pml_fill='constant'`` pads with the
+        fixed ``pml_c``, leaving a jump once the interior edge drifts from it.
         """
         p = self.grid.pml_width
         if p == 0:
@@ -138,17 +211,28 @@ class VelocityModel:
         return padded[0, 0]
 
     def _shepp_logan_interior_phantom(self, scale: float, threshold: float):
-        """Normalised Shepp-Logan phantom + head masks on the *interior* grid.
+        """Build the Shepp-Logan phantom and head masks on the interior grid.
 
-        Mirrors ``stride/stride_forward_shepp.py::shepp_logan_sos`` exactly:
-        same 90 deg rotation, resize with ``preserve_range``, min/max
-        normalisation, ``binary_fill_holes`` head and
-        ``binary_erosion(iterations=...)`` rim. All arrays are interior-shaped
-        ``(interior_nx, interior_ny)`` so the morphology sees the same array
-        borders Stride does; the PML padding is added later by embedding.
+        Parameters
+        ----------
+        scale : float
+            Fraction of the interior the phantom occupies.
+        threshold : float
+            Level above which the phantom defines the head region.
 
-        Returns ``(phantom, head, inner, rim)`` — a float32 phantom in [0, 1]
-        and three boolean masks (whole head, eroded interior, skull rim).
+        Returns
+        -------
+        tuple
+            ``(phantom, head, inner, rim)``: a float32 phantom in [0, 1] and
+            three interior-shaped boolean masks (whole head, eroded interior,
+            skull rim).
+
+        Notes
+        -----
+        Mirrors ``stride/stride_forward_shepp.py::shepp_logan_sos`` (90 deg
+        rotation, ``preserve_range`` resize, min/max normalisation,
+        filled-holes head, eroded rim) so the morphology sees the same array
+        borders; PML padding is added later by embedding.
         """
         g = self.grid
         shape = (g.interior_nx, g.interior_ny)
@@ -182,7 +266,20 @@ class VelocityModel:
         return phantom, head, inner, rim
 
     def _embed_interior(self, interior_np: np.ndarray, fill: float) -> torch.Tensor:
-        """Place an interior-shaped array into a full grid padded with ``fill``."""
+        """Place an interior-shaped array into a full grid padded with ``fill``.
+
+        Parameters
+        ----------
+        interior_np : np.ndarray
+            Interior-shaped array to embed.
+        fill : float
+            Value used for the surrounding PML ring.
+
+        Returns
+        -------
+        torch.Tensor
+            Full-grid tensor with the interior filled in.
+        """
         g = self.grid
         full = torch.full(g.shape, float(fill), dtype=g.dtype, device=g.device)
         full[g.interior_slice] = torch.from_numpy(np.ascontiguousarray(interior_np)).to(
@@ -191,7 +288,18 @@ class VelocityModel:
         return full
 
     def _embed_mask(self, interior_mask: np.ndarray) -> torch.Tensor:
-        """Place an interior-shaped boolean mask into a full-grid bool tensor."""
+        """Place an interior-shaped boolean mask into a full-grid bool tensor.
+
+        Parameters
+        ----------
+        interior_mask : np.ndarray
+            Interior-shaped boolean mask.
+
+        Returns
+        -------
+        torch.Tensor
+            Full-grid boolean tensor, False outside the interior.
+        """
         g = self.grid
         full = torch.zeros(g.shape, dtype=torch.bool, device=g.device)
         full[g.interior_slice] = torch.from_numpy(
@@ -200,6 +308,19 @@ class VelocityModel:
         return full
 
     def _build(self) -> torch.Tensor:
+        """Construct the full-grid velocity field for the configured profile.
+
+        Returns
+        -------
+        torch.Tensor
+            Full-grid velocity field; skull-bearing profiles also populate the
+            head/interior/rim masks and interior-background level.
+
+        Notes
+        -----
+        Raises ``ValueError`` for an unknown profile and ``NotImplementedError``
+        for the placeholder ``"skull"`` profile.
+        """
         g = self.grid
         base_field = torch.full(g.shape, self.base, dtype=g.dtype, device=g.device)
         # Head / interior / rim masks + brain-background level, populated only
@@ -294,19 +415,28 @@ class VelocityModel:
     def head_mask(self) -> Optional[torch.Tensor]:
         """Interior-restricted boolean mask of the region inside the skull.
 
-        Covers the whole head (skull rim + everything it encloses), sliced to
-        the non-PML interior so it aligns with metrics such as ``ssim``. Returns
-        ``None`` for profiles that have no skull/head (e.g. homogeneous).
+        Returns
+        -------
+        torch.Tensor or None
+            Whole-head mask (skull rim plus everything it encloses) sliced to
+            the non-PML interior, or None for profiles without a skull/head.
         """
         if getattr(self, "_head_mask", None) is None:
             return None
         return self._head_mask[self.grid.interior_slice]
 
     def skull_region_masks(self) -> tuple:
-        """Return ``(head_mask, interior_mask, rim_mask)`` on the full grid.
+        """Return the full-grid skull-region masks.
 
-        Available for ``shepp_logan`` / ``shepp_logan_skull``. Kept for
-        notebooks that still call this helper.
+        Returns
+        -------
+        tuple of torch.Tensor
+            ``(head_mask, interior_mask, rim_mask)`` on the full grid.
+
+        Notes
+        -----
+        Requires a skull-bearing profile (``shepp_logan`` /
+        ``shepp_logan_skull``); raises ``ValueError`` otherwise.
         """
         if getattr(self, "_head_mask", None) is None:
             raise ValueError(
@@ -317,10 +447,24 @@ class VelocityModel:
 
     @property
     def c_max(self) -> float:
+        """Maximum velocity on the full grid.
+
+        Returns
+        -------
+        float
+            ``max(c)`` in m/s.
+        """
         return float(self.c.max())
 
     @property
     def c_min(self) -> float:
+        """Minimum velocity on the full grid.
+
+        Returns
+        -------
+        float
+            ``min(c)`` in m/s.
+        """
         return float(self.c.min())
 
     def show(
@@ -333,6 +477,28 @@ class VelocityModel:
         norm=None,
         vcenter: float = 1600.0,
     ):
+        """Plot the velocity field with an optional PML-interior outline.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw on; a new figure is created when omitted.
+        title : str, optional
+            Plot title; defaults to ``c(x, y) [<profile>]``.
+        vmin, vmax : float, optional
+            Colour limits, ignored when ``norm`` is given.
+        show_pml : bool
+            Draw the dashed non-PML interior rectangle.
+        norm : matplotlib.colors.Normalize, optional
+            Colour normalisation (e.g. :func:`velocity_norm`).
+        vcenter : float
+            Split point retained for API compatibility.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes containing the plot.
+        """
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
