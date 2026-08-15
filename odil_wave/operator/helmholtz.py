@@ -318,6 +318,12 @@ class HelmholtzSolver:
             When True, print per-frequency assemble/factor/solve timings plus
             a final residual/timing summary; also computes that summary
             (an extra residual evaluation), which is skipped when False.
+
+        Returns
+        -------
+        List[Wavefield]
+            One solved Wavefield per shot, each holding the amplitude at
+            every selected frequency.
         """
         wf = self.wavefield
         grid = wf.grid
