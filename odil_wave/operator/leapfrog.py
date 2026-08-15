@@ -35,6 +35,24 @@ class LeapfrogSolver:
         space_order: int = 4,
         pml_weight: float = 1.0,
     ) -> None:
+        """Configure the leapfrog solver and check CFL stability.
+
+        Parameters
+        ----------
+        wavefield : Wavefield
+            Field carrying the grid and velocity model.
+        geometry : object
+            Source/receiver geometry providing time-domain sources.
+        space_order : int, optional
+            Spatial Laplacian order (2, 4, 6, 8 or 10).
+        pml_weight : float, optional
+            Scaling applied to the PML damping profiles.
+
+        Notes
+        -----
+        Raises ``ValueError`` for an unsupported ``space_order`` or when the
+        CFL number exceeds the leapfrog stability limit; warns when close to it.
+        """
         if space_order == 2:
             lap_cls = Laplacian2ndOrder
         elif space_order == 4:
@@ -58,8 +76,7 @@ class LeapfrogSolver:
         grid = wavefield.grid
         c_max = float(wavefield.velocity_model.c.max())
         cfl = grid.cfl(c_max)
-        # Leapfrog stability: cfl_limit = 2 / sqrt(|Λ_1d(π)|), where |Λ_1d(π)| is
-        # the magnitude of the 1D Laplacian stencil symbol at the Nyquist angle
+        # Stability limit cfl_limit = 2 / sqrt(|Λ_1d(π)|) at the Nyquist angle
         # (grid.cfl already folds in the 2-D 1/dx²+1/dy² factor).
         if space_order == 2:
             cfl_limit = 1.0
@@ -87,7 +104,22 @@ class LeapfrogSolver:
             )
 
     def solve_time(self, verbose: bool = True) -> torch.Tensor:
-        """Time-step all shots; returns real ``(n_shots, nt, nx, ny)``."""
+        """Time-step every shot with the explicit leapfrog scheme.
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            Print a residual/amplitude health summary when ``True``.
+
+        Returns
+        -------
+        torch.Tensor
+            Real wavefield of shape ``(n_shots, nt, nx, ny)``.
+
+        Notes
+        -----
+        Stores a PDE-residual health check in :attr:`diagnostics`.
+        """
         wf = self.wavefield
         grid = wf.grid
         device, dtype = grid.device, grid.dtype
@@ -127,7 +159,7 @@ class LeapfrogSolver:
                 )
                 amp[:, t + 1] = rhs / denom
 
-        # Time-domain residual health check (legacy operators).
+        # PDE-residual health check.
         time_op = TimeOperator2ndOrder(wf)
         mask_first, mask_last = _make_endpoint_masks(NT, device)
         with torch.no_grad():
@@ -154,5 +186,16 @@ class LeapfrogSolver:
         return amp
 
     def solve(self, verbose: bool = True) -> torch.Tensor:
-        """Alias for :meth:`solve_time` (returns time-domain amplitudes)."""
+        """Alias for :meth:`solve_time`.
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            Forwarded to :meth:`solve_time`.
+
+        Returns
+        -------
+        torch.Tensor
+            Time-domain amplitudes ``(n_shots, nt, nx, ny)``.
+        """
         return self.solve_time(verbose=verbose)
