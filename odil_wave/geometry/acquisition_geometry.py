@@ -36,6 +36,11 @@ def source_ring_indices(
     -------
     List[int]
         Indices into the receiver ring to use as source positions.
+
+    Raises
+    ------
+    ValueError
+        If ``n_sources_per_offset`` is not positive.
     """
     if n_sources_per_offset <= 0:
         raise ValueError(
@@ -91,6 +96,18 @@ class AcquisitionGeometry:
 
         Parameters
         ----------
+        grid : Grid
+            Spatial/temporal grid the geometry is placed on; also supplies
+            the device and dtype used for the geometry's tensors.
+        source : SourceSignal
+            Temporal source wavelet, used both for its waveform/spectrum and
+            (when `sigma_s` is not given) to pick a default Gaussian width
+            from its centre frequency `f0`.
+        frequency_selection : FrequencySelection
+            Frequency bins used by `source_field` for the frequency-domain
+            source, and by the complex dtype it produces.
+        n_receivers : int, default 16
+            Number of receivers placed on the ellipse.
         n_sources : int, optional
             Requested subsample count from the receiver ring (see
             `source_ring_indices`). Defaults to `n_receivers`. The actual
@@ -103,6 +120,8 @@ class AcquisitionGeometry:
         a_frac, b_frac : float, default 0.55, 0.70
             Semi-axes of the receiver ellipse as a fraction of the half-width
             / half-height of the grid's interior region.
+        ring_center : (float, float), default (0.0, 0.0)
+            Physical-coordinate centre of the receiver ellipse.
         source_spatial : {"gaussian", "point"}, default "gaussian"
             Spatial injection profile: ``"gaussian"`` is a Gaussian blob of
             width `sigma_s`; ``"point"`` is a unit Kronecker delta at the
@@ -256,6 +275,9 @@ class AcquisitionGeometry:
             A `Wavefield`, a `(NT, NX, NY)` amplitude tensor/array, or a list
             of either (one entry per shot, producing a subplot grid). `ax` is
             ignored when a list is given.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into for a single wavefield. Defaults to a new
+            figure/axes.
         normalize : {"per_receiver", "none", None}, default "per_receiver"
             Per-receiver max-abs balancing, or no rescaling.
 
@@ -402,6 +424,8 @@ class AcquisitionGeometry:
         velocity_model : VelocityModel
             Background image; also sets the axis unit scaling that the
             receiver/source markers are plotted in.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Defaults to a new figure/axes.
 
         Returns
         -------
