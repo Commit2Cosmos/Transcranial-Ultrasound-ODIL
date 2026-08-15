@@ -354,11 +354,9 @@ def run_frequency_continuation(
         if verbose:
             f_label = ", ".join(f"{f * 1e-3:.1f}" for f in band.frequencies_hz)
             print(
-                f"\n{'=' * 56}\n"
                 f"  Band {band_idx + 1}/{len(band_list)}: "
                 f"[{f_label}] kHz  (nf={freq_sel.n_frequencies}, "
                 f"n_iter={n_iter}, n_shots={geom.n_sources})\n"
-                f"{'=' * 56}"
             )
 
         t_band0 = time.perf_counter()
