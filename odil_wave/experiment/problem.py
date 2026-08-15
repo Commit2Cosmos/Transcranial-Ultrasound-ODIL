@@ -82,6 +82,7 @@ class Problem:
 
     @property
     def observation_truth(self) -> VelocityModel:
+        """Truth model used to synthesise data (forward truth if PML-split)."""
         return (
             self.forward_truth
             if self.forward_truth is not None
@@ -90,6 +91,7 @@ class Problem:
 
     @property
     def observation_source(self) -> SourceSignal:
+        """Source used to synthesise data (forward source if PML-split)."""
         return self.forward_source if self.forward_source is not None else self.source
 
     @property
@@ -102,6 +104,19 @@ class Problem:
         self,
         frequencies_hz: Sequence[float],
     ) -> BandContext:
+        """Build the per-band frequency selection, geometry and observed data.
+
+        Parameters
+        ----------
+        frequencies_hz : sequence of float
+            Frequencies inverted jointly in this continuation stage.
+
+        Returns
+        -------
+        BandContext
+            Band context; when the PML is split, observed data are reduced to
+            receiver traces on the forward grid.
+        """
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
         geom = self._geometry(self.grid, self.source, freq)
@@ -257,6 +272,24 @@ def _build_velocity(
 
 
 def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
+    """Resolve the acquisition ring centre to physical ``(x, y)`` coordinates.
+
+    Parameters
+    ----------
+    cfg : RunConfig
+        Config carrying ``acquisition.ring_center``.
+    grid : Grid
+        Grid providing the physical extent for ``"grid_center"``.
+
+    Returns
+    -------
+    tuple of float
+        The ring centre in metres.
+
+    Notes
+    -----
+    Raises :class:`ValueError` for an unrecognised ``ring_center``.
+    """
     rc = cfg.acquisition.ring_center
     if isinstance(rc, str):
         if rc != "grid_center":
@@ -275,6 +308,24 @@ def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
 def _make_grid(
     cfg: RunConfig, device: torch.device, dtype: torch.dtype, pml_width: int
 ) -> Grid:
+    """Build a :class:`Grid` from the config with an explicit PML width.
+
+    Parameters
+    ----------
+    cfg : RunConfig
+        Config carrying the ``grid`` block.
+    device : torch.device
+        Target device.
+    dtype : torch.dtype
+        Target floating dtype.
+    pml_width : int
+        PML thickness in cells (inverse or forward grid).
+
+    Returns
+    -------
+    Grid
+        The constructed grid.
+    """
     g = cfg.grid
     return Grid(
         interior_shape=tuple(g.interior_shape),
@@ -295,6 +346,20 @@ def _make_grid(
 
 
 def _make_source(cfg: RunConfig, grid: Grid) -> SourceSignal:
+    """Build a :class:`SourceSignal` from the config on a given grid.
+
+    Parameters
+    ----------
+    cfg : RunConfig
+        Config carrying the ``source`` block.
+    grid : Grid
+        Grid the source is defined on.
+
+    Returns
+    -------
+    SourceSignal
+        The constructed source wavelet.
+    """
     s = cfg.source
     return SourceSignal(
         grid,

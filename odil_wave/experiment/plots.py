@@ -1,17 +1,3 @@
-"""Load-and-plot helpers over a saved run directory (the ``RunRecorder`` scheme).
-
-Everything here reads the artifacts written by
-:func:`odil_wave.experiment.run_inverse` — ``metrics.jsonl``,
-``bands/band_XX/c_final.npy`` and ``final/c_final.npy`` — so the standard
-diagnostics can be reproduced from disk without re-running the solve. It reuses
-the library plotting already defined on :class:`odil_wave.loss.LossTape` and in
-:mod:`odil_wave.metrics`, rather than re-deriving matplotlib code per notebook.
-
-Live monitoring *during* a run is provided by :class:`LiveVelocityView`, which
-is passed to ``run_inverse(..., on_band_end=...)`` and redraws the recovered
-velocity after every completed frequency band.
-"""
-
 from __future__ import annotations
 
 import collections
@@ -40,12 +26,7 @@ RunDirOrRecords = Union[str, Path, List[dict]]
 # Rebuilding the physical problem from a run's saved config
 # --------------------------------------------------------------------------- #
 def load_config(run_dir: Union[str, Path]) -> RunConfig:
-    """Reconstruct the resolved :class:`RunConfig` saved alongside a run.
-
-    Reads ``config_resolved.yaml`` (written by ``run_inverse`` before the solve
-    starts) and rebuilds the config object — the exact inverse of the dump, so
-    no defaults are re-applied.
-    """
+    """Reconstruct the resolved :class:`RunConfig` saved alongside a run."""
     path = Path(run_dir) / "config_resolved.yaml"
     if not path.exists():
         raise FileNotFoundError(
@@ -148,6 +129,21 @@ def load_band_velocities(
 
 
 def _band_meta(meta_path: Path, fallback_dir: str) -> Tuple[int, str]:
+    """Read a band's ``(index, label)`` from its metadata JSON.
+
+    Parameters
+    ----------
+    meta_path : Path
+        Path to ``c_final_metadata.json``.
+    fallback_dir : str
+        Band directory name parsed (e.g. ``band_03_60khz``) when metadata is
+        absent.
+
+    Returns
+    -------
+    tuple of (int, str)
+        The band index and label.
+    """
     if meta_path.exists():
         meta = json.loads(meta_path.read_text())
         return int(meta.get("band_index", 0)), str(meta.get("label", fallback_dir))
@@ -277,9 +273,7 @@ def animate_bands(
     """Animate the per-band recovered velocity (one frame per completed band).
 
     ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
-    config, so only the run directory is required. Reuses
-    :meth:`odil_wave.loss.LossTape.animate_c` with the saved
-    ``bands/band_XX/c_final.npy`` snapshots as frames.
+    config, so only the run directory is required.
     """
     grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
     bands = load_band_velocities(run_dir, grid, pml_c=pml_c)
@@ -335,6 +329,22 @@ class LiveVelocityView:
         vmax: float = 3000.0,
         figsize: Tuple[float, float] = (12, 4.5),
     ) -> None:
+        """Configure the live per-band velocity monitor.
+
+        Parameters
+        ----------
+        truth : VelocityModel, optional
+            Ground-truth model; only its ``grid`` is used when ``grid`` is not
+            given.
+        grid : Grid, optional
+            Grid for the spatial axes (defaults to ``truth.grid`` or the band
+            model's grid).
+        vmin, vcenter, vmax : float, optional
+            Two-slope velocity colour scaling; ``vmax <= vmin`` disables it and
+            uses matplotlib autoscaling.
+        figsize : tuple of float, optional
+            Figure size for the two-panel view.
+        """
         self.truth = truth
         self.grid = (
             grid if grid is not None else (truth.grid if truth is not None else None)
@@ -346,6 +356,20 @@ class LiveVelocityView:
         self._rel_err: List[Optional[float]] = []
 
     def __call__(self, band_result, run_result: Any = None) -> None:
+        """Redraw the recovered velocity and progress trend after a band.
+
+        Parameters
+        ----------
+        band_result : BandResult
+            The freshly completed band's result.
+        run_result : Any, optional
+            The overall run result (unused; accepted for the callback signature).
+
+        Notes
+        -----
+        Intended as the ``run_inverse(..., on_band_end=...)`` callback; clears
+        the current cell output in Jupyter before drawing.
+        """
         vm = band_result.velocity_model
         grid = self.grid if self.grid is not None else vm.grid
         c = vm.c.detach().cpu().numpy()
@@ -370,6 +394,20 @@ class LiveVelocityView:
         plt.show()
 
     def _draw_velocity(self, ax, c, grid, band_result) -> None:
+        """Draw the recovered velocity map for one band onto ``ax``.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            Axis to draw on.
+        c : numpy.ndarray
+            Recovered velocity field.
+        grid : Grid
+            Grid providing the physical extent.
+        band_result : BandResult
+            Band result supplying the index / label / SSIM for the title.
+
+        """
         (xmin, xmax), (ymin, ymax) = grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         imshow_kw = dict(
@@ -391,6 +429,17 @@ class LiveVelocityView:
         plt.colorbar(im, ax=ax, shrink=0.85, label="c [m/s]")
 
     def _draw_trend(self, ax) -> None:
+        """Draw the per-band SSIM and relative c-error trends onto ``ax``.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            Axis to draw on (a twin y-axis is added for the c-error series).
+
+        Notes
+        -----
+        Shows a placeholder message when no ground-truth metrics are available.
+        """
         x = list(range(len(self._labels)))
         drew = False
         if any(s is not None for s in self._ssim):
