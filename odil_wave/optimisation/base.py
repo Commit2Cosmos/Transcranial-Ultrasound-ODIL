@@ -24,7 +24,7 @@ def _gaussian_smooth_2d(g: torch.Tensor, sigma: float) -> torch.Tensor:
 
     Returns
     -------
-    Tensor of same shape as *g*, smoothed in-place copy.
+    A new tensor of the same shape as *g*, smoothed.
     """
     if sigma <= 0.0:
         return g
@@ -39,18 +39,16 @@ def _gaussian_smooth_2d(g: torch.Tensor, sigma: float) -> torch.Tensor:
 
 
 class StepScheduler:
-    """Multiplicative outer-loop scheduler for a single scalar knob (A4).
+    """Multiplicative outer-loop scheduler for a single scalar knob.
 
     ``value`` starts at ``base`` and, when *active*, is rescaled by ``factor``
     (``increase``) or ``1 / factor`` (otherwise) at the start of every outer
-    whose index is a positive multiple of ``every_n``. The scheduler is
-    *inactive* — a no-op leaving ``value`` at its base for the whole run — when
-    either ``factor`` or ``every_n`` is 0 (the run-knob convention). Ported from
-    the sandbox ``run_diagnostics.StepScheduler``; carrying the current ``value``
-    lets the loop both apply it and record it per outer.
+    whose index is a positive multiple of ``every_n``. Inactive -- a no-op
+    leaving ``value`` at its base -- when ``factor`` or ``every_n`` is 0.
     """
 
     def __init__(self, base: float, factor: float, every_n: int, increase: bool):
+        """Build a scheduler starting at ``base`` (inactive if ``factor`` or ``every_n`` is 0)."""
         self.value = float(base)
         self.factor = float(factor)
         self.every_n = int(every_n)
@@ -67,6 +65,7 @@ class StepScheduler:
 
     @property
     def active(self) -> bool:
+        """Whether the scheduler rescales ``value`` at all (``False`` = does nothing)."""
         return self.factor != 0 and self.every_n != 0
 
     def step(self, outer_i: int) -> float:
@@ -93,15 +92,44 @@ def _armijo_gd_step_z(
     """One steepest-descent step on complex ``z`` with Armijo backtracking.
 
     Assumes ``z_real.grad`` / ``z_imag.grad`` are already populated at the
-    current point and ``loss0`` is that point's loss. Updates parameters
-    in place.
+    current point and ``loss0`` is that point's loss. Updates ``z_real`` /
+    ``z_imag`` in place; if no step is accepted, they are restored to their
+    starting values.
+
+    Parameters
+    ----------
+    z_real, z_imag :
+        Real/imaginary parts of ``z``, updated in place.
+    pack_z :
+        Zero-argument callable returning the current complex ``z`` from
+        ``z_real`` / ``z_imag``.
+    apply_u :
+        Callable mapping a trial ``z`` to the corresponding ``u``.
+    eval_loss :
+        Callable taking ``(z, u)`` and returning the scalar loss tensor for
+        that point.
+    loss0 :
+        Loss at the current point, before this step.
+    lr :
+        Initial step size; halved on each rejected backtrack.
+    armijo_c :
+        Armijo sufficient-decrease constant.
+    max_backtracks :
+        Maximum number of step-size halvings to try before reverting to
+        the starting point.
 
     Returns
     -------
-    loss :
-        Loss at the accepted point (or ``loss0`` if no step accepted).
-    n_trial_evals :
-        Number of line-search loss evaluations (excluding ``loss0``).
+    loss : torch.Tensor
+        Loss at the accepted point (or ``loss0`` if no step was accepted).
+    n_trial_evals : int
+        Number of line-search loss evaluations performed (excluding ``loss0``).
+
+    Raises
+    ------
+    RuntimeError
+        If ``z_real.grad`` or ``z_imag.grad`` is ``None`` (gradients not
+        populated before calling).
     """
     g_r = z_real.grad
     g_i = z_imag.grad
@@ -132,17 +160,11 @@ def _armijo_gd_step_z(
 
 _C_PARAMS = frozenset({"velocity", "squared_slowness"})
 
-# Numerical safety rails for c_param="squared_slowness", expressed as bounds
-# on the normalised velocity ratio ĉ = c / c_ref. These are not the
-# user-facing physical c_min/c_max bounds (applied separately, via
-# _c_param_bounds, after each optimiser step) -- they only stop float32
-# overflow/NaN when an L-BFGS strong-Wolfe line search trials the raw
-# m̂ = 1/ĉ² parameter far outside any sane range (e.g. m̂ near zero maps to
-# ĉ -> +inf through rsqrt). 100x headroom in either direction is far beyond
-# any physically meaningful wavespeed contrast, so this never constrains
-# normal optimisation -- but it does protect every closure evaluation
-# (including line-search trial points, not just the accepted step) since
-# _c_hat_from_c_param is called from inside c_closure() itself.
+# Numerical safety rails for c_param="squared_slowness" (distinct from the
+# user-facing c_min/c_max in _c_param_bounds): clamp the raw m_hat = 1/c_hat^2
+# to stop float32 overflow/NaN when a line search trials it near zero
+# (c_hat -> +inf via rsqrt). 100x headroom never constrains normal
+# optimisation but guards every closure, including line-search trials.
 _SQ_SLOWNESS_RATIO_MIN = 1e-2
 _SQ_SLOWNESS_RATIO_MAX = 1e2
 _SQ_SLOWNESS_PARAM_MIN = _SQ_SLOWNESS_RATIO_MAX**-2  # = 1e-4
@@ -150,20 +172,17 @@ _SQ_SLOWNESS_PARAM_MAX = _SQ_SLOWNESS_RATIO_MIN**-2  # = 1e4
 
 
 def _c_hat_from_c_param(raw: torch.Tensor, c_param: str) -> torch.Tensor:
-    """Map the c-block's raw optimisation variable to normalised velocity ĉ.
+    """Map the c-block's raw optimisation variable to normalised velocity c_hat.
 
-    ``c_param="velocity"`` (default): ``raw`` already *is* ĉ — identity, so
-    every downstream call site (physics operator, regulariser, plots,
-    metrics) is unchanged from before this parametrisation existed.
+    ``c_param="velocity"`` (default): ``raw`` already *is* c_hat (identity).
 
-    ``c_param="squared_slowness"``: ``raw`` is m̂ = 1/ĉ² (squared slowness
-    normalised the same way as ĉ, i.e. by ``c_ref``). ``raw`` is clamped to
+    ``c_param="squared_slowness"``: ``raw`` is m_hat = 1/c_hat^2 (squared
+    slowness normalised by ``c_ref``, same as c_hat). ``raw`` is clamped to
     ``[_SQ_SLOWNESS_PARAM_MIN, _SQ_SLOWNESS_PARAM_MAX]`` first (see the
-    safety-rail note above), bounding the returned ĉ to
+    safety-rail note above), bounding c_hat to
     ``[_SQ_SLOWNESS_RATIO_MIN, _SQ_SLOWNESS_RATIO_MAX]``. Returns
-    ĉ = m̂^(-1/2); autograd differentiates through this transform, so
-    gradients w.r.t. ``raw`` are correctly ``dL/dm̂`` while everything else
-    (physics, regulariser, saved/plotted ``c``) still only ever sees ĉ.
+    c_hat = m_hat^(-1/2); autograd differentiates through this transform, so
+    gradients w.r.t. ``raw`` are correctly ``dL/dm_hat``.
     """
     if c_param == "squared_slowness":
         raw_safe = raw.clamp(min=_SQ_SLOWNESS_PARAM_MIN, max=_SQ_SLOWNESS_PARAM_MAX)
@@ -172,12 +191,12 @@ def _c_hat_from_c_param(raw: torch.Tensor, c_param: str) -> torch.Tensor:
 
 
 def _init_c_param(c_hat0: torch.Tensor, c_param: str) -> torch.Tensor:
-    """Inverse of :func:`_c_hat_from_c_param`: raw parameter from initial ĉ₀.
+    """Inverse of :func:`_c_hat_from_c_param`: raw parameter from initial c_hat0.
 
     For ``c_param="squared_slowness"``, ``c_hat0`` is clamped to
     ``[_SQ_SLOWNESS_RATIO_MIN, _SQ_SLOWNESS_RATIO_MAX]`` first, as the same
-    numerical safety rail (protects against a near-zero initial ĉ₀ blowing
-    up m̂₀).
+    numerical safety rail (protects against a near-zero initial c_hat0
+    blowing up m_hat0).
     """
     if c_param == "squared_slowness":
         c_hat0_safe = c_hat0.clamp(
@@ -190,10 +209,10 @@ def _init_c_param(c_hat0: torch.Tensor, c_param: str) -> torch.Tensor:
 def _c_param_bounds(
     c_min: Optional[float], c_max: Optional[float], c_param: str
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Map ĉ bounds to raw-parameter bounds (identity unless squared_slowness).
+    """Map c_hat bounds to raw-parameter bounds (identity unless squared_slowness).
 
-    ``m = 1/ĉ²`` is monotonically *decreasing* in ĉ, so the bounds swap:
-    ``m_min = 1/c_max²``, ``m_max = 1/c_min²``.
+    ``m = 1/c_hat^2`` is monotonically *decreasing* in c_hat, so the bounds
+    swap: ``m_min = 1/c_max^2``, ``m_max = 1/c_min^2``.
     """
     if c_param != "squared_slowness":
         return c_min, c_max
@@ -206,11 +225,13 @@ class Optimiser(ABC):
     """Base optimiser class."""
 
     def __init__(self, wavefield: Wavefield, loss: DiscreteLoss) -> None:
+        """Store the wavefield to optimise and the loss to minimise it against."""
         self.loss = loss
         self.wavefield = wavefield
 
     @abstractmethod
     def minimise(self, **kwargs) -> Tuple[List[Wavefield], LossTape]:
+        """Run the optimiser and return the solved wavefields and loss tape."""
         raise NotImplementedError
 
 
@@ -220,44 +241,45 @@ class LBFGSB(Optimiser):
     Each outer iteration updates the wavefield block then the ``c`` block
     (``u`` or ``z`` held fixed as appropriate). Complex wavefield unknowns are
     stored as two real tensors. ``c`` is always updated with L-BFGS
-    (``c_max_iter``, ``c_lr``, …). The c-block gradient is optionally Gaussian
-    smoothed by ``c_grad_smooth_sigma`` (grid cells; ``0`` = off — the sole
-    c-gradient preconditioner).
+    (``c_max_iter``, ``c_lr``, ...). Before each c-block L-BFGS step, its
+    gradient is optionally Gaussian-smoothed by ``c_grad_smooth_sigma`` (grid
+    cells; ``0`` = off) -- the only gradient smoothing applied to c.
 
     Wavefield block solver (``u_solve``, direct path only):
 
-    * ``"optim"`` (default) — one fresh L-BFGS u-block step (``u_steps`` ×
+    * ``"optim"`` (default) -- one fresh L-BFGS u-block step (``u_steps`` x
       ``max_iter``).
-    * ``"exact"`` — replace the u-block by the exact minimiser
+    * ``"exact"`` -- replace the u-block by the exact minimiser
       ``u* = u0 - H^{-1} g(u0)`` of the frozen-c quadratic wavefield subproblem,
-      via a direct sparse factorisation of the full Hessian ``H = α AᴴA + β PᴴP``
+      via a direct sparse factorisation of the full Hessian
+      ``H = alpha * A^H A + beta * P^H P``
       (:class:`~odil_wave.optimisation.u_block_hessian.UBlockHessian`). No L-BFGS
-      runs for the u block. Inverse-only; incompatible with ``u_precond="z"``.
+      runs for the u block. Inverse-only.
 
     Outer-loop schedulers (``pde_weight_schedule`` /
-    ``c_grad_smooth_sigma_schedule``; A4): each is a ``(factor, every_n,
+    ``c_grad_smooth_sigma_schedule``): each is a ``(factor, every_n,
     direction)`` spec (or ``None``) that multiplicatively rescales the ``pde``
-    loss weight / the c-gradient smoothing σ every ``every_n`` outers. Inactive
-    (no-op) when ``factor`` or ``every_n`` is 0.
+    loss weight / the c-gradient smoothing sigma every ``every_n`` outers.
+    Inactive (no-op) when ``factor`` or ``every_n`` is 0.
 
     Wavefield mode (``u_precond``):
 
-    * ``None`` / ``False`` (default) — direct L-BFGS on physical ``u``
+    * ``None`` / ``False`` (default) -- direct L-BFGS on physical ``u``
       (``u_steps``, ``max_iter``).
-    * ``"z"`` — reparameterisation ``u = A(c)^{-1} z``. The ``z`` block is
+    * ``"z"`` -- reparameterisation ``u = A(c)^{-1} z``. The ``z`` block is
       controlled by:
 
-      - ``z_optim``: ``"gd"`` (default) — one steepest-descent step with
-        Armijo backtracking (initial step ``z_lr``); or ``"lbfgs"`` —
+      - ``z_optim``: ``"gd"`` (default) -- one steepest-descent step with
+        Armijo backtracking (initial step ``z_lr``); or ``"lbfgs"`` --
         PyTorch L-BFGS using ``max_iter`` / ``history_size``.
       - ``z_steps``: number of z updates per outer iteration (recommended: 1).
       - ``z_lr``: Armijo initial step when ``z_optim="gd"`` (recommended: 1.0).
 
       PDE loss is ``mean(|z-f|^2)``; data loss is ``mean(|P A(c)^{-1} z - d|^2)``.
-      Recommended weights (caller-side): ``pde_weight=100``, ``data_weight=1``.
-      Prefer ``z_optim="gd"``: with the usual per-outer z-history reset,
-      ``z_optim="lbfgs"`` and ``max_iter=1`` is nearly the same as one
-      steepest-descent + Wolfe step and does not improve recovery.
+      Recommended weights: ``pde_weight=100``, ``data_weight=1``. Prefer
+      ``z_optim="gd"``: with the usual per-outer z-history reset,
+      ``z_optim="lbfgs"`` and ``max_iter=1`` is nearly equivalent and does not
+      improve recovery.
     """
 
     _DEFAULT_OPTS = {
@@ -277,19 +299,18 @@ class LBFGSB(Optimiser):
         "c_max_iter": 4,
         "c_history_size": 10,
         "c_line_search_fn": "strong_wolfe",
-        # c-gradient Gaussian smoothing width in grid cells (0 = off). Replaces
-        # the former c_precond / c_precond_type / c_precond_stab machinery: the
-        # only c-gradient preconditioner is Gaussian smoothing, and 0 disables it.
+        # c-gradient Gaussian smoothing width in grid cells; 0 disables it
+        # (the only c-gradient preconditioner).
         "c_grad_smooth_sigma": 0.0,
         "reset_c_history": True,
-        # Wavefield block solver: "optim" (L-BFGS) or "exact" (u* via direct H⁻¹).
+        # Wavefield block solver: "optim" (L-BFGS) or "exact" (u* via direct H^-1).
         "u_solve": "optim",
-        # Outer-loop schedulers (A4): (factor, every_n, direction) tuples, or
-        # None for inactive. Only pde_weight and c_grad_smooth_sigma schedulable.
+        # Outer-loop schedulers: (factor, every_n, direction) tuples, or None
+        # for inactive. Only pde_weight and c_grad_smooth_sigma schedulable.
         "pde_weight_schedule": None,
         "c_grad_smooth_sigma_schedule": None,
-        # c-block optimisation variable: "velocity" (default, ĉ itself) or
-        # "squared_slowness" (optimise m̂ = 1/ĉ²).
+        # c-block optimisation variable: "velocity" (default, c_hat itself) or
+        # "squared_slowness" (optimise m_hat = 1/c_hat^2).
         "c_param": "velocity",
     }
     _LBFGS_KEYS = frozenset(
@@ -313,6 +334,8 @@ class LBFGSB(Optimiser):
         u_init=None,
         **opts,
     ) -> None:
+        """Set up the optimiser; ``clamp`` enables ``c`` bounds, ``opts``
+        override the defaults in ``_DEFAULT_OPTS``."""
         super().__init__(wavefield, loss)
         grid = wavefield.grid
         self.c_min = grid.c_min if clamp else None
@@ -322,6 +345,8 @@ class LBFGSB(Optimiser):
         self.opts.update(opts)
 
     def _split_opts(self):
+        """Validate ``self.opts`` and unpack it into the individual loop
+        settings and the separate LBFGS option dicts for the u/c blocks."""
         opts = dict(self.opts)
         n_iter = int(opts.pop("n_iter"))
         u_steps = int(opts.pop("u_steps", 1))
@@ -464,10 +489,35 @@ class LBFGSB(Optimiser):
     ) -> Tuple[List[Wavefield], LossTape]:
         """Run wavefield L-BFGS then c-LBFGS block-coordinate loop.
 
-        ``diagnostics`` (LBFGSB direct path only) is an optional duck-typed
-        collector; when given, per-outer block-diagnostic snapshots are handed to
-        it (``bind`` / ``record_outer`` / ``finalise``) with **no** effect on the
-        trajectory. It stays ``None`` in normal runs, keeping this a no-op.
+        Dispatches to the direct ``u``-block path, or to the internal
+        z-reparametrised path when ``u_precond="z"`` (see the class
+        docstring for the two paths' semantics).
+
+        Parameters
+        ----------
+        on_iteration :
+            Optional callback ``on_iteration(i, c_full)`` invoked once per
+            accepted outer iteration with the iteration index and the
+            current full ``c`` field.
+        diagnostics :
+            Direct ``u``-block path only. Optional duck-typed collector;
+            when given, per-outer block-diagnostic snapshots are handed to
+            it (``bind`` / ``record_outer`` / ``finalise``) with no effect
+            on the trajectory. ``None`` (the default) keeps this a no-op.
+        **overrides :
+            Per-call overrides merged into ``self.opts`` before splitting
+            (see ``_DEFAULT_OPTS`` / ``_split_opts``), e.g. ``n_iter``,
+            ``c_lr``, ``u_precond``.
+
+        Returns
+        -------
+        wavefields : List[Wavefield]
+            One solved ``Wavefield`` per shot, holding the final amplitude
+            and recovered ``c``.
+        tape : LossTape
+            The loss callback passed at construction, with a ``.result``
+            dict of summary stats attached (iteration/closure counts,
+            final loss, ...).
         """
         self.opts.update(overrides)
         (
@@ -529,9 +579,9 @@ class LBFGSB(Optimiser):
             c0_int = vm_c_const[grid.interior_slice].detach().clone()
             c_ref = float(c0_int.mean().item())
             c_hat0 = c0_int / c_ref
-            # Raw c-block optimisation variable: ĉ itself (c_param="velocity",
-            # default) or m̂ = 1/ĉ² (c_param="squared_slowness"). See
-            # _c_hat_from_c_param for the (autograd-differentiable) map back to ĉ.
+            # Raw c-block optimisation variable: c_hat itself (c_param="velocity",
+            # default) or m_hat = 1/c_hat^2 (c_param="squared_slowness"). See
+            # _c_hat_from_c_param for the (autograd-differentiable) map back to c_hat.
             c_interior_param = torch.nn.Parameter(_init_c_param(c_hat0, c_param))
         else:
             c_ref = None
@@ -566,7 +616,7 @@ class LBFGSB(Optimiser):
         n_c_closure = 0
         n_outer_done = 0
 
-        # A4 outer-loop schedulers. Bases are read from the freshly built loss /
+        # Outer-loop schedulers. Bases are read from the freshly built loss /
         # c-block sigma so an inactive scheduler re-writes the value it read
         # (exact no-op). ``sigma_box`` carries the sigma the c-closure smooths
         # with, updated once per outer.
@@ -615,7 +665,7 @@ class LBFGSB(Optimiser):
         for i in range(n_iter):
             n_outer_done = i + 1
 
-            # A4 schedulers, applied at the start of the outer.
+            # Outer-loop schedulers, applied at the start of the outer.
             if is_inverse:
                 self.loss.config.weights["pde"] = pde_sched.step(i)
             sigma_box[0] = sigma_sched.step(i)
@@ -638,7 +688,7 @@ class LBFGSB(Optimiser):
                         u_optimiser.zero_grad()
                         amps = pack_u()
                         if is_inverse:
-                            # PDE uses physical c; regulariser uses normalised ĉ.
+                            # PDE uses physical c; regulariser uses normalised c_hat.
                             c_hat_fixed = _c_hat_from_c_param(
                                 c_interior_param.detach(), c_param
                             )
@@ -665,12 +715,10 @@ class LBFGSB(Optimiser):
                         nonlocal n_c_closure
                         n_c_closure += 1
                         c_optimiser.zero_grad()
-                        # Optimise ĉ = c / c_ref (c_param="velocity") or
-                        # m̂ = 1/ĉ² (c_param="squared_slowness"); either way,
-                        # derive ĉ from the raw parameter and feed *that* into
-                        # the physics and the regulariser, so both are always
-                        # expressed in velocity — autograd differentiates back
-                        # through the m̂ -> ĉ transform automatically.
+                        # c_hat = c / c_ref (raw param directly, or via
+                        # m_hat=1/c_hat^2 for squared_slowness); convert here
+                        # so physics/regulariser see velocity, rescaled by
+                        # c_ref below for physical c.
                         c_hat = _c_hat_from_c_param(c_interior_param, c_param)
                         c_phys = c_hat * c_ref
                         c_full = vm_in.build_full_c(c_phys)
@@ -779,15 +827,15 @@ class LBFGSB(Optimiser):
     def _exact_u_block(
         self, u_real, u_imag, c_interior_param, c_param, c_ref, vm_in
     ) -> torch.Tensor:
-        """Exact frozen-c wavefield block: overwrite ``(u_real, u_imag)`` with the
-        quadratic minimiser ``u* = u0 - H^{-1} g(u0)`` (A1).
+        """Exact frozen-c wavefield block: overwrite ``(u_real, u_imag)`` with
+        the quadratic minimiser ``u* = u0 - H^{-1} g(u0)``.
 
-        The frozen-c u-subproblem ``J(u) = pde_weight·mean|A(c)u-f|² +
-        data_weight·mean|Pu-d|²`` is exactly quadratic in ``u`` with constant Hessian
-        ``H = α AᴴA + β PᴴP``; its minimiser is ``u* = u0 - H^{-1} g(u0)`` for the
-        current frozen ``c`` (independent of the warm start). ``H`` is assembled +
-        factorised by :class:`UBlockHessian` at the run's current loss weights
-        (so a scheduled ``pde`` weight is honoured). Returns the loss at ``u*``.
+        The frozen-c u-subproblem ``J(u) = pde_weight*mean|A(c)u-f|^2 +
+        data_weight*mean|Pu-d|^2`` is exactly quadratic in ``u`` with constant
+        Hessian ``H = alpha * A^H A + beta * P^H P``, independent of the warm
+        start. ``H`` is assembled and factorised by :class:`UBlockHessian` at
+        the run's current loss weights (so a scheduled ``pde`` weight is
+        honoured). Returns the loss at ``u*``.
         """
         from odil_wave.optimisation.u_block_hessian import UBlockHessian
 
@@ -826,11 +874,63 @@ class LBFGSB(Optimiser):
         reset_c_history: bool,
         on_iteration=None,
     ) -> Tuple[List[Wavefield], LossTape]:
-        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond='z'``).
+        """Block-coordinate loop with ``u = A(c)^{-1} z`` (``u_precond="z"``).
 
-        The c-block is always L-BFGS here. The A4 schedulers (``pde`` weight and
-        ``c_grad_smooth_sigma``) apply here too; the exact u-solve and block
-        diagnostics do not (they are direct-path only).
+        The c-block is always L-BFGS here. The outer-loop schedulers (``pde``
+        weight and ``c_grad_smooth_sigma``) apply here too; the exact u-solve
+        and block diagnostics do not (they are direct-path only). Called by
+        ``minimise`` when ``u_precond="z"``; not intended to be called
+        directly.
+
+        Parameters
+        ----------
+        n_iter :
+            Number of outer block-coordinate iterations.
+        z_steps :
+            Number of z-block optimiser steps per outer iteration.
+        c_steps :
+            Number of c-block L-BFGS steps per outer iteration.
+        z_optim :
+            z-block optimiser: ``"gd"`` (Armijo-backtracked steepest
+            descent) or ``"lbfgs"``.
+        z_lr :
+            Initial step size for Armijo backtracking when ``z_optim="gd"``.
+        u_torch_opts :
+            ``torch.optim.LBFGS`` kwargs for the z-block when
+            ``z_optim="lbfgs"``.
+        c_torch_opts :
+            ``torch.optim.LBFGS`` kwargs for the c-block.
+        c_grad_smooth_sigma :
+            Gaussian smoothing width (grid cells) applied to the c-block
+            gradient before each step; ``0`` disables it.
+        pde_weight_schedule :
+            Optional ``(factor, every_n, direction)`` schedule for the PDE
+            loss weight, or ``None`` for no schedule.
+        c_grad_smooth_sigma_schedule :
+            Optional ``(factor, every_n, direction)`` schedule for
+            ``c_grad_smooth_sigma``, or ``None`` for no schedule.
+        reset_c_history :
+            Whether to reset the c-block L-BFGS history at the start of
+            each outer iteration.
+        on_iteration :
+            Optional callback ``on_iteration(i, c_full)`` invoked once per
+            accepted outer iteration.
+
+        Returns
+        -------
+        wavefields : List[Wavefield]
+            One solved ``Wavefield`` per shot, holding the final amplitude
+            and recovered ``c``.
+        tape : LossTape
+            The loss callback passed at construction, with a ``.result``
+            dict of summary stats attached (iteration/closure counts,
+            factorisation and solve counts, final loss, ...).
+
+        Raises
+        ------
+        TypeError
+            If ``self.loss`` is not an ``InverseLoss`` (the z-reparametrised
+            path requires it).
         """
         if not isinstance(self.loss, InverseLoss):
             raise TypeError("u_precond='z' requires an InverseLoss")
@@ -888,7 +988,7 @@ class LBFGSB(Optimiser):
         n_outer_done = 0
         t_wall0 = time.perf_counter()
 
-        # A4 schedulers (bases from the freshly built loss / c-block sigma).
+        # Outer-loop schedulers (bases from the freshly built loss / c-block sigma).
         pde_sched = StepScheduler.from_spec(
             float(self.loss.config.weights.get("pde", 1.0)), pde_weight_schedule
         )
@@ -900,7 +1000,7 @@ class LBFGSB(Optimiser):
         for i in range(n_iter):
             n_outer_done = i + 1
 
-            # A4 schedulers, applied at the start of the outer.
+            # Outer-loop schedulers, applied at the start of the outer.
             self.loss.config.weights["pde"] = pde_sched.step(i)
             sigma_box[0] = sigma_sched.step(i)
 
@@ -975,7 +1075,7 @@ class LBFGSB(Optimiser):
                         if c_min is not None or c_max is not None:
                             c_interior_param.clamp_(min=c_min, max=c_max)
 
-                # c changed — rebuild factors for next z-stage; reset z history.
+                # c changed -- rebuild factors for next z-stage; reset z history.
                 with torch.no_grad():
                     tf.rebuild(c_full_from_hat(c_interior_param.detach()))
                 if z_optim == "lbfgs":

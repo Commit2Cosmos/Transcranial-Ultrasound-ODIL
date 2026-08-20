@@ -1,9 +1,11 @@
-"""Helpers for Stride reference forward + FWI (sandbox only, not src/)."""
+"""Helpers for Stride reference forward + FWI."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,9 +17,6 @@ from skimage.transform import resize
 SOS_WATER = 1500.0
 SOS_SOFT = 1540.0
 SOS_SKULL = 3000.0
-
-# confirm git pull worked.
-REF_VERSION = 10
 
 # Defaults matched to odil_wave Shepp–Logan experiment configs
 # (e.g. shepp_logan scale=0.85, a_frac=b_frac=0.9, t_max=500 µs).
@@ -73,7 +72,11 @@ def configure_devito() -> str:
 
 
 async def ensure_mosaic_runtime(num_workers: int = 1, log_level: str = "info"):
-    """Shut down and restart Mosaic (fixes ``async_for cannot be nested``)."""
+    """Shut down and restart Mosaic (fixes ``async_for cannot be nested``).
+
+    Only clears Mosaic's local reference; orphaned head/monitor/worker
+    processes from a previous run can be left bound to their old ports.
+    """
     import mosaic
 
     try:
@@ -125,6 +128,7 @@ def perfect_skull_start(
 
 
 def project_root() -> Path:
+    """Locate the repo root by walking up for a src/ + pyproject.toml marker."""
     path = Path(__file__).resolve()
     for parent in path.parents:
         if (parent / "src").is_dir() and (parent / "pyproject.toml").is_file():
@@ -133,6 +137,7 @@ def project_root() -> Path:
 
 
 def reference_dir(resolution: int) -> Path:
+    """Return (creating if needed) the reference-data directory for resolution."""
     out = project_root() / "inputs" / "reference" / str(resolution)
     out.mkdir(parents=True, exist_ok=True)
     return out
@@ -239,6 +244,7 @@ def shepp_logan_skull_sos(
     return model.astype(np.float32)
 
 def water_model(shape: tuple[int, int], c_water: float = SOS_WATER) -> np.ndarray:
+    """Homogeneous water-speed SoS array of the given shape."""
     return np.full(shape, c_water, dtype=np.float32)
 
 
@@ -268,11 +274,13 @@ def check_vp_finite(vp, name: str = "vp") -> None:
 
 
 def save_vp_npy(vp, path: Path) -> None:
+    """Save a Stride ScalarField's interior data to a .npy file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, np.asarray(vp.data, dtype=np.float32))
 
 
 def save_vp_npy_from_array(array: np.ndarray, path: Path) -> None:
+    """Save a raw velocity array to a .npy file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, np.asarray(array, dtype=np.float32))
 
@@ -359,8 +367,16 @@ class BandRunRecorder:
         phantom_scale: float = SHEPP_PHANTOM_SCALE,
         run_id: str = "stride_fwi",
     ):
+        """Set up output dirs and clear any previous run's artifacts for a fresh run."""
         self.out_dir = Path(out_dir)
         self.bands_dir = self.out_dir / "bands"
+        # A previous run at this out_dir may have used a different band
+        # schedule (e.g. more bands); stale per-band folders from that run
+        # would otherwise survive alongside this run's, silently outliving
+        # metrics.jsonl. Clear and recreate so bands/ always matches the run
+        # that actually just happened.
+        if self.bands_dir.is_dir():
+            shutil.rmtree(self.bands_dir)
         self.bands_dir.mkdir(parents=True, exist_ok=True)
         self.true_model = np.asarray(true_model, dtype=np.float32)
         self.phantom_scale = float(phantom_scale)
@@ -373,6 +389,9 @@ class BandRunRecorder:
         self.rows: list[dict] = []
         self.frames: list[np.ndarray] = []
         self.frame_labels: list[str] = []
+        # Cumulative wall time since run start, matching odil_wave's "wall_s"
+        # convention so stride and ODIL metrics.jsonl rows compare directly.
+        self.t0 = time.perf_counter()
         # truncate previous metrics for a fresh run
         self.jsonl_path.write_text("")
         if self.csv_path.is_file():
@@ -386,6 +405,7 @@ class BandRunRecorder:
         vp,
         label: str | None = None,
     ) -> dict:
+        """Score vp against truth, save its snapshot/metadata, and append a metrics row."""
         arr = np.asarray(
             vp.data if hasattr(vp, "data") else vp, dtype=np.float32
         )
@@ -400,6 +420,8 @@ class BandRunRecorder:
                 label = "initial"
             else:
                 label = f"{frequency_hz / 1e3:.0f}kHz"
+        wall_s = round(time.perf_counter() - self.t0, 6)
+
         band_name = f"band_{band_index:02d}_{label}"
         band_dir = self.bands_dir / band_name
         band_dir.mkdir(parents=True, exist_ok=True)
@@ -408,6 +430,7 @@ class BandRunRecorder:
             "band_index": int(band_index),
             "label": label,
             "frequency_hz": None if frequency_hz is None else float(frequency_hz),
+            "wall_s": wall_s,
             **metrics,
         }
         (band_dir / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -419,6 +442,7 @@ class BandRunRecorder:
                 [] if frequency_hz is None else [float(frequency_hz)]
             ),
             "label": label,
+            "wall_s": wall_s,
             **metrics,
         }
         self.rows.append(row)
@@ -431,6 +455,7 @@ class BandRunRecorder:
         return row
 
     def _rewrite_csv(self) -> None:
+        """Rewrite metrics.csv from self.rows."""
         if not self.rows:
             return
         keys = list(self.rows[0].keys())
@@ -449,6 +474,7 @@ class BandRunRecorder:
         self.csv_path.write_text("\n".join(lines) + "\n")
 
     def save_final(self, vp) -> Path:
+        """Save the final recovered vp (ScalarField or array) under out_dir/final."""
         final_dir = self.out_dir / "final"
         final_dir.mkdir(parents=True, exist_ok=True)
         path = final_dir / "c_final.npy"
@@ -466,6 +492,7 @@ class BandRunRecorder:
         fps: int = 2,
         title: str = "Recovered vp across bands",
     ) -> Path:
+        """Animate the recorded per-band vp snapshots into a GIF."""
         return animate_band_gif(
             self.frames,
             self.frame_labels,
@@ -480,7 +507,8 @@ def load_band_history(run_dir: Path | str) -> dict:
     """Load per-band metrics written by :class:`BandRunRecorder`.
 
     Reads ``metrics.jsonl`` under ``run_dir`` and returns plot-ready series:
-    ``rms``, ``rel_c_error``, ``ssim_head_roi``, ``labels``, and ``gif`` path.
+    ``rms``, ``rel_c_error``, ``ssim_head_roi``, ``wall_s``, ``labels``, and
+    ``gif`` path.
     """
     run_dir = Path(run_dir)
     path = run_dir / "metrics.jsonl"
@@ -502,6 +530,7 @@ def load_band_history(run_dir: Path | str) -> dict:
         "rms": [r["rms"] for r in rows],
         "rel_c_error": [r.get("rel_c_error") for r in rows],
         "ssim_head_roi": [r.get("ssim_head_roi") for r in rows],
+        "wall_s": [r.get("wall_s") for r in rows],
         "labels": labels,
         "gif": run_dir / "c_bands.gif",
         "rows": rows,
@@ -539,6 +568,31 @@ def plot_recovery_progress(
     Left: recovered ``c`` (final / last band). Right: per-band head-ROI SSIM
     and relative c-error read from ``metrics.jsonl``. Safe to call on another
     machine as long as ``run_dir`` points at the saved artifacts.
+
+    Parameters
+    ----------
+    run_dir :
+        Directory containing ``metrics.jsonl`` (and ``bands/``, ``final/``)
+        from a ``BandRunRecorder`` run.
+    domain_m :
+        Physical size of the (square) interior domain, in metres.
+    title :
+        Figure title. Defaults to an auto-generated title from
+        ``run_dir``'s name.
+    vmin, vcenter, vmax :
+        Two-slope SoS colormap bounds, in m/s.
+    skip_initial :
+        Whether to drop the "initial"/"init" row before plotting.
+    figsize :
+        Matplotlib figure size.
+    show :
+        Whether to call ``plt.show()`` before returning.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Two-panel figure: recovered ``c`` on the left, per-band SSIM / rel
+        c-error progress on the right.
     """
     import matplotlib.pyplot as plt
 
@@ -632,7 +686,37 @@ def animate_band_gif(
     vcenter: float = 1600.0,
     vmax: float = 3000.0,
 ) -> Path:
-    """Write an ODIL-style ``c_bands.gif`` from per-band velocity arrays."""
+    """Write an ODIL-style ``c_bands.gif`` from per-band velocity arrays.
+
+    Parameters
+    ----------
+    frames :
+        Per-band velocity arrays to animate, one frame per band.
+    labels :
+        Per-frame labels shown in the title; must match ``len(frames)``.
+    out_path :
+        Output GIF path; parent directories are created if needed.
+    domain_m :
+        Physical size of the (square) interior domain, in metres.
+    fps :
+        Frames per second for the animation.
+    title :
+        Base title, shown above the per-frame label.
+    vmin, vcenter, vmax :
+        Two-slope SoS colormap bounds, in m/s.
+
+    Returns
+    -------
+    Path
+        The written GIF path (same as ``out_path``).
+
+    Raises
+    ------
+    RuntimeError
+        If ``frames`` is empty.
+    ValueError
+        If ``labels`` and ``frames`` have different lengths.
+    """
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
 
@@ -670,6 +754,7 @@ def animate_band_gif(
 
 
 def save_grid_meta(problem, path: Path, *, f_centre: float, n_cycles: int) -> None:
+    """Save a Stride problem's grid/time/source metadata as JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "name": problem.name,
@@ -712,22 +797,6 @@ def load_observed_shot(out_dir: Path | str, shot_id: int) -> np.ndarray:
     if not path.is_file():
         raise FileNotFoundError(path)
     return np.load(path)
-
-
-def load_observed_shots(out_dir: Path | str) -> dict[int, np.ndarray]:
-    """Load all ``shot_*_observed.npy`` files under ``out_dir`` keyed by shot id."""
-    out_dir = Path(out_dir)
-    shots: dict[int, np.ndarray] = {}
-    for path in sorted(out_dir.glob("shot_*_observed.npy")):
-        # shot_0012_observed.npy
-        try:
-            shot_id = int(path.name.split("_")[1])
-        except (IndexError, ValueError) as exc:
-            raise ValueError(f"unexpected observed filename: {path.name}") from exc
-        shots[shot_id] = np.load(path)
-    if not shots:
-        raise FileNotFoundError(f"no shot_*_observed.npy under {out_dir}")
-    return shots
 
 
 def time_axis(problem) -> np.ndarray:
@@ -818,6 +887,7 @@ def observed_trace_difference(source_problem, target_problem, shot_id: int = 0) 
 
 
 def downsample_vp(array: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+    """Resize a velocity array to target_shape with anti-aliasing."""
     return resize(array, target_shape, anti_aliasing=True, mode="reflect").astype(
         np.float32
     )
@@ -874,6 +944,7 @@ def plot_vp(
     vmax=3000.0,
     norm=None,
 ):
+    """Plot a single vp field (ScalarField or array) with a two-slope SoS colormap."""
     import matplotlib.pyplot as plt
     import numpy as np
 
@@ -998,14 +1069,72 @@ def build_stride_problem(
 ):
     """Create Stride Problem with a velocity model + acquisition.
 
-    Defaults follow the odil_wave Shepp–Logan experiment setup: 80 kHz tone
+    Defaults follow the odil_wave Shepp Logan experiment setup: 80 kHz tone
     burst, 100 elliptical transducers at ``ring_frac`` of the half-extent,
     phantom scale 0.85, ``t_max=500`` µs.
 
-    ``profile`` (preferred) selects the velocity model:
-    ``\"shepp_logan\"``, ``\"shepp_logan_skull\"`` (optional smooth rim via
-    ``skull_alpha`` / ``skull_sigma``), or ``\"water\"`` / ``\"homogeneous\"``.
-    If ``profile`` is omitted, ``use_shepp_logan`` keeps the old boolean API.
+    Parameters
+    ----------
+    name :
+        Name assigned to the Stride Problem.
+    interior_shape :
+        Interior grid shape ``(nx, ny)``, excluding the padded/absorbing
+        cells.
+    domain_m :
+        Physical size of the (square) interior domain, in metres.
+    extra :
+        Padded halo width in cells ``(x, y)``, forwarded to
+        ``stride.Space``.
+    absorbing :
+        Absorbing boundary width in cells ``(x, y)``, forwarded to
+        ``stride.Space``.
+    f_centre :
+        Tone-burst source centre frequency, in Hz.
+    n_cycles :
+        Number of cycles in the tone-burst source wavelet.
+    n_receivers :
+        Number of elliptical-ring transducers (shared source/receiver set).
+    c_max :
+        Maximum expected sound speed, used to set the CFL-stable time step.
+    use_shepp_logan :
+        Legacy boolean API: selects ``"shepp_logan"`` vs ``"water"`` when
+        ``profile`` is not given. Superseded by ``profile``.
+    profile :
+        Velocity model to build: ``"shepp_logan"``, ``"shepp_logan_skull"``
+        (optional smooth rim via ``skull_alpha`` / ``skull_sigma``), or
+        ``"water"`` / ``"homogeneous"``. Takes precedence over
+        ``use_shepp_logan`` when given.
+    phantom_scale :
+        Shepp-Logan phantom size as a fraction of ``interior_shape``.
+    ring_frac :
+        Transducer ring semi-axes as a fraction of the domain half-extent.
+    t_max :
+        Simulation duration, in seconds. If ``None``, set from the domain
+        diagonal travel time at the water sound speed.
+    skull_alpha :
+        Skull contrast scaling in ``[0, 1]``, for
+        ``profile="shepp_logan_skull"``.
+    skull_sigma :
+        Gaussian smoothing sigma (grid cells) for the skull rim, for
+        ``profile="shepp_logan_skull"``.
+    interior_value :
+        Optional fill value for the interior (non-skull) region, for
+        ``profile="shepp_logan_skull"``. Defaults to ``c_water``.
+
+    Returns
+    -------
+    problem : stride.Problem
+        The constructed Stride problem, with medium, transducers, geometry,
+        acquisitions, and source wavelets set up.
+    vp_true : stride.ScalarField
+        The true velocity field registered on ``problem.medium``.
+    vp_array : numpy.ndarray
+        The same velocity model as a raw interior array.
+    meta : dict
+        Run metadata (``f_centre``, ``n_cycles``, ``spacing``, ``dt``,
+        ``t_max``, ``time_num``, ``profile``, ``phantom_scale``,
+        ``ring_frac``, ``skull_alpha``, ``skull_sigma``, ``radius``,
+        ``centre``) useful for logging/reproducing the run.
     """
     from stride import Problem, ScalarField, Space, Time
     from stride.utils import wavelets

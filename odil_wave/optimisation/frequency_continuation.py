@@ -1,10 +1,3 @@
-"""Sequential frequency-band continuation for frequency-domain ODIL.
-
-Each band jointly fits several FFT bins. Recovered ``c`` is carried to the next
-band; ``u`` is re-warmed with Helmholtz on that ``c`` at the new bins, and a
-fresh L-BFGS optimiser is started per band.
-"""
-
 from __future__ import annotations
 
 import time
@@ -43,6 +36,20 @@ class FrequencyBand:
         n_iter: Optional[int] = None,
         frequencies_hz: Optional[Sequence[float]] = None,
     ) -> None:
+        """Build a band from either positional frequencies or a sequence.
+
+        Parameters
+        ----------
+        *freqs :
+            Either one or more individual Hz values, or a single sequence
+            (list/tuple) of Hz values. Ignored if ``frequencies_hz`` is given.
+        n_iter :
+            Optimiser iterations for this band. If ``None``, the caller's
+            ``default_n_iter`` is used instead.
+        frequencies_hz :
+            Explicit sequence of Hz values, passed as a keyword. Takes
+            precedence over ``*freqs`` when both are supplied.
+        """
         if frequencies_hz is not None:
             resolved = list(frequencies_hz)
         elif len(freqs) == 1 and isinstance(freqs[0], (list, tuple)):
@@ -57,7 +64,7 @@ class FrequencyBand:
 
 @dataclass
 class BandTimingStats:
-    """Wall-clock and optimiser cost for one continuation band."""
+    """Runtime (wall-clock) and optimiser cost for one continuation band."""
 
     band_index: int
     frequencies_hz: List[float]
@@ -71,20 +78,8 @@ class BandTimingStats:
     n_closure: int
     final_loss: Optional[float] = None
 
-    # Back-compat aliases used by earlier callers / prints.
-    @property
-    def n_iter_budget(self) -> int:
-        return self.n_iter_requested
-
-    @property
-    def n_outer_iter(self) -> int:
-        return self.n_iter_run
-
-    @property
-    def total_s(self) -> float:
-        return self.wall_s
-
     def summary_line(self) -> str:
+        """Format this band's stats as one human-readable log line."""
         f_label = ", ".join(f"{f * 1e-3:.0f}" for f in self.frequencies_hz)
         loss_s = f"{self.final_loss:.6e}" if self.final_loss is not None else "n/a"
         return (
@@ -100,7 +95,11 @@ class BandTimingStats:
 
 @dataclass
 class FrequencyContinuationResult:
-    """Outputs from :func:`run_frequency_continuation`."""
+    """Outputs from :func:`run_frequency_continuation`.
+
+    ``band_start_models`` are the velocity models each band began with;
+    ``band_models`` are the recovered models at the end of each band.
+    """
 
     wavefields: List[Wavefield]
     velocity_model: VelocityModel
@@ -110,20 +109,16 @@ class FrequencyContinuationResult:
     bands: List[FrequencyBand] = field(default_factory=list)
     band_stats: List[BandTimingStats] = field(default_factory=list)
 
-    def report_band_stats(self) -> None:
-        """Print per-band requested/run iters, wall time, closures, loss, early-stop."""
-        print("Per-band summary:")
-        for s in self.band_stats:
-            print(f"  {s.summary_line()}")
-
 
 def _as_band(band: Union[FrequencyBand, Sequence[float]]) -> FrequencyBand:
+    """Coerce a raw Hz sequence into a :class:`FrequencyBand`, passing bands through."""
     if isinstance(band, FrequencyBand):
         return band
     return FrequencyBand(frequencies_hz=band)
 
 
 def _clone_velocity(vm: VelocityModel) -> VelocityModel:
+    """Return a detached copy of a velocity model's field."""
     return VelocityModel.from_field(
         vm.grid, vm.c.detach().clone(), pml_c=vm.pml_c, pml_fill=vm.pml_fill
     )
@@ -133,7 +128,26 @@ def _fft_obs_traces(
     freq_sel: FrequencySelection,
     observed_time_traces: torch.Tensor,
 ) -> torch.Tensor:
-    """``(n_shots, nt, n_receivers)`` → ``(n_shots, nf, n_receivers)``."""
+    """FFT time-domain observations onto ``freq_sel``'s selected bins.
+
+    Parameters
+    ----------
+    freq_sel :
+        Frequency selection whose bins the traces are FFT'd onto.
+    observed_time_traces :
+        Real traces, shape ``(n_shots, nt, n_receivers)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex spectrum, shape ``(n_shots, nf, n_receivers)``.
+
+    Raises
+    ------
+    ValueError
+        If ``observed_time_traces`` is not 3-D, or its time length doesn't
+        match ``freq_sel.n_time``.
+    """
     traces = torch.as_tensor(observed_time_traces)
     if traces.ndim != 3:
         raise ValueError(
@@ -162,6 +176,30 @@ def _helmholtz_warmstart(
     pml_weight: float,
     verbose: bool,
 ) -> torch.Tensor:
+    """Solve Helmholtz on ``velocity_model`` to warm-start ``u`` for the band's bins.
+
+    Parameters
+    ----------
+    grid :
+        Spatial/temporal grid.
+    freq_sel :
+        Frequency bins to solve at.
+    geom :
+        Acquisition geometry supplying the per-shot sources.
+    velocity_model :
+        Medium ``c`` to solve the Helmholtz system at.
+    space_order :
+        Spatial finite-difference order.
+    pml_weight :
+        Weight applied to the absorbing sponge layer.
+    verbose :
+        Whether to print per-frequency solve diagnostics.
+
+    Returns
+    -------
+    torch.Tensor
+        Complex amplitude, shape ``(n_shots, nf, nx, ny)``.
+    """
     wf = Wavefield(
         grid=grid,
         frequency_selection=freq_sel,
@@ -196,24 +234,53 @@ def run_frequency_continuation(
 
     Parameters
     ----------
+    grid :
+        Spatial/temporal grid.
+    source :
+        Temporal source wavelet used to build the acquisition geometry for
+        each band.
     bands :
-        Ordered stages. Each entry is a :class:`FrequencyBand` or a sequence of
-        Hz values (typically 2-3 bins). Frequencies within a band are fit
+        Ordered stages. Each entry is a FrequencyBand or a sequence of
+        Hz values (typically 1-3 bins). Frequencies within a band are fit
         jointly; stages run in order.
     observed_time_traces :
         Real time-domain receiver gathers
         ``(n_shots, nt, n_receivers)`` ordered by the source ring indices
-        (see :func:`~odil_wave.geometry.source_ring_indices`). Re-FFTed onto
+        (see ``odil_wave.geometry.source_ring_indices``). Re-FFTed onto
         each band's bins.
     velocity_model :
         Starting ``c`` for band 0. Later bands start from the previous
         band's recovered model.
     geometry_kwargs :
-        Forwarded to :class:`AcquisitionGeometry` (ring layout, counts, etc.).
+        Forwarded to AcquisitionGeometry (ring layout, counts, etc.).
         ``frequency_selection`` is set per band and must not be included.
+    weights :
+        Loss term weights (``pde``/``data``/``reg``). Defaults to
+        ``{"pde": 1.0, "data": 100.0, "reg": 0.0}`` when not given.
+    default_n_iter :
+        Optimiser iterations used for any band that doesn't set its own
+        ``n_iter``.
+    space_order :
+        Spatial finite-difference order, forwarded to the Helmholtz
+        warm-start solve and the wave equation.
+    time_order :
+        Temporal finite-difference order, forwarded to the wave equation.
+    pml_weight :
+        Weight applied to the absorbing sponge layer, forwarded to the
+        Helmholtz warm-start solve and the wave equation.
+    clamp :
+        Whether the optimiser clamps ``c`` to the grid's velocity bounds.
+    normalize_data :
+        Trace normalisation mode used when comparing observed and
+        simulated data in the loss.
+    regulariser :
+        Optional regulariser added to the loss.
+    verbose :
+        Whether to print per-band progress (Helmholtz warm-start output
+        and the per-band summary line).
     lbfgs_opts :
-        Forwarded to :class:`LBFGSB` (``u_precond``, ``z_optim``, ``z_lr``,
-        ``z_steps``, ``c_steps``, ``c_lr``, ``c_max_iter``, …).
+        Forwarded to LBFGSB (``u_precond``, ``z_optim``, ``z_lr``,
+        ``z_steps``, ``c_steps``, ``c_lr``, ``c_max_iter``, etc.).
         For ``u_precond="z"``, prefer ``z_optim="gd"`` (default) with
         ``z_steps=1`` and ``z_lr=1.0``; ``c`` is still updated with L-BFGS.
         Per-band ``n_iter`` overrides ``default_n_iter``.
@@ -222,7 +289,7 @@ def run_frequency_continuation(
     -------
     FrequencyContinuationResult
         Final wavefields / ``c``, plus per-band start/end models, loss tapes,
-        and :class:`BandTimingStats` (requested/run iters, wall time, closures,
+        and BandTimingStats (requested/run iters, wall time, closures,
         final loss).
     """
     if not bands:
@@ -287,11 +354,9 @@ def run_frequency_continuation(
         if verbose:
             f_label = ", ".join(f"{f * 1e-3:.1f}" for f in band.frequencies_hz)
             print(
-                f"\n{'=' * 56}\n"
                 f"  Band {band_idx + 1}/{len(band_list)}: "
                 f"[{f_label}] kHz  (nf={freq_sel.n_frequencies}, "
                 f"n_iter={n_iter}, n_shots={geom.n_sources})\n"
-                f"{'=' * 56}"
             )
 
         t_band0 = time.perf_counter()

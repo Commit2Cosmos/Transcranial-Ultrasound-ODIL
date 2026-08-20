@@ -1,9 +1,3 @@
-"""Forward / warm-start Helmholtz linear solve (not a preconditioner).
-
-Also exposes :class:`HelmholtzFactorCache` for reuse of SuperLU factors while
-``c`` is fixed (forward ``A^{-1}`` and Hermitian-adjoint ``A^{-H}``).
-"""
-
 from __future__ import annotations
 
 import time
@@ -29,9 +23,10 @@ def np_complex_dtype(torch_cdtype: torch.dtype):
 
 
 class HelmholtzFactorCache:
-    """Cached SuperLU factors of ``H(c, ω_k)`` for a fixed medium ``c``."""
+    """Cached SuperLU factors of ``H(c, omega_k)`` for a fixed medium ``c``."""
 
     def __init__(self, solver: "HelmholtzSolver", c: torch.Tensor) -> None:
+        """Factorise H at c for every frequency bin, one SuperLU LU per bin."""
         self.solver = solver
         wf = solver.wavefield
         grid = wf.grid
@@ -46,25 +41,19 @@ class HelmholtzFactorCache:
         self.n_factor = 0
         self.n_forward_solves = 0
         self.n_adjoint_solves = 0
-        self.factor_s = 0.0
-        self.forward_solve_s = 0.0
-        self.adjoint_solve_s = 0.0
 
         c_det = c.detach()
         for k in range(self.nf):
             H = solver.assemble_H_sparse(c_det, k)
-            t0 = time.perf_counter()
             lu = splu(H.tocsc())
-            self.factor_s += time.perf_counter() - t0
             self.n_factor += 1
             self._H.append(H.tocsr())
             self._lu.append(lu)
 
     def reset_counters(self) -> None:
+        """Zero the forward/adjoint solve counters."""
         self.n_forward_solves = 0
         self.n_adjoint_solves = 0
-        self.forward_solve_s = 0.0
-        self.adjoint_solve_s = 0.0
 
     def matvec(self, u: torch.Tensor) -> torch.Tensor:
         """Apply sparse ``H`` (no solve): ``z = H u``.
@@ -117,7 +106,6 @@ class HelmholtzFactorCache:
         n_shots = rhs.shape[0]
         out = torch.empty_like(rhs)
         is_adj = trans in ("H", "T")
-        t0 = time.perf_counter()
         for k in range(self.nf):
             F = (
                 rhs[:, k]
@@ -133,27 +121,11 @@ class HelmholtzFactorCache:
                 dtype=self.cdtype,
                 device=self.device,
             )
-        dt = time.perf_counter() - t0
         if is_adj:
             self.n_adjoint_solves += self.nf
-            self.adjoint_solve_s += dt
         else:
             self.n_forward_solves += self.nf
-            self.forward_solve_s += dt
         return out
-
-    def diagnostics(self) -> dict:
-        return {
-            "n_factor": self.n_factor,
-            "n_forward_solves": self.n_forward_solves,
-            "n_adjoint_solves": self.n_adjoint_solves,
-            "n_linear_solves": self.n_forward_solves + self.n_adjoint_solves,
-            "factor_s": self.factor_s,
-            "forward_solve_s": self.forward_solve_s,
-            "adjoint_solve_s": self.adjoint_solve_s,
-            "nf": self.nf,
-            "n_dofs": self.n,
-        }
 
 
 def _reflect_index(idx: int, n: int) -> int:
@@ -242,7 +214,7 @@ def assemble_laplacian_csr(
 
 
 class HelmholtzSolver:
-    """Solve H(c, ω) u = f̂' for complex frequency-domain wavefields.
+    """Solve H(c, omega) u = f_hat for complex frequency-domain wavefields.
 
     For fixed ``c``, assembles a sparse Helmholtz matrix once per frequency,
     factorises with ``splu``, then solves all shot RHS in one batched call.
@@ -254,22 +226,15 @@ class HelmholtzSolver:
         geometry,
         space_order: int = 2,
         pml_weight: float = 1.0,
-        tol: float = 1e-8,
-        maxiter: int = 2000,
-        dense_cutoff: int = 8000,
     ) -> None:
+        """Bind to a wavefield/geometry and build the matching WaveEquation."""
         self.wavefield = wavefield
         self.geometry = geometry
         self.space_order = space_order
         self.pml_weight = float(pml_weight)
-        # Legacy kwargs kept for call-site compatibility; unused by sparse LU path.
-        self.tol = tol
-        self.maxiter = maxiter
-        self.dense_cutoff = int(dense_cutoff)
         self.wave_eq = WaveEquation(
             wavefield, space_order=space_order, pml_weight=pml_weight
         )
-        self.diagnostics: Optional[dict] = None
         self._L_csr: Optional[sp.csr_matrix] = None
 
     def factorize(self, c: torch.Tensor) -> HelmholtzFactorCache:
@@ -277,6 +242,7 @@ class HelmholtzSolver:
         return HelmholtzFactorCache(self, c)
 
     def _sources(self) -> torch.Tensor:
+        """Stack per-shot injection sources, scaled by t0^2 for non-dimensional time."""
         grid = self.wavefield.grid
         cdtype = self.wavefield.cdtype
         t0 = grid.t0
@@ -290,21 +256,8 @@ class HelmholtzSolver:
             * t0**2
         )
 
-    def _apply_H_single(
-        self, u_xy: torch.Tensor, c: torch.Tensor, freq_idx: int
-    ) -> torch.Tensor:
-        """Apply H at one frequency; ``u_xy`` is ``(nx, ny)`` complex."""
-        freq = self.wavefield.frequency_selection
-        nf = freq.n_frequencies
-        device = u_xy.device
-        cdtype = u_xy.dtype
-        Nx, Ny = u_xy.shape
-        u_full = torch.zeros(1, nf, Nx, Ny, dtype=cdtype, device=device)
-        u_full[0, freq_idx] = u_xy
-        src0 = torch.zeros_like(u_full)
-        return self.wave_eq.residual(u_full, c, src0)[0, freq_idx]
-
     def _laplacian_csr(self) -> sp.csr_matrix:
+        """Return the cached sparse Laplacian CSR, building it on first call."""
         if self._L_csr is None:
             grid = self.wavefield.grid
             K, pad = _laplacian_kernel(
@@ -314,7 +267,21 @@ class HelmholtzSolver:
         return self._L_csr
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
-        """Stencil CSR for ``H`` at one frequency (matches matrix-free residual)."""
+        """Assemble the sparse Helmholtz matrix H for one frequency.
+
+        Parameters
+        ----------
+        c :
+            Full-grid velocity field to assemble H at.
+        freq_idx :
+            Index into the wavefield's frequency selection.
+
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            Sparse Helmholtz matrix H at that frequency (matches the
+            matrix-free residual).
+        """
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
@@ -342,11 +309,11 @@ class HelmholtzSolver:
         ).reshape(-1)
 
         cd = np_complex_dtype(self.wavefield.cdtype)
-        # Diagonal: λ_tt + w (σ_sum λ_t + σ_prod)
+        # Diagonal: lambda_tt + w * (sigma_sum * lambda_t + sigma_prod)
         diag = (lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)).astype(cd)
 
         L = self._laplacian_csr()
-        # H = diag(a) - diag(c_nd²) @ L
+        # H = diag(a) - diag(c_nd^2) @ L
         H = sp.diags(diag, format="csr", dtype=cd) - sp.diags(c_nd2, format="csr").dot(
             L
         ).astype(cd)
@@ -354,6 +321,24 @@ class HelmholtzSolver:
         return H.tocsr()
 
     def solve(self, verbose: bool = True) -> List[Wavefield]:
+        """Solve H(c) u = f for every shot and frequency, returning one Wavefield per shot.
+
+        Assembles and factorises H once per frequency, then solves all shots'
+        sources in one batched call at that frequency.
+
+        Parameters
+        ----------
+        verbose :
+            When True, print per-frequency assemble/factor/solve timings plus
+            a final residual/timing summary; also computes that summary
+            (an extra residual evaluation), which is skipped when False.
+
+        Returns
+        -------
+        List[Wavefield]
+            One solved Wavefield per shot, each holding the amplitude at
+            every selected frequency.
+        """
         wf = self.wavefield
         grid = wf.grid
         freq = wf.frequency_selection
@@ -418,32 +403,19 @@ class HelmholtzSolver:
 
         t_total = time.perf_counter() - t_all0
 
-        with torch.no_grad():
-            r = self.wave_eq.residual(amp, c, sources)
-            r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
-            src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())
-
-        self.diagnostics = {
-            "r_rms": r_rms,
-            "src_rms": src_rms,
-            "ratio": r_rms / max(src_rms, 1e-30),
-            "u_absmax": float(amp.abs().max()),
-            "n_assemble": nf,
-            "n_factor": nf,
-            "laplacian_assemble_s": t_lap,
-            "assemble_s": list(assemble_times),
-            "factor_s": list(factor_times),
-            "solve_s": list(solve_times),
-            "assemble_total_s": float(sum(assemble_times)),
-            "factor_total_s": float(sum(factor_times)),
-            "solve_total_s": float(sum(solve_times)),
-            "total_s": float(t_total),
-            "n_dofs": n,
-            "n_shots": n_shots,
-            "n_freq": nf,
-        }
         if verbose:
-            d = self.diagnostics
+            with torch.no_grad():
+                r = self.wave_eq.residual(amp, c, sources)
+                r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
+                src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())
+            d = {
+                "ratio": r_rms / max(src_rms, 1e-30),
+                "u_absmax": float(amp.abs().max()),
+                "assemble_total_s": float(sum(assemble_times)),
+                "factor_total_s": float(sum(factor_times)),
+                "solve_total_s": float(sum(solve_times)),
+                "total_s": float(t_total),
+            }
             print(
                 f"helmholtz ({n_shots} shots, {nf} freqs, "
                 f"space_order={self.space_order}, n={n}): "

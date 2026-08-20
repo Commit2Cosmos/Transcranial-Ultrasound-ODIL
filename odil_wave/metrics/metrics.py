@@ -9,13 +9,14 @@ from odil_wave.grid import Grid
 
 
 def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
+    """Coerce a torch tensor or numpy array to a float64 numpy array."""
     if isinstance(arr, torch.Tensor):
         return arr.detach().cpu().numpy().astype(np.float64)
     return np.asarray(arr, dtype=np.float64)
 
 
 def _interior(arr: np.ndarray, grid: Grid) -> np.ndarray:
-    """Slice the full-grid array down to the interior, excluding the PML ring."""
+    """Slice the full-grid array down to the interior, excluding the absorbing boundary region."""
     return arr[grid.interior_slice]
 
 
@@ -39,8 +40,9 @@ def mse(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean Squared Error over the interior of (predicted - true).
-    Evaluated on the interior region only, excluding the PML sponge ring.
+    """Mean squared error over the interior of (predicted - true).
+
+    Evaluated on the interior region only, the absorbing boundary region is excluded.
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
@@ -52,8 +54,9 @@ def mae(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean Absolute Error over the interior of (predicted - true).
-    Evaluated on the interior region only, excluding the PML sponge ring.
+    """Mean absolute error over the interior of (predicted - true).
+
+    Evaluated on the interior region only, the absorbing boundary region is excluded.
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
@@ -68,17 +71,30 @@ def ssim(
     **kwargs,
 ) -> float:
     """Structural Similarity Index between predicted and true.
-    Evaluated on the interior region only, excluding the PML sponge ring.
-    data_range is inferred from true when not supplied explicitly.
 
-    When ``mask`` is given (e.g. the region inside the skull), SSIM is scored
-    only over that region: the per-pixel SSIM map is computed on the full
-    interior and averaged over the mask, and ``data_range`` defaults to the
-    peak-to-peak of the true field within the mask.
+    Evaluated on the interior region only, the absorbing boundary region is
+    excluded.
 
-    Could be considered passing additional kwargs:
-        gaussian_weights=True, sigma=1.5
-        win_size=<int>                    (patch size, default 7)
+    Parameters
+    ----------
+    pred, true :
+        Fields to compare, full-grid or already interior-shaped.
+    grid :
+        Grid providing the interior region.
+    mask :
+        Optional region (full-grid or interior-shaped) to restrict scoring
+        to, e.g. the area inside the skull. When given, the per-pixel SSIM
+        map is computed over the interior and averaged only over the mask.
+    **kwargs :
+        Forwarded to ``skimage.metrics.structural_similarity``, e.g.
+        ``gaussian_weights=True``, ``sigma=1.5``, ``win_size=<int>``.
+        ``data_range`` is inferred from the true field over the scored
+        region when not provided explicitly.
+
+    Returns
+    -------
+    float
+        Structural similarity index, in [-1, 1] (1 = perfect match).
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
@@ -100,11 +116,31 @@ def ssim_map(
     **kwargs,
 ) -> np.ndarray:
     """Per-pixel SSIM map between predicted and true. Plots and returns the map.
+
     Green = well recovered (near 1), red = poorly recovered (near -1).
 
-    When ``mask`` is given, ``data_range`` defaults to the true field's
-    peak-to-peak within the mask and cells outside the mask are blanked (NaN)
-    so only the region inside the skull is shown.
+    Parameters
+    ----------
+    pred, true :
+        Fields to compare, full-grid or already interior-shaped.
+    grid :
+        Grid providing the interior region.
+    title :
+        Plot title.
+    mask :
+        Optional region (full-grid or interior-shaped) to restrict scoring
+        to. When given, cells outside it are blanked (NaN) in the returned
+        map.
+    **kwargs :
+        Forwarded to ``skimage.metrics.structural_similarity``.
+        ``data_range`` is inferred from the true field over the scored
+        region when not provided explicitly.
+
+    Returns
+    -------
+    numpy.ndarray
+        Per-pixel SSIM map over the interior region; ``NaN`` outside the
+        mask when one is given.
     """
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
