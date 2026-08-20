@@ -274,6 +274,7 @@ def _build_optimiser(
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
+            c_line_search_fn=lb.c_line_search_fn,
             c_param=lb.c_param,
             c_grad_smooth_sigma=c_grad_smooth_sigma,
             pde_weight_schedule=_schedule_tuple(lb.pde_weight_schedule),

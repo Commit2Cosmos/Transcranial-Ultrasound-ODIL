@@ -45,7 +45,7 @@ source:
 
 acquisition:
   n_receivers: 64         # int >= 1; receivers on the ring
-  n_sources: 8            # int >= 1; sources on the ring
+  n_sources: 64            # int >= 1; sources on the ring
   a_frac: 0.9             # (0, 1]; ring semi-axis as fraction of half-extent (x)
   b_frac: 0.9             # (0, 1]; ring semi-axis as fraction of half-extent (y)
   ring_center: grid_center   # "grid_center" | [x, y] in metres
@@ -63,14 +63,14 @@ physics:
 truth:
   profile: shepp_logan
   scale: 0.85             # phantom contrast scale
-  pml_fill: edge          # edge (replicate interior boundary) | constant (pad with pml_c)
+  pml_fill: constant          # edge (replicate interior boundary) | constant (pad with pml_c)
 init:
   profile: shepp_logan_skull
   scale: 0.85
-  pml_fill: edge
+  pml_fill: constant
 
 observation:
-  method: leapfrog_fft        # leapfrog_fft (broadband time solve + FFT) | helmholtz (freq-domain)
+  method: helmholtz        # leapfrog_fft (broadband time solve + FFT) | helmholtz (freq-domain)
   normalize_data: per_receiver   # null | none | per_receiver
   verbose: false              # true | false
   pml_width: 70               # null -> grid.pml_width | int >= 0
@@ -88,11 +88,11 @@ continuation:
   #     - frequencies_hz: [50e3, 60e3]   # stage 2 (two frequencies jointly)
   #       n_iter: 20
   bands:
-    - frequencies_hz: [40e3]
+    - frequencies_hz: [60e3]
       n_iter: null
 
 loss:
-  weights: {pde: 1.0, data: 1.0, reg: 0.0}   # each >= 0; PDE-residual / data-misfit / regulariser weights
+  weights: {pde: 1.0, data: 100.0, reg: 0.0}   # each >= 0; PDE-residual / data-misfit / regulariser weights
   regulariser: {
     name: null,   # null | tikhonov | tv_iso | tv_aniso  (aliases: l2/smooth, tv/iso, aniso)
     params: {}    # only 'eps' accepted, e.g. {eps: 1.0e-6} (used by the TV regularisers)
@@ -104,7 +104,7 @@ optimiser:
   n_iter: 20             # int >= 1; outer iterations (per band unless band.n_iter is set)
   u_steps: 20            # wavefield-block L-BFGS steps per outer
   c_steps: 1             # model-block updates per outer
-  max_iter: 20           # L-BFGS max iterations per block step
+  max_iter: 50           # L-BFGS max iterations per block step
   history_size: 10       # L-BFGS history length (memory)
   tolerance_grad: 1.0e-7    # gradient-norm stopping tolerance
   tolerance_change: 1.0e-9  # objective/param change stopping tolerance
@@ -118,12 +118,13 @@ optimiser:
     c_param: velocity        # velocity (optimise c) | squared_slowness (optimise 1/c^2; not with u_precond=z)
     z_optim: gd              # gd (Armijo steepest descent) | lbfgs  (u_precond=z only)
     z_lr: 1.0                # > 0; z-block initial step (z_optim=gd)
-    c_lr: 5.0                # model-block L-BFGS learning rate
-    c_max_iter: 6            # model-block L-BFGS max iterations
+    c_lr: 1.0                # model-block L-BFGS learning rate
+    c_max_iter: 1            # model-block L-BFGS max iterations
     c_history_size: 10       # model-block L-BFGS history length
     reset_c_history: false   # true | false; reset model-block L-BFGS history each outer
+    c_line_search_fn: strong_wolfe   # strong_wolfe (per-step Wolfe line search) | null/none (fixed step of size c_lr)
     c_grad_smooth_sigma: 0.0 # >= 0; Gaussian smoothing of the c-gradient in cells (0 = off; try 1-3)
-    # Outer-loop schedulers. Each rescales its knob every_n outers; inactive
+    # Outer-loop schedulers. Each rescales its knob every_n outers
     # (no-op) whenever factor == 0 or every_n == 0. Example to ramp the PDE
     # weight up 2x every 5 outers: {factor: 2.0, every_n: 5, direction: increase}
     pde_weight_schedule:
@@ -145,7 +146,7 @@ metrics:
   log_c_stats: true            # true | false; log per-iteration velocity statistics
 
 diagnostics:
-  enabled: false               # true | false; block-coordinate diagnostics (lbfgsb only; expensive)
-  per_outer_field_maps: true   # true | false; per-outer wavefield/c maps (the costly piece)
+  enabled: false               # true | false; block-coordinate diagnostics
+  per_outer_field_maps: true   # true | false; per-outer wavefield/c maps
   u_depths: null               # null -> 1, 5, 10, ..., u_steps | list[int >= 1]; u-solve depths to map
   verify_hessian: false        # true | false; sparse-H vs autograd-Hvp correctness gate

@@ -276,6 +276,7 @@ class LBFGSB(Optimiser):
         "c_lr": 1.0,
         "c_max_iter": 4,
         "c_history_size": 10,
+        "c_line_search_fn": "strong_wolfe",
         # c-gradient Gaussian smoothing width in grid cells (0 = off). Replaces
         # the former c_precond / c_precond_type / c_precond_stab machinery: the
         # only c-gradient preconditioner is Gaussian smoothing, and 0 disables it.
@@ -333,6 +334,17 @@ class LBFGSB(Optimiser):
         c_max_iter = int(opts.pop("c_max_iter", opts.get("max_iter", 4)))
         c_history_size = int(opts.pop("c_history_size", opts.get("history_size", 10)))
         c_grad_smooth_sigma = float(opts.pop("c_grad_smooth_sigma", 0.0))
+        c_line_search_fn = opts.pop("c_line_search_fn", None)
+        if isinstance(c_line_search_fn, str) and c_line_search_fn.lower() in (
+            "none",
+            "",
+        ):
+            c_line_search_fn = None
+        if c_line_search_fn not in (None, "strong_wolfe"):
+            raise ValueError(
+                "c_line_search_fn must be None, 'none', or 'strong_wolfe'; "
+                f"got {c_line_search_fn!r}"
+            )
         u_solve = str(opts.pop("u_solve", "optim")).lower()
         pde_weight_schedule = opts.pop("pde_weight_schedule", None)
         c_grad_smooth_sigma_schedule = opts.pop("c_grad_smooth_sigma_schedule", None)
@@ -388,7 +400,7 @@ class LBFGSB(Optimiser):
         c_torch_opts["lr"] = c_lr
         c_torch_opts["max_iter"] = c_max_iter
         c_torch_opts["history_size"] = c_history_size
-        c_torch_opts["line_search_fn"] = None
+        c_torch_opts["line_search_fn"] = c_line_search_fn
 
         return (
             n_iter,

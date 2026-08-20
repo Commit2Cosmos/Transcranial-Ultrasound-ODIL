@@ -335,6 +335,8 @@ class LBFGSBCfg:
     * ``c_max_iter``: model-block L-BFGS max iterations.
     * ``c_history_size``: model-block L-BFGS history length.
     * ``reset_c_history``: reset the model-block L-BFGS history each outer.
+    * ``c_line_search_fn``: model-block L-BFGS line search: ``None``/``"none"``
+      (fixed step of size ``c_lr``, the default) | ``"strong_wolfe"``.
     * ``c_param``: model variable ``"velocity"`` (optimise c) |
       ``"squared_slowness"`` (optimise 1/c^2; incompatible with
       ``u_precond == "z"``).
@@ -353,6 +355,7 @@ class LBFGSBCfg:
     c_max_iter: int = 6
     c_history_size: int = 10
     reset_c_history: bool = True
+    c_line_search_fn: Optional[str] = None
     c_param: str = "velocity"
     c_grad_smooth_sigma: float = 0.0
     pde_weight_schedule: SchedulerCfg = field(default_factory=SchedulerCfg)
@@ -920,6 +923,14 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(
                 "optimiser.lbfgsb.c_grad_smooth_sigma must be >= 0, "
                 f"got {lb.c_grad_smooth_sigma}"
+            )
+        if lb.c_line_search_fn is not None and str(lb.c_line_search_fn).lower() not in (
+            "none",
+            "strong_wolfe",
+        ):
+            raise ConfigError(
+                "optimiser.lbfgsb.c_line_search_fn must be null, 'none', or "
+                f"'strong_wolfe', got {lb.c_line_search_fn!r}"
             )
         for sname, sch in (
             ("pde_weight_schedule", lb.pde_weight_schedule),
