@@ -603,6 +603,15 @@ class LBFGSB(Optimiser):
                 u_imag.detach().clone(),
             )
 
+        # Disable per-receiver normalisation for the exact run.
+        _norm_disabled = (
+            u_solve_exact
+            and hasattr(self.loss, "set_normalization")
+            and getattr(self.loss, "_trace_scale", None) is not None
+        )
+        if _norm_disabled:
+            self.loss.set_normalization(False)
+
         for i in range(n_iter):
             n_outer_done = i + 1
 
@@ -721,6 +730,9 @@ class LBFGSB(Optimiser):
                     f"Iteration: {i} | loss = {loss_scalar:.6e} | "
                     f"|r_pde|/|src| = {ratio:.3e}"
                 )
+
+        if _norm_disabled:
+            self.loss.set_normalization(True)
 
         if diag_on:
             diagnostics.finalise()
