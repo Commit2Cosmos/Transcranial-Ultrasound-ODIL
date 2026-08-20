@@ -1,10 +1,3 @@
-"""Reproducible experiment layer for frequency-domain FWI.
-
-Config resolution / validation / (de)serialisation is torch-free (``config``);
-the run orchestration (``problem``, ``recorder``, ``runner``) uses the numerical
-stack.
-"""
-
 from .config import (
     ConfigError,
     DiagnosticsCfg,

@@ -88,6 +88,20 @@ def resolve_device(name: str):
 
 
 def _run_git(repo_root: Path, *args: str) -> Optional[str]:
+    """Run ``git -C repo_root <args>`` and return its trimmed stdout.
+
+    Parameters
+    ----------
+    repo_root : Path
+        Repository root passed to ``git -C``.
+    *args : str
+        Git subcommand and arguments.
+
+    Returns
+    -------
+    str or None
+        Trimmed stdout on success; ``None`` on a non-zero exit or any error.
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_root), *args],
@@ -128,6 +142,14 @@ def platform_info() -> Dict[str, Any]:
 
 
 def _package_versions() -> Dict[str, Any]:
+    """Best-effort torch / numpy / odil_wave versions and device flags.
+
+    Returns
+    -------
+    dict
+        Available package versions plus torch device availability; import
+        failures are recorded as ``*_error`` keys rather than raised.
+    """
     versions: Dict[str, Any] = {}
     try:
         import torch

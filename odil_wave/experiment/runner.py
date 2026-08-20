@@ -46,6 +46,8 @@ from .recorder import RunRecorder
 # --------------------------------------------------------------------------- #
 @dataclass
 class BandResult:
+    """Outcome of a single continuation stage (one frequency band)."""
+
     band_index: int
     frequencies_hz: List[float]
     label: str
@@ -60,6 +62,8 @@ class BandResult:
 
 @dataclass
 class RunResult:
+    """Outcome of a whole (single- or multi-band) inversion run."""
+
     run_id: str
     run_dir: Path
     config: RunConfig
@@ -75,6 +79,19 @@ class RunResult:
 # Small IO helpers
 # --------------------------------------------------------------------------- #
 def _atomic_json(path: Path, obj: Any) -> None:
+    """Atomically write ``obj`` to ``path`` as indented JSON.
+
+    Parameters
+    ----------
+    path : Path
+        Destination file (written via a temp file then renamed).
+    obj : Any
+        JSON-serialisable object (non-standard types via :func:`_json_default`).
+
+    Returns
+    -------
+    None
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, default=_json_default))
@@ -82,6 +99,18 @@ def _atomic_json(path: Path, obj: Any) -> None:
 
 
 def _json_default(o: Any) -> Any:
+    """JSON fallback serialiser for numpy scalars and ``Path`` objects.
+
+    Parameters
+    ----------
+    o : Any
+        Object json cannot natively serialise.
+
+    Returns
+    -------
+    Any
+        A JSON-friendly value (float / int / str).
+    """
     if isinstance(o, (np.floating,)):
         return float(o)
     if isinstance(o, (np.integer,)):
@@ -92,6 +121,18 @@ def _json_default(o: Any) -> Any:
 
 
 def _band_label(frequencies_hz: List[float]) -> str:
+    """Human-readable kHz label for a band's frequencies.
+
+    Parameters
+    ----------
+    frequencies_hz : list of float
+        Band frequencies in Hz.
+
+    Returns
+    -------
+    str
+        ``"60khz"`` for a single frequency, else ``"40-70khz"`` (min-max).
+    """
     khz = [f / 1e3 for f in frequencies_hz]
     if len(khz) == 1:
         return f"{int(round(khz[0]))}khz"
@@ -171,6 +212,34 @@ def _build_optimiser(
     u_init,
     band_cfg: Optional[BandCfg] = None,
 ):
+    """Construct the configured optimiser for one band.
+
+    Parameters
+    ----------
+    problem : Problem
+        The shared physical problem.
+    band_ctx :
+        Per-band context (frequencies / geometry / observed data).
+    wf_inv : Wavefield
+        Inverse-grid wavefield the optimiser acts on.
+    loss : InverseLoss
+        Objective for this band.
+    n_iter : int
+        Outer-iteration budget for this band.
+    u_init :
+        Warm-start wavefield (or ``None``).
+    band_cfg : BandCfg, optional
+        Per-band overrides (e.g. ``c_grad_smooth_sigma``).
+
+    Returns
+    -------
+    optimiser
+        An ``LBFGSB`` or ``JointFreqODIL`` instance per ``optimiser.name``.
+
+    Notes
+    -----
+    Raises :class:`ValueError` for an unhandled optimiser name.
+    """
     cfg = problem.cfg
     opt = cfg.optimiser
     name = canonical_optimiser_name(opt.name)
@@ -205,6 +274,7 @@ def _build_optimiser(
             c_max_iter=lb.c_max_iter,
             c_history_size=lb.c_history_size,
             reset_c_history=lb.reset_c_history,
+            c_line_search_fn=lb.c_line_search_fn,
             c_param=lb.c_param,
             c_grad_smooth_sigma=c_grad_smooth_sigma,
             pde_weight_schedule=_schedule_tuple(lb.pde_weight_schedule),
@@ -449,6 +519,19 @@ def run_frequency_band(
 
 
 def _atomic_npy(path: Path, arr: np.ndarray) -> None:
+    """Atomically write a numpy array to ``path`` as ``.npy``.
+
+    Parameters
+    ----------
+    path : Path
+        Destination file (written via a temp file then renamed).
+    arr : numpy.ndarray
+        Array to save.
+
+    Returns
+    -------
+    None
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp.npy")
     np.save(tmp, arr)
@@ -492,6 +575,29 @@ def _dump_band_config(
     band_ctx,
     band_cfg: Optional[BandCfg] = None,
 ):
+    """Write the effective per-band configuration to ``path`` as YAML.
+
+    Parameters
+    ----------
+    path : Path
+        Destination ``band_config.yaml``.
+    cfg : RunConfig
+        The resolved run config.
+    band_index :
+        Index of this band.
+    freqs :
+        Band frequencies in Hz.
+    n_iter :
+        Effective outer-iteration budget for the band.
+    band_ctx :
+        Per-band context (used for FFT bins / shot count).
+    band_cfg : BandCfg, optional
+        Per-band overrides recorded for the lbfgsb optimiser.
+
+    Returns
+    -------
+    None
+    """
     from .config import _asdict, _dump_yaml  # torch-free helpers
 
     payload = {
@@ -680,6 +786,20 @@ def run_inverse(
 
 
 def _rerun_with_optimiser(config: RunConfig, name: str) -> RunResult:
+    """Re-resolve ``config`` with a forced optimiser and fresh run id, then run.
+
+    Parameters
+    ----------
+    config : RunConfig
+        Base configuration.
+    name : str
+        Optimiser name to force (e.g. ``"lbfgsb"``).
+
+    Returns
+    -------
+    RunResult
+        Result of the re-run inversion.
+    """
     merged = deep_merge(
         config.to_dict(), {"optimiser": {"name": name}, "run": {"run_id": ""}}
     )
@@ -687,4 +807,16 @@ def _rerun_with_optimiser(config: RunConfig, name: str) -> RunResult:
 
 
 def run_inverse_lbfgsb(config: RunConfig) -> RunResult:
+    """Run the inversion forcing the lbfgsb optimiser.
+
+    Parameters
+    ----------
+    config : RunConfig
+        Base configuration (its optimiser name is overridden).
+
+    Returns
+    -------
+    RunResult
+        Result of the lbfgsb inversion.
+    """
     return _rerun_with_optimiser(config, "lbfgsb")

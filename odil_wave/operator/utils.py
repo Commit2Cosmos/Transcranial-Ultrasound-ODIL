@@ -47,6 +47,12 @@ class WaveEquation:
     _sponge: Sponge = field(init=False)
 
     def __post_init__(self):
+        """Select the Laplacian and boundary condition for ``space_order``.
+
+        Notes
+        -----
+        Raises ``ValueError`` for an unsupported ``space_order``.
+        """
         if self.space_order == 2:
             self._lap = Laplacian2ndOrder(self.wavefield)
             self._bc = NeumannMirrorBC2nd()
@@ -69,9 +75,21 @@ class WaveEquation:
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:
-        """Complex dimensionless residual on shot-batched frequency fields.
+        """Complex dimensionless PDE residual on shot-batched frequency fields.
 
-        ``wsp`` is physical wavespeed (m/s). ``source`` is pre-scaled by ``t0**2``.
+        Parameters
+        ----------
+        amp : torch.Tensor
+            Complex amplitudes ``(n_shots, n_frequencies, nx, ny)``.
+        wsp : torch.Tensor
+            Physical wavespeed field (m/s).
+        source : torch.Tensor
+            Source term pre-scaled by ``t0**2``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex residual, same shape as ``amp``.
         """
         c0 = self.wavefield.grid.c0
         wsp_nd = wsp / c0

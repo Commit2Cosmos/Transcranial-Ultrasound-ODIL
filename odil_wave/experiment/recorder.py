@@ -82,6 +82,23 @@ class RecordingTape(LossTape):
         log_every: int,
         store_c_history: bool = False,
     ) -> None:
+        """Create a per-band tape wired to a parent recorder.
+
+        Parameters
+        ----------
+        recorder : RunRecorder
+            Owner that formats and appends the emitted rows.
+        band_index : int
+            Index of the frequency band this tape records.
+        band_frequencies_hz : list of float
+            Frequencies of the band, in Hz.
+        name : str
+            Tape name forwarded to :class:`LossTape`.
+        log_every : int
+            Logging cadence in outer iterations.
+        store_c_history : bool, optional
+            Whether to retain the per-iteration velocity history.
+        """
         super().__init__(
             name=name, log_every=log_every, store_c_history=store_c_history
         )
@@ -98,6 +115,19 @@ class RecordingTape(LossTape):
 
     # -- optimiser hook (every outer iteration) ---------------------------- #
     def on_iteration(self, i: int, c_full: Optional[torch.Tensor]) -> None:
+        """Stamp the current outer index and velocity field (optimiser hook).
+
+        Parameters
+        ----------
+        i : int
+            Outer-iteration index.
+        c_full : torch.Tensor or None
+            Current full-grid velocity field.
+
+        Returns
+        -------
+        None
+        """
         self._cur_iter = int(i)
         self._cur_c = c_full
 
@@ -105,6 +135,25 @@ class RecordingTape(LossTape):
     def log(
         self, loss: float, residuals, pde_src_ratio: Optional[float] = None
     ) -> None:
+        """Log to the base tape and emit one structured record (logging hook).
+
+        Parameters
+        ----------
+        loss : float
+            Loss value reported by the solver.
+        residuals :
+            Residual dict (or object) carried through to the emitted row.
+        pde_src_ratio : float, optional
+            PDE-residual to source ratio for this iteration.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Fires only at the ``log_every`` cadence of the base :class:`LossTape`.
+        """
         super().log(loss, residuals, pde_src_ratio=pde_src_ratio)
         self._rec.emit_row(
             tape=self,
@@ -128,6 +177,25 @@ class RunRecorder:
         metrics_cfg: MetricsCfg,
         t0: Optional[float] = None,
     ) -> None:
+        """Create the run-level metric writer and cache the ground truth.
+
+        Parameters
+        ----------
+        run_id : str
+            Identifier stamped on every emitted row.
+        solver_name : str
+            Name of the solver producing the run.
+        out_dir : Path
+            Directory for ``metrics.csv`` / ``metrics.jsonl``.
+        grid :
+            Grid object providing ``interior_slice``.
+        truth_velocity :
+            Ground-truth model (or ``None``) for error / SSIM metrics.
+        metrics_cfg : MetricsCfg
+            SSIM and velocity-statistics settings.
+        t0 : float, optional
+            Wall-clock start reference; defaults to ``time.perf_counter()``.
+        """
         self.run_id = run_id
         self.solver_name = solver_name
         self.out_dir = Path(out_dir)
@@ -163,6 +231,24 @@ class RunRecorder:
         name: str,
         log_every: int,
     ) -> RecordingTape:
+        """Mint a :class:`RecordingTape` bound to this recorder for one band.
+
+        Parameters
+        ----------
+        band_index : int
+            Index of the frequency band.
+        frequencies_hz : list of float
+            Frequencies of the band, in Hz.
+        name : str
+            Tape name.
+        log_every : int
+            Logging cadence in outer iterations.
+
+        Returns
+        -------
+        RecordingTape
+            A tape wired to this recorder.
+        """
         return RecordingTape(
             recorder=self,
             band_index=band_index,
@@ -218,6 +304,24 @@ class RunRecorder:
         residuals: Any,
         pde_src_ratio: Optional[float],
     ) -> Dict[str, Any]:
+        """Assemble one metric record, append it to disk, and return it.
+
+        Parameters
+        ----------
+        tape : RecordingTape
+            Tape supplying the band, outer index and current velocity field.
+        loss : float
+            Total loss reported by the solver.
+        residuals : Any
+            Residual dict with the per-term losses / RMS values.
+        pde_src_ratio : float or None
+            PDE-residual to source ratio.
+
+        Returns
+        -------
+        dict
+            The row written to ``metrics.csv`` / ``metrics.jsonl``.
+        """
         res = residuals if isinstance(residuals, dict) else {}
         pde_loss = _f(res.get("pde_loss"))
         data_loss = _f(res.get("data_loss"))
@@ -240,13 +344,10 @@ class RunRecorder:
         data_weight = float(weights.get("data", 1.0))
         pde_term = None if pde_loss is None else pde_weight * pde_loss
         data_term = None if data_loss is None else data_weight * data_loss
-        # The weighted regularisation contribution. With no regulariser this is
-        # exactly 0. We do NOT derive it as (loss - pde_term - data_term): the
-        # solver-reported ``loss`` (start of the last block step) and the
-        # residual terms (end of the L-BFGS line search) are evaluated at
-        # slightly different points, so that subtraction would report line-search
-        # noise rather than the regularisation term. With a regulariser wired in,
-        # its value is not available from the residual dict, so we log null.
+        # Weighted regularisation contribution: 0 without a regulariser, else
+        # null. Not derived as (loss - pde_term - data_term): the solver loss and
+        # the residual terms are evaluated at slightly different points, so that
+        # subtraction would report line-search noise rather than the reg term.
         reg_term = 0.0 if not has_regulariser else None
 
         # Velocity-field summaries on the non-PML interior.
@@ -302,6 +403,22 @@ class RunRecorder:
 
     # -- crash-safe append ------------------------------------------------- #
     def _append(self, row: Dict[str, Any]) -> None:
+        """Append one record to the CSV and JSONL files, flushing each.
+
+        Parameters
+        ----------
+        row : dict
+            The metric record to append.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Writes the CSV header on the first (empty) file and flushes both
+        streams so a crash leaves the tape crash-safe.
+        """
         new_csv = not self.csv_path.exists() or self.csv_path.stat().st_size == 0
         with open(self.csv_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
@@ -315,6 +432,19 @@ class RunRecorder:
 
 
 def _f(x: Any) -> Optional[float]:
+    """Coerce ``x`` to a finite float, or ``None``.
+
+    Parameters
+    ----------
+    x : Any
+        Value to coerce.
+
+    Returns
+    -------
+    float or None
+        ``float(x)`` if finite; ``None`` if ``x`` is None, non-numeric or
+        non-finite.
+    """
     if x is None:
         return None
     try:

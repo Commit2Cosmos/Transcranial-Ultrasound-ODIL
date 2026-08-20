@@ -35,6 +35,29 @@ class InverseLoss(DiscreteLoss):
         callback: LossTape | None = None,
         normalize_data: str | None = None,
     ):
+        """Initialise the inverse loss from wavefield or trace observations.
+
+        Parameters
+        ----------
+        observed_wavefield : optional
+            Full complex wavefields ``(n_shots, nf, nx, ny)``; mutually
+            exclusive with ``observed_traces``.
+        config : LossConfig
+            Loss configuration (keyword-only).
+        observed_traces : optional
+            Complex receiver traces ``(n_shots, nf, n_receivers)``.
+        callback : LossTape, optional
+            Diagnostics tape.
+        normalize_data : str, optional
+            Data-normalisation mode: ``None`` / ``"none"`` leaves the data
+            residual unscaled; ``"per_receiver"`` divides synthetic and
+            observed traces by each receiver's peak-abs magnitude.
+
+        Notes
+        -----
+        Raises ``ValueError`` unless exactly one of ``observed_wavefield`` or
+        ``observed_traces`` is supplied, or if traces are not 3-D.
+        """
         super().__init__(config, callback)
 
         has_wf = observed_wavefield is not None
@@ -59,10 +82,22 @@ class InverseLoss(DiscreteLoss):
             self.d_obs = torch.as_tensor(obs, dtype=cdtype, device=self.config.device)
 
         self.normalize_data = normalize_data
+        self._trace_scale = self._compute_trace_scale()
 
     @staticmethod
     def _stack_observations(observed_wavefield):
-        """Coerce input to a (n_shots, nf, NX, NY) tensor."""
+        """Coerce observations to a ``(n_shots, nf, NX, NY)`` tensor.
+
+        Parameters
+        ----------
+        observed_wavefield : Wavefield, tensor, or sequence thereof
+            Observed wavefield(s) in any accepted form.
+
+        Returns
+        -------
+        torch.Tensor
+            Stacked wavefield amplitudes.
+        """
         if isinstance(observed_wavefield, (list, tuple)):
             amps = [
                 w.amplitude if isinstance(w, Wavefield) else torch.as_tensor(w)
@@ -72,22 +107,70 @@ class InverseLoss(DiscreteLoss):
         return observed_wavefield
 
     def _obs_traces(self) -> torch.Tensor:
-        """Observation traces as ``(n_shots, nf, n_receivers)``."""
+        """Observation traces sampled at the receivers.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex traces ``(n_shots, nf, n_receivers)``.
+        """
         if self._trace_mode:
             return self.d_obs
         i = self.config.geometry.recv_ij[:, 0]
         j = self.config.geometry.recv_ij[:, 1]
         return self.d_obs[:, :, i, j]
 
+    def _compute_trace_scale(self) -> torch.Tensor | None:
+        """Per-receiver amplitude scale for balancing the data residual.
+
+        Returns
+        -------
+        torch.Tensor or None
+            ``None`` when :attr:`normalize_data` is ``None`` / ``"none"``.
+            For ``"per_receiver"`` a positive scale of shape
+            ``(n_shots, 1, n_receivers)``.
+        """
+        if self.normalize_data is None or self.normalize_data == "none":
+            return None
+        if self.normalize_data == "per_receiver":
+            obs_tr = self._obs_traces()
+            scale = obs_tr.abs().amax(dim=1, keepdim=True)
+            return scale.clamp(min=1e-12).detach()
+        raise ValueError(
+            f"Invalid normalize_data {self.normalize_data!r}; "
+            "expected one of None, 'none', 'per_receiver'."
+        )
+
+    def set_normalization(self, enabled: bool) -> None:
+        """Enable / disable per-receiver ``trace_scale`` for subsequent evals."""
+        self._trace_scale = self._compute_trace_scale() if enabled else None
+
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute the PDE and data residuals for the current state.
+
+        Parameters
+        ----------
+        amp : torch.Tensor
+            Complex wavefield amplitudes ``(n_shots, nf, nx, ny)``.
+        wsp : torch.Tensor
+            Full-grid velocity field ``c_full``.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            ``(r_pde, r_data)`` residuals.
+        """
         pde = self.config.wave_eq.residual(amp, wsp, self.sources)
 
         i = self.config.geometry.recv_ij[:, 0]
         j = self.config.geometry.recv_ij[:, 1]
         syn_tr = amp[:, :, i, j]
         obs_tr = self._obs_traces()
+        if self._trace_scale is not None:
+            syn_tr = syn_tr / self._trace_scale
+            obs_tr = obs_tr / self._trace_scale
         data = syn_tr - obs_tr
         return pde, data
 
@@ -98,6 +181,25 @@ class InverseLoss(DiscreteLoss):
         c_interior: torch.Tensor | None = None,
         weights_override: dict | None = None,
     ) -> torch.Tensor:
+        """Joint ``(u, c)`` inverse loss for the current wavefield and velocity.
+
+        Parameters
+        ----------
+        amp : torch.Tensor
+            Complex wavefield amplitudes ``(n_shots, nf, nx, ny)``.
+        c_full : torch.Tensor
+            Full-grid velocity field (PDE uses physical ``c``).
+        c_interior : torch.Tensor, optional
+            Interior velocity passed to the regulariser.
+        weights_override : dict, optional
+            Per-block weights overriding ``config.weights`` for this call.
+
+        Returns
+        -------
+        torch.Tensor
+            Real scalar loss ``w_pde * mean(|r_pde|**2) +
+            w_data * mean(|r_data|**2) + w_reg * R(c_interior)``.
+        """
         r_pde, r_data = self._residuals(amp, c_full)
 
         w = self.config.weights
@@ -138,14 +240,30 @@ class InverseLoss(DiscreteLoss):
         c_interior: torch.Tensor | None = None,
         weights_override: dict | None = None,
     ) -> torch.Tensor:
-        """Loss for ``u_precond='z'``: PDE in ``z``, data through ``u = A(c)^{-1} z``.
+        """Loss for ``u_precond='z'``: PDE in ``z``, data through ``u``.
 
-        Uses the same ``mean_abs_sq`` reduction as :meth:`evaluate` (no ``1/2``,
-        no sum). Continuum ``½‖·‖²`` notation is conceptual only.
+        Parameters
+        ----------
+        z : torch.Tensor
+            Preconditioned wavefield variable.
+        u : torch.Tensor
+            Wavefield ``A(c)^{-1} z`` for the current ``c``.
+        c_full : torch.Tensor
+            Full-grid velocity field.
+        c_interior : torch.Tensor, optional
+            Interior velocity passed to the regulariser.
+        weights_override : dict, optional
+            Per-block weights overriding ``config.weights`` for this call.
 
-        * PDE residual: ``z - f'`` (``f'`` = :attr:`sources`)
-        * Data residual: receiver sample of ``u`` minus observations
-          (``u`` must be ``A(c)^{-1} z`` for the current ``c``)
+        Returns
+        -------
+        torch.Tensor
+            Real scalar loss with the same reduction as :meth:`evaluate`.
+
+        Notes
+        -----
+        The PDE residual is ``z - f'`` (with ``f'`` = :attr:`sources`) and the
+        data residual is the receiver sample of ``u`` minus the observations.
         """
         r_pde = z - self.sources
 
@@ -153,6 +271,9 @@ class InverseLoss(DiscreteLoss):
         j = self.config.geometry.recv_ij[:, 1]
         syn_tr = u[:, :, i, j]
         obs_tr = self._obs_traces()
+        if self._trace_scale is not None:
+            syn_tr = syn_tr / self._trace_scale
+            obs_tr = obs_tr / self._trace_scale
         r_data = syn_tr - obs_tr
 
         w = self.config.weights

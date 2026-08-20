@@ -1,29 +1,3 @@
-"""Block-coordinate diagnostics for the LBFGSB direct-u optimiser.
-
-A :class:`DiagnosticsCollector` is passed to ``LBFGSB.minimise(diagnostics=...)``
-(via ``run_inverse`` when ``diagnostics.enabled``). The optimiser hands it a
-per-outer snapshot of the wavefield before/after the u-block and the c-block; the
-collector computes the block-diagnostic quantities on *clones* (never disturbing
-the trajectory) and writes, into ``<run_dir>/diagnostics/``:
-
-* ``scalars.csv`` — per outer: ``cos(update, -grad)`` for the u/c blocks, the
-  block gradient L2 norms, the relative model error and relative PDE/data
-  residuals at the end of the outer, and the scheduled ``c_lr`` /
-  ``c_grad_smooth_sigma`` in effect (A4).
-* ``summary.png`` — four trajectory panels built from those scalars.
-* ``c_evolution.png`` — the physical interior velocity after each outer (init
-  first, truth last), refreshed every outer so a partial run keeps a figure.
-* ``outer_XX.png`` — (only when ``per_outer_field_maps``) per-outer term-induced
-  wavefield update maps ``du_term = -H^{-1} g_term`` at several u-solve depths
-  plus the c-gradient / velocity update at the exact wavefield minimiser ``u*``.
-
-This is the library port of ``sandbox/profiling/optim_block_diag/run_diagnostics``
-(+ ``diagnostics`` / ``objective`` / ``hess_split``), trimmed to exactly the four
-outputs above. Term gradients are isolated through the library loss itself
-(``InverseLoss.evaluate(weights_override=...)``), so the diagnostics track the
-*actual* objective, and the ``-H^{-1} g`` maps reuse :class:`UBlockHessian`.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -38,7 +12,18 @@ from matplotlib.figure import Figure
 
 
 def _new_figure(**kwargs) -> Figure:
-    """A standalone Agg-backed Figure not registered with pyplot."""
+    """Create a standalone Agg-backed figure not registered with pyplot.
+
+    Parameters
+    ----------
+    **kwargs
+        Forwarded to :class:`matplotlib.figure.Figure`.
+
+    Returns
+    -------
+    Figure
+        A figure with an attached Agg canvas (``fig.canvas``).
+    """
     fig = Figure(**kwargs)
     FigureCanvasAgg(fig)  # attaches itself as ``fig.canvas``
     return fig
@@ -53,8 +38,7 @@ from odil_wave.optimisation.u_block_hessian import UBlockHessian  # noqa: E402
 
 _TINY = 1e-300
 
-# Shared two-slope velocity colour scale for c_evolution (matches the sandbox /
-# VelocityModel.show(): c_min at bottom, 1600 midpoint, high velocity at top).
+# Shared two-slope velocity colour scale for c_evolution.
 _C_EVOL_VMIN = 1400.0
 _C_EVOL_VCENTER = 1600.0
 _C_EVOL_VMAX = 3000.0
@@ -64,17 +48,53 @@ _C_EVOL_VMAX = 3000.0
 # complex-aware inner-product / norm helpers
 # --------------------------------------------------------------------------- #
 def _gnorm(x: torch.Tensor) -> float:
+    """Euclidean L2 norm of a tensor, complex-aware.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Real or complex tensor.
+
+    Returns
+    -------
+    float
+        The L2 norm of ``x`` flattened.
+    """
     v = x.real.square() + x.imag.square() if x.is_complex() else x.square()
     return float(v.sum().sqrt().cpu())
 
 
 def _real_inner(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Real part of the Hermitian inner product ``<a, b>``.
+
+    Parameters
+    ----------
+    a, b : torch.Tensor
+        Real or complex tensors of matching shape.
+
+    Returns
+    -------
+    float
+        ``Re(sum(conj(a) * b))``.
+    """
     if a.is_complex() or b.is_complex():
         return float((a.conj() * b).real.sum().cpu())
     return float((a * b).sum().cpu())
 
 
 def _real_cos(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Cosine similarity between two tensors under the real inner product.
+
+    Parameters
+    ----------
+    a, b : torch.Tensor
+        Real or complex tensors of matching shape.
+
+    Returns
+    -------
+    float
+        Cosine similarity, or NaN if either norm underflows.
+    """
     na, nb = _gnorm(a), _gnorm(b)
     if na < _TINY or nb < _TINY:
         return float("nan")
@@ -82,7 +102,18 @@ def _real_cos(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 def _row_depths(u_steps: int) -> List[int]:
-    """Default per-outer u-solve depths: 1, 5, 10, ... up to u_steps."""
+    """Default per-outer u-solve depths (1, 5, 10, ... up to ``u_steps``).
+
+    Parameters
+    ----------
+    u_steps : int
+        Maximum u-solve depth.
+
+    Returns
+    -------
+    list of int
+        Sorted, de-duplicated depths in ``[1, u_steps]``.
+    """
     steps = [1] + list(range(5, int(u_steps) + 1, 5))
     if u_steps not in steps:
         steps.append(int(u_steps))
@@ -102,6 +133,23 @@ class DiagnosticsCollector:
         u_depths: Optional[List[int]] = None,
         verify_hessian: bool = False,
     ) -> None:
+        """Set up the output directory, truth reference, and per-outer tapes.
+
+        Parameters
+        ----------
+        out_dir : Path
+            Directory where figures and the scalar CSV are written.
+        truth_velocity :
+            Ground-truth velocity model (provides ``.c``).
+        grid :
+            Grid object exposing ``interior_slice``.
+        per_outer_field_maps : bool, optional
+            If True, render a term-split field figure each outer iteration.
+        u_depths : list of int, optional
+            Explicit u-solve depths; defaults to :func:`_row_depths`.
+        verify_hessian : bool, optional
+            If True, verify the u-block Hessian split each outer iteration.
+        """
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.grid = grid
@@ -144,6 +192,33 @@ class DiagnosticsCollector:
         c_param_bounds: Tuple[Optional[float], Optional[float]],
         u_solve: str,
     ) -> None:
+        """Attach the live LBFGSB run objects and solver settings.
+
+        Parameters
+        ----------
+        loss :
+            Loss object exposing ``evaluate`` and residual helpers.
+        wavefield :
+            Wavefield / forward operator used to build the u-block Hessian.
+        c_ref : float
+            Reference velocity scaling the c parameter.
+        c_param : str
+            Name of the c parametrisation.
+        build_full_c : callable
+            Maps interior physical velocity to the full (PML-padded) grid.
+        u_torch_opts, c_torch_opts : dict
+            L-BFGS options for the u- and c-blocks.
+        u_steps, c_steps : int
+            Number of u- and c-block inner iterations.
+        c_param_bounds : tuple
+            ``(lo, hi)`` clamp bounds on the raw c parameter.
+        u_solve : str
+            u-block solve mode (``"exact"`` or iterative).
+
+        Notes
+        -----
+        Must be called before any ``record_*`` hook; sets the bound flag.
+        """
         self.loss = loss
         self.wavefield = wavefield
         self.c_ref = float(c_ref)
@@ -164,14 +239,51 @@ class DiagnosticsCollector:
 
     # -- coordinate helpers ------------------------------------------------- #
     def _c_full(self, c_raw: torch.Tensor) -> torch.Tensor:
+        """Full-grid physical velocity from a raw c parameter.
+
+        Parameters
+        ----------
+        c_raw : torch.Tensor
+            Raw c-block parameter.
+
+        Returns
+        -------
+        torch.Tensor
+            PML-padded physical velocity field.
+        """
         c_hat = _c_hat_from_c_param(c_raw.detach(), self.c_param)
         return self.build_full_c(c_hat * self.c_ref)
 
     def _c_phys_int(self, c_raw: torch.Tensor) -> torch.Tensor:
+        """Interior physical velocity from a raw c parameter.
+
+        Parameters
+        ----------
+        c_raw : torch.Tensor
+            Raw c-block parameter.
+
+        Returns
+        -------
+        torch.Tensor
+            Interior (un-padded) physical velocity field.
+        """
         c_hat = _c_hat_from_c_param(c_raw.detach(), self.c_param)
         return c_hat * self.c_ref
 
     def _term_weights(self, term: str) -> Dict[str, float]:
+        """Loss-term weights that isolate a single term.
+
+        Parameters
+        ----------
+        term : str
+            ``"pde"`` or ``"data"`` to isolate that term; any other value
+            returns the full configured weights.
+
+        Returns
+        -------
+        dict
+            Weight dictionary with keys ``pde``, ``data``, ``reg``.
+        """
         if term == "pde":
             return {"pde": 1.0, "data": 0.0, "reg": 0.0}
         if term == "data":
@@ -182,6 +294,24 @@ class DiagnosticsCollector:
 
     # -- gradients (on clones; loss.evaluate isolates the terms) ------------ #
     def _u_grad(self, u_re, u_im, c_full, c_hat, term: str) -> torch.Tensor:
+        """u-gradient of one isolated loss term at a frozen c.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Real and imaginary parts of the wavefield.
+        c_full : torch.Tensor
+            Full-grid physical velocity (frozen).
+        c_hat : torch.Tensor
+            Normalised c (accepted for signature symmetry; unused here).
+        term : str
+            Loss term to isolate (see :meth:`_term_weights`).
+
+        Returns
+        -------
+        torch.Tensor
+            Complex u-gradient of the selected term.
+        """
         a = u_re.detach().clone().requires_grad_(True)
         b = u_im.detach().clone().requires_grad_(True)
         L = self.loss.evaluate(
@@ -193,6 +323,21 @@ class DiagnosticsCollector:
         return torch.complex(ga.detach(), gb.detach())
 
     def _u_block_grads(self, u_re, u_im, c_raw) -> Dict[str, object]:
+        """u-block gradients: total plus weighted pde/data splits.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Wavefield real/imag parts.
+        c_raw : torch.Tensor
+            Raw c parameter (frozen).
+
+        Returns
+        -------
+        dict
+            Keys ``g_total``, ``g_pde_weighted``, ``g_data_weighted``,
+            ``norm_total_l2``.
+        """
         c_hat = _c_hat_from_c_param(c_raw.detach(), self.c_param)
         c_full = self.build_full_c(c_hat * self.c_ref)
         w = self._term_weights("total")
@@ -207,7 +352,20 @@ class DiagnosticsCollector:
         }
 
     def _c_block_grad(self, u_re, u_im, c_raw) -> Dict[str, object]:
-        """Weighted c-block gradient (raw coordinate) with u frozen."""
+        """Weighted c-block gradient in the raw coordinate, with u frozen.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Wavefield real/imag parts (frozen).
+        c_raw : torch.Tensor
+            Raw c parameter (differentiated).
+
+        Returns
+        -------
+        dict
+            Keys ``g_total`` and ``norm_weighted_l2``.
+        """
         cr = c_raw.detach().clone().requires_grad_(True)
         c_hat = _c_hat_from_c_param(cr, self.c_param)
         c_full = self.build_full_c(c_hat * self.c_ref)
@@ -221,6 +379,20 @@ class DiagnosticsCollector:
 
     # -- state (relative model error + residuals) --------------------------- #
     def _state(self, u_re, u_im, c_raw) -> Dict[str, float]:
+        """Relative model error and PDE/data residuals at a state.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Wavefield real/imag parts.
+        c_raw : torch.Tensor
+            Raw c parameter.
+
+        Returns
+        -------
+        dict
+            Keys ``rel_c``, ``rel_pde``, ``rel_data``.
+        """
         c_full = self._c_full(c_raw)
         u = torch.complex(u_re.detach(), u_im.detach())
         r_pde, r_data = self.loss._residuals(u, c_full)
@@ -235,6 +407,20 @@ class DiagnosticsCollector:
 
     # -- re-run the u-block on a clone to several depths -------------------- #
     def _u_depths(self, u_re, u_im, c_raw):
+        """Re-run the u-block on a clone and snapshot it at each depth.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Initial wavefield real/imag parts.
+        c_raw : torch.Tensor
+            Raw c parameter (frozen).
+
+        Returns
+        -------
+        dict
+            Maps depth ``N`` to the ``(u_re, u_im)`` reached after N L-BFGS steps.
+        """
         c_hat = _c_hat_from_c_param(c_raw.detach(), self.c_param)
         c_full = self.build_full_c(c_hat * self.c_ref)
         ur = u_re.detach().clone().requires_grad_(True)
@@ -242,6 +428,7 @@ class DiagnosticsCollector:
         opt = torch.optim.LBFGS([ur, ui], **self.u_torch_opts)
 
         def closure():
+            """Zero grads, evaluate the loss, backprop, and return it."""
             opt.zero_grad()
             L = self.loss.evaluate(torch.complex(ur, ui), c_full, c_hat)
             L.backward()
@@ -258,12 +445,29 @@ class DiagnosticsCollector:
 
     # -- one real c-block on a clone: the dc it would drive ----------------- #
     def _fire_c_block(self, u_re, u_im, c_raw, sigma: float) -> torch.Tensor:
+        """Run one real c-block on a clone and return the physical dc it drives.
+
+        Parameters
+        ----------
+        u_re, u_im : torch.Tensor
+            Wavefield real/imag parts (frozen).
+        c_raw : torch.Tensor
+            Raw c parameter (starting point).
+        sigma : float
+            Gaussian smoothing width applied to the c-gradient (0 disables).
+
+        Returns
+        -------
+        torch.Tensor
+            Physical velocity update ``dc`` over the interior.
+        """
         cr = c_raw.detach().clone().requires_grad_(True)
         u = torch.complex(u_re.detach(), u_im.detach())
         opt = torch.optim.LBFGS([cr], **self.c_torch_opts)
         lo, hi = self.c_param_bounds
 
         def closure():
+            """Evaluate the loss, backprop, and optionally smooth the c-grad."""
             opt.zero_grad()
             c_hat = _c_hat_from_c_param(cr, self.c_param)
             c_full = self.build_full_c(c_hat * self.c_ref)
@@ -287,15 +491,56 @@ class DiagnosticsCollector:
     # -- map reductions ----------------------------------------------------- #
     @staticmethod
     def _u_map(g: torch.Tensor) -> np.ndarray:
+        """Reduce a wavefield-shaped gradient to a 2D magnitude map.
+
+        Parameters
+        ----------
+        g : torch.Tensor
+            Wavefield-shaped (complex) gradient.
+
+        Returns
+        -------
+        numpy.ndarray
+            Sum of ``|g|`` over the source/component axes.
+        """
         return g.detach().abs().sum(dim=(0, 1)).cpu().numpy()
 
     def _c_map(self, g: torch.Tensor) -> np.ndarray:
+        """Reshape a flat c-gradient to the interior 2D grid.
+
+        Parameters
+        ----------
+        g : torch.Tensor
+            Flat c-block gradient.
+
+        Returns
+        -------
+        numpy.ndarray
+            Gradient reshaped to ``interior_shape``.
+        """
         return g.detach().cpu().numpy().reshape(self.interior_shape)
 
     # ==================================================================== #
     # LBFGSB hooks
     # ==================================================================== #
     def record_init(self, c_raw, u_re, u_im) -> None:
+        """Record the initial state and render the first c-evolution panel.
+
+        Parameters
+        ----------
+        c_raw : torch.Tensor
+            Initial raw c parameter.
+        u_re, u_im : torch.Tensor
+            Initial wavefield real/imag parts.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        No-op until :meth:`bind` has been called.
+        """
         if not self._bound:
             return
         sd = self._state(u_re, u_im, c_raw)
@@ -316,6 +561,32 @@ class DiagnosticsCollector:
         c_lr: float,
         c_grad_smooth_sigma: float,
     ) -> None:
+        """Capture block alignment, gradients, and residuals for one outer.
+
+        Parameters
+        ----------
+        i : int
+            Zero-based outer-iteration index.
+        u_before_re, u_before_im : torch.Tensor
+            Wavefield before the u-block.
+        u_after_re, u_after_im : torch.Tensor
+            Wavefield after the u-block.
+        c_raw_before, c_raw_after : torch.Tensor
+            Raw c parameter before/after the c-block.
+        c_lr : float
+            c-block learning rate for this outer.
+        c_grad_smooth_sigma : float
+            Gaussian smoothing width applied to the c-gradient.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        No-op until :meth:`bind` has been called. Appends to the scalar tapes
+        and renders the c-evolution (and optional per-outer field) figures.
+        """
         if not self._bound:
             return
         # u-block: cos(du, -g) and ||g_u|| at the pre-u-block state.
@@ -349,6 +620,16 @@ class DiagnosticsCollector:
             )
 
     def finalise(self) -> None:
+        """Write the scalar CSV and render the summary figure.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        No-op if unbound or if no outer iterations were recorded.
+        """
         if not self._bound or not self._rel_c_end:
             return
         self._write_scalars()
@@ -358,6 +639,12 @@ class DiagnosticsCollector:
     # writers / renderers
     # ==================================================================== #
     def _write_scalars(self) -> None:
+        """Write the per-outer scalar tapes to ``scalars.csv``.
+
+        Returns
+        -------
+        None
+        """
         with (self.out_dir / "scalars.csv").open("w", newline="") as f:
             w = csv.writer(f)
             w.writerow(
@@ -391,6 +678,12 @@ class DiagnosticsCollector:
                 )
 
     def _render_c_evolution(self) -> None:
+        """Render the per-outer interior-velocity panels to ``c_evolution.png``.
+
+        Returns
+        -------
+        None
+        """
         truth = self._truth_int.cpu().numpy()
         panels = list(self._c_maps) + [("truth", 0.0, truth)]
         norm = velocity_norm(_C_EVOL_VMIN, _C_EVOL_VCENTER, _C_EVOL_VMAX)
@@ -410,6 +703,17 @@ class DiagnosticsCollector:
         fig.savefig(self.out_dir / "c_evolution.png", dpi=130)
 
     def _render_summary(self) -> None:
+        """Render the block-trajectory summary figure to ``summary.png``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Four panels: block update alignment, relative model error, relative
+        residuals, and block gradient norms.
+        """
         n = len(self._rel_c_end)
         outers = np.arange(n)
         sx = np.arange(n + 1)
@@ -462,6 +766,30 @@ class DiagnosticsCollector:
         fig.savefig(self.out_dir / "summary.png", dpi=130)
 
     def _render_outer_figure(self, i, u_before_re, u_before_im, c_raw, sigma) -> None:
+        """Render term-split wavefield/c-update maps for one outer iteration.
+
+        Parameters
+        ----------
+        i : int
+            Outer-iteration index (used in the filename and title).
+        u_before_re, u_before_im : torch.Tensor
+            Wavefield before the u-block.
+        c_raw : torch.Tensor
+            Raw c parameter (frozen for this figure).
+        sigma : float
+            Gaussian smoothing width for the c-gradient.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        In ``exact`` u-solve mode the depth sweep collapses to a single row at
+        ``u* = u0 - H^-1 g(u0)``; otherwise rows show the iterative u-solve
+        depths plus a reference bottom row at the exact minimiser ``u*``.
+        Writes ``outer_<i>.png``.
+        """
         c_full = self._c_full(c_raw)
         ubh = UBlockHessian(
             self.wavefield, self.loss, c_full, weights=dict(self.loss.config.weights)
@@ -532,9 +860,8 @@ class DiagnosticsCollector:
                 ],
             }
 
-        # In exact mode the run reaches u* = u0 - H^{-1} g(u0) in a single direct
-        # step (no iterative L-BFGS), so collapse the depth sweep to one row
-        # evaluated at u* itself. Otherwise show the iterative u-solve depths.
+        # Exact mode reaches u* in one direct step: one row at u*. Otherwise
+        # sweep the iterative u-solve depths.
         rows = []
         if exact:
             ug0 = self._u_block_grads(u_before_re, u_before_im, c_raw)
@@ -546,9 +873,8 @@ class DiagnosticsCollector:
                 u_reN, u_imN = fields[N]
                 rows.append(_row(u_reN, u_imN, N))
 
-        # Reference bottom row: c-gradient / dc at the exact minimiser u*. Optim
-        # path only — in exact mode the single row above already *is* u*, so this
-        # would duplicate its g_c / dc columns.
+        # Reference bottom row (c-grad / dc at the exact minimiser u*), optim
+        # path only: in exact mode the single row above already is u*.
         star_row = not exact
         if star_row:
             ug0 = self._u_block_grads(u_before_re, u_before_im, c_raw)

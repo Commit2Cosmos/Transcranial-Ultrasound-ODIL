@@ -6,7 +6,20 @@ from .utils import LossConfig, LossTape
 
 
 def mean_abs_sq(x: torch.Tensor, dim=None) -> torch.Tensor:
-    """Real mean of |x|² (works for real or complex ``x``)."""
+    """Real mean of ``|x|**2`` (works for real or complex ``x``).
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Real or complex tensor.
+    dim : int or tuple of int, optional
+        Dimensions to reduce; reduces over all elements when omitted.
+
+    Returns
+    -------
+    torch.Tensor
+        Real-valued mean of the squared magnitude.
+    """
     if x.is_complex():
         val = x.real.square() + x.imag.square()
     else:
@@ -24,6 +37,15 @@ class DiscreteLoss(ABC):
         config: LossConfig,
         callback: LossTape | None = None,
     ):
+        """Initialise the loss and precompute the per-shot source fields.
+
+        Parameters
+        ----------
+        config : LossConfig
+            Wave-equation, geometry, weights and regulariser configuration.
+        callback : LossTape, optional
+            Diagnostics tape; a fresh :class:`LossTape` is created if omitted.
+        """
         self.config = config
         self.callback = callback if callback is not None else LossTape()
 
@@ -46,7 +68,13 @@ class DiscreteLoss(ABC):
         self.evaluations = 0
 
     def pde_src_ratio(self) -> float:
-        """|r_pde|_rms / |src|_rms of the last evaluation."""
+        """RMS PDE residual relative to the RMS source of the last evaluation.
+
+        Returns
+        -------
+        float
+            ``|r_pde|_rms / |src|_rms`` from the most recent evaluation.
+        """
         residuals = self._last_residuals
 
         if isinstance(residuals, dict):
@@ -62,10 +90,29 @@ class DiscreteLoss(ABC):
 
     @abstractmethod
     def evaluate(self, *args, **kwargs) -> torch.Tensor:
-        """Return a torch scalar loss; autograd handles gradients."""
+        """Return a torch scalar loss.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss; autograd handles gradients.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def _residuals(self, amp: torch.Tensor, wsp: torch.Tensor) -> torch.Tensor:
-        """Vectorised residual on shot-batched inputs."""
+        """Compute the vectorised residual on shot-batched inputs.
+
+        Parameters
+        ----------
+        amp : torch.Tensor
+            Wavefield amplitudes, shot-batched.
+        wsp : torch.Tensor
+            Wave speed / velocity field.
+
+        Returns
+        -------
+        torch.Tensor
+            Residual tensor(s) for the loss.
+        """
         raise NotImplementedError

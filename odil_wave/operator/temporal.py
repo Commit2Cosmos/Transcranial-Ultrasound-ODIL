@@ -1,5 +1,4 @@
-"""Temporal finite-difference operators (u_tt).
-"""
+"""Temporal finite-difference operators (u_tt)."""
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
@@ -17,7 +16,23 @@ def _make_endpoint_masks(
     *,
     second_layer: bool = False,
 ):
-    """Boolean masks of shape ``(NT, 1, 1)`` that select endpoint time rows."""
+    """Boolean masks selecting endpoint time rows.
+
+    Parameters
+    ----------
+    NT : int
+        Number of time steps.
+    device : torch.device
+        Mask device.
+    second_layer : bool, optional
+        Also return masks for the second and second-to-last rows.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(mask_first, mask_last)``, or with ``second_layer`` the 4-tuple
+        ``(mask_first, mask_first2, mask_last, mask_last2)``; each ``(NT, 1, 1)``.
+    """
     mask_first = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
     mask_first[0] = True
     mask_last = torch.zeros(NT, 1, 1, dtype=torch.bool, device=device)
@@ -32,7 +47,24 @@ def _make_endpoint_masks(
 
 
 def _ic_ghost_row(u: torch.Tensor, dt: float, init_ut: torch.Tensor, k: float):
-    """Single time-row ghost ``u[..., 0:1, :, :] - k*dt*init_ut`` for IC consistency."""
+    """Initial-condition ghost row enforcing the ``u_t`` initial condition.
+
+    Parameters
+    ----------
+    u : torch.Tensor
+        Field with time on dim ``-3``.
+    dt : float
+        Non-dimensional time step.
+    init_ut : torch.Tensor
+        Initial time-derivative field ``(NX, NY)``.
+    k : float
+        Ghost offset multiplier (1 for ``u_{-1}``, 2 for ``u_{-2}``).
+
+    Returns
+    -------
+    torch.Tensor
+        Ghost row ``u[..., 0:1, :, :] - k*dt*init_ut``.
+    """
     # init_ut is (NX, NY); broadcasts against u[..., 0:1, :, :] of shape (..., 1, NX, NY).
     return u[..., 0:1, :, :] - k * dt * init_ut
 
@@ -44,7 +76,24 @@ def _first_time_derivative(
     mask_first: torch.Tensor,
     mask_last: torch.Tensor,
 ) -> torch.Tensor:
-    """Centered du/dt on the full field, IC-consistent at the ends."""
+    """Centered ``du/dt`` on the full field, IC-consistent at the ends.
+
+    Parameters
+    ----------
+    u : torch.Tensor
+        Field with time on dim ``-3``.
+    dt : float
+        Non-dimensional time step.
+    init_ut : torch.Tensor
+        Initial time-derivative field used for the front ghost row.
+    mask_first, mask_last : torch.Tensor
+        Endpoint masks from :func:`_make_endpoint_masks`.
+
+    Returns
+    -------
+    torch.Tensor
+        Centered first time derivative, same shape as ``u``.
+    """
     utm1 = torch.roll(u, 1, dims=-3)
     utp1 = torch.roll(u, -1, dims=-3)
     # IC: at t=0, the rolled-in value should be u[0] - dt*init_ut, not u[-1].
@@ -62,7 +111,24 @@ def _time_stencil_2point(
     mask_first: torch.Tensor,
     mask_last: torch.Tensor,
 ) -> torch.Tensor:
-    """Centred leapfrog u_tt in the interior; one-sided 4-point at endpoints."""
+    """Second-order ``u_tt``: centred interior, one-sided 4-point endpoints.
+
+    Parameters
+    ----------
+    u : torch.Tensor
+        Field with time on dim ``-3``.
+    dt : float
+        Non-dimensional time step.
+    init_ut : torch.Tensor
+        Initial time-derivative field (unused; kept for signature parity).
+    mask_first, mask_last : torch.Tensor
+        Endpoint masks from :func:`_make_endpoint_masks`.
+
+    Returns
+    -------
+    torch.Tensor
+        ``u_tt`` on the full field, same shape as ``u``.
+    """
     utm = torch.roll(u, 1, dims=-3)
     utp = torch.roll(u, -1, dims=-3)
     u_tt_centered = (utp - 2.0 * u + utm) / dt**2  # wrong at t=0 and t=-1; masked below
@@ -94,7 +160,24 @@ def _build_time_neighbors_4th(
     mask_last: torch.Tensor,
     mask_last2: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Assemble (utm2, utm1, utp1, utp2) with IC + endpoint patches via where."""
+    """Assemble the four time neighbours for the 4th-order stencil.
+
+    Parameters
+    ----------
+    u : torch.Tensor
+        Field with time on dim ``-3``.
+    dt : float
+        Non-dimensional time step.
+    init_ut : torch.Tensor
+        Initial time-derivative field for the front ghost rows.
+    mask_first, mask_first2, mask_last, mask_last2 : torch.Tensor
+        Endpoint masks from :func:`_make_endpoint_masks`.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        ``(utm2, utm1, utp1, utp2)`` with IC and endpoint patches applied.
+    """
     utm2 = torch.roll(u, 2, dims=-3)
     utm1 = torch.roll(u, 1, dims=-3)
     utp1 = torch.roll(u, -1, dims=-3)
@@ -127,7 +210,26 @@ def _time_stencil_4th(
     mask_first: torch.Tensor,
     mask_first2: torch.Tensor,
 ) -> torch.Tensor:
-    """4th-order centred u_tt; rows 0 and 1 replaced by one-sided 5-point stencils."""
+    """Fourth-order ``u_tt``; rows 0 and 1 use one-sided 5-point stencils.
+
+    Parameters
+    ----------
+    u : torch.Tensor
+        Field with time on dim ``-3``.
+    utm2, utm1, utp1, utp2 : torch.Tensor
+        Time neighbours from :func:`_build_time_neighbors_4th`.
+    dt : float
+        Non-dimensional time step.
+    init_ut : torch.Tensor
+        Initial time-derivative field (unused; kept for signature parity).
+    mask_first, mask_first2 : torch.Tensor
+        Front endpoint masks from :func:`_make_endpoint_masks`.
+
+    Returns
+    -------
+    torch.Tensor
+        ``u_tt`` on the full field, same shape as ``u``.
+    """
     u_tt_centered = _fourth_derivative_1d(utm2, utm1, u, utp1, utp2) / dt**2
 
     u_tt_0 = (
@@ -155,7 +257,18 @@ class TemporalOperator(DenseOperator):
 
     @abstractmethod
     def apply(self, u: torch.Tensor, **kwargs) -> torch.Tensor:
-        """Return dt^2 * u_tt on the full (..., NT, NX, NY) field."""
+        """Return the non-dimensional second time derivative of the field.
+
+        Parameters
+        ----------
+        u : torch.Tensor
+            Field of shape ``(..., NT, NX, NY)`` with time on dim ``-3``.
+
+        Returns
+        -------
+        torch.Tensor
+            Scaled ``u_tt`` on the full field.
+        """
         raise NotImplementedError
 
 
@@ -168,11 +281,23 @@ class TimeOperator2ndOrder(TemporalOperator):
     _mask_last: torch.Tensor = field(init=False, repr=False)
 
     def __post_init__(self):
+        """Build the endpoint masks for the grid's time axis."""
         g = self.wavefield.grid
         self._mask_first, self._mask_last = _make_endpoint_masks(g.nt, g.device)
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
+        """Non-dimensional 2nd-order ``u_{t't'}`` on the full field.
+
+        Parameters
+        ----------
+        u : torch.Tensor
+            Field with time on dim ``-3``.
+
+        Returns
+        -------
+        torch.Tensor
+            Second time derivative with the IC matched to ``u_t'``.
+        """
         init_ut = self.wavefield.init_ut_nd
         return _time_stencil_2point(
             u,
@@ -194,6 +319,7 @@ class TimeOperator4thOrder(TemporalOperator):
     _mask_last2: torch.Tensor = field(init=False, repr=False)
 
     def __post_init__(self):
+        """Build the two-layer endpoint masks for the grid's time axis."""
         g = self.wavefield.grid
         (
             self._mask_first,
@@ -203,7 +329,18 @@ class TimeOperator4thOrder(TemporalOperator):
         ) = _make_endpoint_masks(g.nt, g.device, second_layer=True)
 
     def apply(self, u: torch.Tensor) -> torch.Tensor:
-        # Non-dimensional time: returns t0^2 * u_tt = u_{t't'}, IC matches u_t'.
+        """Non-dimensional 4th-order ``u_{t't'}`` on the full field.
+
+        Parameters
+        ----------
+        u : torch.Tensor
+            Field with time on dim ``-3``.
+
+        Returns
+        -------
+        torch.Tensor
+            Second time derivative with the IC matched to ``u_t'``.
+        """
         init_ut = self.wavefield.init_ut_nd
         dt_nd = self.wavefield.grid.dt_nd
         utm2, utm1, utp1, utp2 = _build_time_neighbors_4th(
