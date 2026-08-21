@@ -209,8 +209,10 @@ def _time_stencil_4th(
     init_ut: torch.Tensor,
     mask_first: torch.Tensor,
     mask_first2: torch.Tensor,
+    mask_last: torch.Tensor,
+    mask_last2: torch.Tensor,
 ) -> torch.Tensor:
-    """Fourth-order ``u_tt``; rows 0 and 1 use one-sided 5-point stencils.
+    """Fourth-order ``u_tt``; rows 0, 1, NT-2 and NT-1 use one-sided 5-point stencils.
 
     Parameters
     ----------
@@ -222,8 +224,8 @@ def _time_stencil_4th(
         Non-dimensional time step.
     init_ut : torch.Tensor
         Initial time-derivative field (unused; kept for signature parity).
-    mask_first, mask_first2 : torch.Tensor
-        Front endpoint masks from :func:`_make_endpoint_masks`.
+    mask_first, mask_first2, mask_last, mask_last2 : torch.Tensor
+        Endpoint masks from :func:`_make_endpoint_masks`.
 
     Returns
     -------
@@ -246,9 +248,28 @@ def _time_stencil_4th(
         + 4.0 * u[..., 3, :, :]
         - u[..., 4, :, :]
     ).unsqueeze(-3) / (12.0 * dt**2)
+    # Mirror images of u_tt_0 / u_tt_1: same coefficients, points counted
+    # backward from the last row instead of forward from the first (the
+    # 2nd-derivative one-sided stencil is symmetric under time reversal).
+    u_tt_last = (
+        35.0 * u[..., -1, :, :]
+        - 104.0 * u[..., -2, :, :]
+        + 114.0 * u[..., -3, :, :]
+        - 56.0 * u[..., -4, :, :]
+        + 11.0 * u[..., -5, :, :]
+    ).unsqueeze(-3) / (12.0 * dt**2)
+    u_tt_second_last = (
+        11.0 * u[..., -1, :, :]
+        - 20.0 * u[..., -2, :, :]
+        + 6.0 * u[..., -3, :, :]
+        + 4.0 * u[..., -4, :, :]
+        - u[..., -5, :, :]
+    ).unsqueeze(-3) / (12.0 * dt**2)
 
     u_tt = torch.where(mask_first, u_tt_0, u_tt_centered)
     u_tt = torch.where(mask_first2, u_tt_1, u_tt)
+    u_tt = torch.where(mask_last2, u_tt_second_last, u_tt)
+    u_tt = torch.where(mask_last, u_tt_last, u_tt)
     return u_tt
 
 
@@ -362,4 +383,6 @@ class TimeOperator4thOrder(TemporalOperator):
             init_ut,
             self._mask_first,
             self._mask_first2,
+            self._mask_last,
+            self._mask_last2,
         )
