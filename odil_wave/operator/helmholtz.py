@@ -132,6 +132,11 @@ def _reflect_index(idx: int, n: int) -> int:
     """Map an index to ``[0, n)`` with the same rule as ``F.pad(..., mode='reflect')``."""
     if n <= 0:
         raise ValueError("n must be positive")
+    if n == 1:
+        # 2*n-2 == 0 degenerates the fold below into idx <-> -idx, which
+        # never terminates for idx != 0. With a single cell, every offset
+        # refers to that same cell.
+        return 0
     while idx < 0 or idx >= n:
         if idx < 0:
             idx = -idx
