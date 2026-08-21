@@ -20,56 +20,57 @@ from typing import Any, Dict, List, Optional
 
 def _summarise(cfg) -> str:
     lines: List[str] = []
-    a = lines.append
-    a(f"run.run_id      : {cfg.run.run_id}")
-    a(f"output dir      : {cfg.run_dir()}")
-    a(
+    lines.append(f"run.run_id      : {cfg.run.run_id}")
+    lines.append(f"output dir      : {cfg.run_dir()}")
+    lines.append(
         f"optimiser       : {cfg.optimiser.name}  "
         f"(n_iter={cfg.optimiser.n_iter}, u_steps={cfg.optimiser.u_steps}, "
         f"c_steps={cfg.optimiser.c_steps}, log_every={cfg.optimiser.log_every})"
     )
-    a(
+    lines.append(
         f"runtime         : device={cfg.runtime.device}, dtype={cfg.runtime.dtype}, "
         f"seed={cfg.run.seed}"
     )
-    a(
+    lines.append(
         f"grid            : interior={cfg.grid.interior_shape}, pml={cfg.grid.pml_width}, "
         f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.grid.init_nt}"
     )
-    a(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
-    a(
+    lines.append(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
+    lines.append(
         f"acquisition     : n_recv={cfg.acquisition.n_receivers}, "
         f"n_src={cfg.acquisition.n_sources}, ring={cfg.acquisition.ring_center}"
     )
-    a(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
-    a(
+    lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
+    lines.append(
         f"observation     : method={cfg.observation.method}, "
         f"normalize={cfg.observation.normalize_data}"
     )
-    a(f"loss weights    : {cfg.loss.weights}")
-    a(f"warm_start      : {cfg.continuation.warm_start}")
-    a(
+    lines.append(f"loss weights    : {cfg.loss.weights}")
+    lines.append(f"warm_start      : {cfg.continuation.warm_start}")
+    lines.append(
         f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
         f"data_range={cfg.metrics.ssim.data_range}"
     )
     if cfg.optimiser.name == "lbfgsb":
         lb = cfg.optimiser.lbfgsb
-        a(
+        lines.append(
             f"lbfgsb          : u_precond={lb.u_precond}, u_solve={lb.u_solve}, "
             f"z_steps={lb.z_steps}, z_optim={lb.z_optim}, z_lr={lb.z_lr}, "
             f"c_lr={lb.c_lr}, c_grad_smooth_sigma={lb.c_grad_smooth_sigma}"
         )
     if cfg.diagnostics.enabled:
         d = cfg.diagnostics
-        a(
+        lines.append(
             f"diagnostics     : enabled (per_outer_field_maps="
             f"{d.per_outer_field_maps}, u_depths={d.u_depths}, "
             f"verify_hessian={d.verify_hessian})"
         )
-    a(f"bands ({len(cfg.continuation.bands)}):")
+    lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        a(f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})")
+        lines.append(
+            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})"
+        )
     return "\n".join(lines)
 
 
