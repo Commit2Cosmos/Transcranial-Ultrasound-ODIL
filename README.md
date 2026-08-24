@@ -149,6 +149,13 @@ there is no per-band source rotation or scheduling.
 
 ---
 
+## Example notebook
+
+`notebooks/odil_wave_inverse_example.ipynb` walks through a full inversion using
+the library building blocks directly (`grid`, `source`, `geometry`, `models`,
+`loss`, `operator`, `optimisation`), then shows the batteries-included
+`odil_wave.experiment.run_inverse` wrapper.
+
 ## Tests
 
 ```bash
@@ -158,8 +165,13 @@ pytest tests/test_optimisation.py   # a single module
 
 `tests/` covers the CLI (`test_main.py`), the optimisation drivers
 (`test_optimisation.py`), scoring metrics (`test_metrics.py`), the discrete
-physics operators (`test_operator.py`), and the `Wavefield` container
-(`test_wavefield.py`).
+physics operators (`test_operator.py`), the `Wavefield` container
+(`test_wavefield.py`), the grid/PML/frequency-selection machinery
+(`test_grid.py`), source wavelets (`test_source.py`), velocity model profiles
+(`test_models.py`), acquisition geometry and receiver sampling
+(`test_geometry.py`), the loss/regulariser/loss-tape assembly (`test_loss.py`),
+the experiment config/problem-building layer (`test_experiments.py`), and
+end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
 
 ## Install
 
