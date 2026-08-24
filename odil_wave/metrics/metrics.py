@@ -16,23 +16,43 @@ def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
 
 
 def _interior(arr: np.ndarray, grid: Grid) -> np.ndarray:
-    """Slice the full-grid array down to the interior, excluding the absorbing boundary region."""
-    return arr[grid.interior_slice]
+    """Crop a full-grid array down to the interior, excluding the absorbing boundary region.
+
+    Accepts either an already interior-shaped array (returned unchanged) or a
+    full-grid array (cropped via ``grid.interior_slice``); when
+    ``grid.pml_width == 0`` the two shapes coincide, so nothing is cropped
+    either way.
+
+    Raises
+    ------
+    ValueError
+        If ``arr``'s shape matches neither the grid's full shape nor its
+        interior shape.
+    """
+    interior_shape = tuple(grid.interior_shape)
+    if arr.shape == interior_shape:
+        return arr
+    if arr.shape == grid.shape:
+        return arr[grid.interior_slice]
+    raise ValueError(
+        f"array shape {arr.shape} matches neither the grid's full shape "
+        f"{grid.shape} nor its interior shape {interior_shape}"
+    )
 
 
 def _interior_mask(mask: Union[np.ndarray, torch.Tensor], grid: Grid) -> np.ndarray:
     """Coerce a region mask to an interior-shaped boolean array.
 
     Accepts either an already interior-shaped mask or a full-grid mask (which
-    is sliced down to the interior), as a torch tensor or numpy array.
+    is cropped down to the interior), as a torch tensor or numpy array; see
+    :func:`_interior` for the shape rules and the ``ValueError`` it raises on
+    a mismatch.
     """
     if isinstance(mask, torch.Tensor):
         m = mask.detach().cpu().numpy().astype(bool)
     else:
         m = np.asarray(mask).astype(bool)
-    if m.shape == grid.shape:
-        m = m[grid.interior_slice]
-    return m
+    return _interior(m, grid)
 
 
 def mse(

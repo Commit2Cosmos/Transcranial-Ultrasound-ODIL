@@ -24,15 +24,15 @@ Everything importable lives under the `odil_wave` package:
 
 | Subpackage        | Responsibility |
 |-------------------|----------------|
-| `grid`            | `Grid` — 2D space+time discretization with a PML sponge, non-dimensionalisation, and frequency-bin selection (`FrequencySelection`, usable-frequency limits). |
+| `grid`            | `Grid` — 2D space+time discretization with a PML sponge and non-dimensionalisation; `FrequencySelection` maps requested Hz to the nearest FFT bins. |
 | `source`          | `SourceSignal` — tone-burst / Ricker source wavelets. |
-| `geometry`        | `AcquisitionGeometry` — receiver ring + rotated source octets ("offsets"). |
+| `geometry`        | `AcquisitionGeometry` — receiver ring with an evenly-spaced source subset ("octet") on it. |
 | `models`          | `VelocityModel` — the `c` field and built-in profiles (`shepp_logan`, `…_skull`, …). |
-| `wavefield`       | `Wavefield` — the complex field `u(shot, freq, x, y)` optimization variable. |
-| `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10), PML/Neumann conditions, plus `LeapfrogSolver` (time) and `HelmholtzSolver` (frequency) forward solvers. |
+| `wavefield`       | `Wavefield` — the complex field `u(freq, x, y)` for one shot; multi-shot batches used by losses/optimisers stack these to `(n_shots, nf, nx, ny)`. |
+| `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10), PML sponge/Neumann conditions, plus `LeapfrogSolver` (time) and `HelmholtzSolver` (frequency) forward solvers. |
 | `loss`            | `InverseLoss` / `ForwardLoss` — assemble the PDE + data (+ regulariser) terms; `Regulariser` (Tikhonov / TV). |
-| `optimisation`    | Inversion drivers: `LBFGSB` (block-coordinate dual L-BFGS), `JointFreqODIL` (full-space joint), frequency-continuation loop, u-block Hessian / preconditioners. |
-| `metrics`         | `ssim`, `mse`, `mae` for scoring a recovered `c` against truth. |
+| `optimisation`    | Inversion drivers: `LBFGSB` (block-coordinate dual L-BFGS), `JointFreqODIL` (full-space joint), frequency-continuation loop, u-block Hessian (`UBlockHessian`) for the exact wavefield solve. |
+| `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
 | `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`, `diagnostics`. |
 
 Top-level `main.py` is the CLI entry point; `configs/default_inverse.yaml` is the
@@ -66,8 +66,7 @@ instant; the numerical stack is only imported once a real run starts.
 ### Programmatic use
 
 ```python
-from odil_wave.experiment.config import resolve_config, load_config_file
-from odil_wave.experiment.runner import run_inverse
+from odil_wave.experiment import resolve_config, load_config_file, run_inverse
 
 cfg = resolve_config(load_config_file("configs/default_inverse.yaml"),
                      overrides=["optimiser.n_iter=40"])
@@ -96,15 +95,15 @@ defaults in `odil_wave/experiment/config.py`.
 |-------|-------------|-------|
 | `runtime`      | `device` (`cpu`/`cuda`/`mps`), `dtype` (`float32`/`float64`) | f64 reaches far lower loss floors; f32 is faster on MPS/GPU. |
 | `grid`         | `interior_shape`, `interior_extent`, `c_min`/`c_max`, `pml_width`, `t_max`, `init_nt` | Optimization variable lives on the PML-extended grid. |
-| `source`       | `kind` (`tone_burst`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
+| `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
 | `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center` | Ring transmission geometry (ultrasound-style). |
-| `physics`      | `space_order`, `time_order`, `pml_weight` | Higher `space_order` reduces numerical dispersion. |
+| `physics`      | `space_order` (2/4/6/8/10), `pml_weight` | Higher `space_order` reduces numerical dispersion. |
 | `truth` / `init` | `profile`, `scale` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`). |
-| `observation`  | `method` (`leapfrog_fft`/`helmholtz`), `normalize_data` | `leapfrog_fft` avoids the inverse crime; per-receiver normalisation stabilises the data term. |
+| `observation`  | `method` (`leapfrog_fft`/`helmholtz`), `normalize_data` | `leapfrog_fft` (default) avoids the inverse crime; `helmholtz` does not. Per-receiver normalisation stabilises the data term. |
 | `continuation` | `warm_start` (`helmholtz`/`none`), `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser` | Set `reg > 0` to activate Tikhonov / TV. |
 | `optimiser`    | `name` (`lbfgsb`/`joint`), `n_iter`, `u_steps`, `c_steps` | See below. |
-| `metrics`      | `ssim.mask` (`head_roi`/`interior`), `ssim.win_size` | Scoring region and window. |
+| `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
 | `diagnostics`  | `enabled`, `per_outer_field_maps`, `verify_hessian` | Extra per-outer maps (LBFGSB only; expensive). |
 
 ### Optimisers
@@ -115,23 +114,30 @@ defaults in `odil_wave/experiment/config.py`.
   sparse `u* = u₀ − H⁻¹g`), `u_precond` (`z` reparameterises `u = A(c)⁻¹z`),
   `c_lr` / `c_max_iter`, and `c_grad_smooth_sigma` (the sole c-gradient
   preconditioner).
-- **`joint`** — full-space ODIL: one L-BFGS over `(u, c)` together, with optional
-  model/u-block preconditioning (`optimiser.joint.*`).
+- **`joint`** — full-space ODIL (`JointFreqODIL`): a single persistent L-BFGS
+  over the wavefield `u` and a bounded squared-slowness latent for `c` together,
+  no block alternation. `u` is scaled by a fixed per-(shot, frequency) reference;
+  `c` is reparameterised through a sigmoid so its bounds hold structurally. Knobs
+  live under `optimiser.joint` (`data_weight`, `inner_max_iter`, `z_scale`, …).
 
 ### Frequency continuation (`bands`)
 
-List several single- or multi-frequency stages to run low→high; each recovered
-model seeds the next. `source_offsets` picks rotated source octets on the ring,
-and `source_schedule` controls them: `joint` (all at once), `sequential` (one
-octet after another), or `cyclic` (alternate one octet per outer step).
+List several single- or multi-frequency stages under `continuation.bands` to run
+low→high; each stage's recovered `c` warm-starts the next (`continuation.warm_start`).
+Frequencies within one band are inverted jointly; sources are a fixed,
+evenly-spaced subset of the receiver ring for the whole run (`acquisition.n_sources`) —
+there is no per-band source rotation or scheduling.
 
 ---
 
 ## Important points
 
-- **No inverse crime.** Observed data is a broadband *leapfrog time* solve FFT'd
-  onto the band bins (`observation.method: leapfrog_fft`), so the inversion's
-  frequency operator never regenerates its own data.
+- **No inverse crime by default.** With `observation.method: leapfrog_fft`
+  (the default), observed data is a broadband *leapfrog time* solve FFT'd onto
+  the band bins, so the inversion's frequency operator never regenerates its
+  own data. The alternative `method: helmholtz` solves the truth model with the
+  same frequency-domain operator the inversion uses, which does commit the
+  inverse crime.
 - **Non-dimensional physics.** The grid rescales length/velocity/time so the
   discrete residual is dimensionless; physical `dx, dt, …` are retained only for
   plotting/indexing.
@@ -146,15 +152,20 @@ octet after another), or `cyclic` (alternate one octet per outer step).
 ## Tests
 
 ```bash
-pytest                     # full suite
-pytest tests/test_experiment_config.py   # a single module
+pytest                              # full suite
+pytest tests/test_optimisation.py   # a single module
 ```
+
+`tests/` covers the CLI (`test_main.py`), the optimisation drivers
+(`test_optimisation.py`), scoring metrics (`test_metrics.py`), the discrete
+physics operators (`test_operator.py`), and the `Wavefield` container
+(`test_wavefield.py`).
 
 ## Install
 
 ```bash
-pip install -e .           # editable; core deps: numpy, scipy, torch, jax, scikit-image, pyyaml
-pip install -e ".[dev]"    # + black, flake8, pre-commit
+pip install -e .           # editable install; see pyproject.toml for the full dependency list
+pip install -e ".[dev]"    # + black, flake8, pre-commit, ipykernel, torchinfo
 ```
 
 Requires Python ≥ 3.12.
