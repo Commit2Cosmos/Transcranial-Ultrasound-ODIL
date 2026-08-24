@@ -40,3 +40,8 @@ include = ["odil_wave*"]
 
 [project.scripts]
 #odil-wave = "odil_wave.cli:main"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:FigureCanvasAgg is non-interactive, and thus cannot be shown:UserWarning"
+]
