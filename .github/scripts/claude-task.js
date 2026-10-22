@@ -873,10 +873,13 @@ async function planPublication(github, owner, repo, { branch, plan }) {
   return { branch: sha, plan: hasPlan, pr };
 }
 
-function noDeliverableNotice({ branch, plan, pub, runUrl, attempt, clarification }) {
+function noDeliverableNotice({ branch, plan, pub, runUrl, attempt, clarification, claudeAttempt }) {
   let pr = 'none';
   if (!pub.branch) pr = 'none (no branch)';
   else if (pub.pr) pr = pub.pr.draft ? `#${pub.pr.number}` : `#${pub.pr.number} is open but not a draft`;
+  const artifact = RUN_ID_RE.test(String(claudeAttempt))
+    ? `\`${diagnosticsArtifact(claudeAttempt)}\``
+    : `\`${diagnosticsArtifact('<attempt>')}\` for the claude job's attempt`;
   return [
     'PLAN_NO_DELIVERABLE: this planning run finished without a deliverable the workflow could verify.',
     '',
@@ -886,8 +889,9 @@ function noDeliverableNotice({ branch, plan, pub, runUrl, attempt, clarification
     `- Open draft PR from that branch: ${pr}`,
     `- Clarification comment for this run: ${clarification}`,
     '',
-    'The workflow does not know why the agent stopped. If a branch or PR exists, inspect it first. ' +
-      'Then comment `@claude plan` on this issue for a fresh invocation.',
+    `The workflow does not know why the agent stopped. A redacted summary of the agent session, if one was ` +
+      `produced, is attached to the run as artifact ${artifact} for ${DIAGNOSTICS_RETENTION_DAYS} days.`,
+    'If a branch or PR exists, inspect it first. Then comment `@claude plan` on this issue for a fresh invocation.',
   ].join('\n');
 }
 
@@ -921,7 +925,9 @@ async function checkPlanDeliverable({ github, context, core, gate, claude, runAt
     }
     clarification = 'none found';
   }
-  await post(noDeliverableNotice({ branch: gate.branch, plan, pub, runUrl, attempt: runAttempt, clarification }));
+  await post(noDeliverableNotice({
+    branch: gate.branch, plan, pub, runUrl, attempt: runAttempt, clarification, claudeAttempt: claude.run_attempt,
+  }));
   core.setFailed(
     `PLAN_NO_DELIVERABLE: branch=${pub.branch || 'none'} plan=${pub.plan ? 'present' : 'missing'} ` +
       `pr=${pub.pr ? `#${pub.pr.number}${pub.pr.draft ? '' : ' (not draft)'}` : 'none'} ` +
@@ -945,6 +951,15 @@ async function report({ github, context, core, gate, claudeResult, claude = {}, 
     return;
   }
   if (gate.decision !== 'run' || !target) return;
+  if (claudeResult !== 'success' && claude.sandbox === 'failed') {
+    await post(
+      `The sandbox preflight failed, so Claude was not invoked and nothing was pushed: ${runUrl}. ` +
+        'This is a workflow problem, not a problem with the request: see the "Prepare and verify sandbox" step. ' +
+        'Re-issue the request once it is fixed.',
+    );
+    core.setFailed('SANDBOX_PREFLIGHT_FAILED: Claude was not invoked');
+    return;
+  }
   if (claudeResult !== 'success') {
     await post(
       `The Claude run did not complete (${claudeResult}): ${runUrl}. Partial changes may have been pushed to ` +
@@ -956,6 +971,159 @@ async function report({ github, context, core, gate, claudeResult, claude = {}, 
   if (gate.profile === 'plan' && !gate.pr_number) {
     await checkPlanDeliverable({ github, context, core, gate, claude, runAttempt, post, runUrl });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Redacted session diagnostics (claude job, after the action)
+//
+// The action's execution file is the full SDK transcript: prompt, file
+// contents, command output. The repository is public, so only this summary is
+// uploaded: tool calls and their targets, failed results, assistant text and
+// the result block, all redacted and truncated. See docs/agent-workflow.md.
+
+const DIAGNOSTICS_RETENTION_DAYS = 5; // claude.yml upload step: retention-days
+const DIAG_LIMITS = { text: 500, command: 300, error: 1000, result: 4000, total: 200000 };
+const SECRET_PATTERNS = [
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[REDACTED_GITHUB_TOKEN]'],
+  [/sk-ant-[A-Za-z0-9_-]{10,}/g, '[REDACTED_ANTHROPIC_KEY]'],
+  [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[REDACTED_JWT]'],
+  [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED]@'],
+  [/(\bauthorization\s*[:=]\s*)(?:(?:bearer|token|basic)\s+)?[^\s'"]+/gi, '$1[REDACTED]'],
+];
+
+/** Artifact name used by the claude job's upload step (claude.yml). */
+function diagnosticsArtifact(attempt) {
+  return `claude-diagnostics-attempt-${attempt}`;
+}
+
+function redact(text) {
+  let s = String(text);
+  for (const [re, replacement] of SECRET_PATTERNS) s = s.replace(re, replacement);
+  return s;
+}
+
+/** Redact first, then truncate, so a cut never leaves a partial secret unmatched. */
+function clip(text, max) {
+  const s = redact(text == null ? '' : text);
+  return s.length > max ? `${s.slice(0, max)}… [${s.length - max} more chars]` : s;
+}
+
+function oneLine(text, max) {
+  return clip(text, max).replace(/\r?\n/g, ' ⏎ ');
+}
+
+function quoteBlock(text) {
+  return text.split(/\r?\n/).map((l) => `    ${l}`).join('\n');
+}
+
+/** What a tool call acted on, without file contents or edit bodies. */
+function toolTarget(name, input) {
+  const i = input && typeof input === 'object' ? input : {};
+  if (name === 'Bash') return oneLine(i.command, DIAG_LIMITS.command);
+  const parts = ['file_path', 'notebook_path', 'path', 'pattern', 'glob']
+    .filter((k) => typeof i[k] === 'string')
+    .map((k) => `${k}=${oneLine(i[k], 200)}`);
+  return parts.length ? parts.join(' ') : `(input keys: ${Object.keys(i).join(', ') || 'none'})`;
+}
+
+function resultText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((b) => (b && b.type === 'text' ? b.text : `[${(b && b.type) || 'block'}]`)).join('\n');
+  }
+  return '';
+}
+
+/** Markdown summary of an SDK message list (the action's execution file). */
+function summarizeExecution(messages) {
+  const lines = [];
+  const names = new Map();
+  let calls = 0;
+  let errors = 0;
+  let result = null;
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.type === 'system' && m.subtype === 'init') {
+      lines.push(
+        `- init: model ${oneLine(m.model, 100)}, permission mode ${oneLine(m.permissionMode, 50)}, ` +
+          `Claude Code ${oneLine(m.claude_code_version || 'unknown', 50)}, ` +
+          `tools ${oneLine(Array.isArray(m.tools) ? m.tools.join(',') : '', 500)}`,
+      );
+    } else if (m.type === 'assistant') {
+      for (const b of (m.message && m.message.content) || []) {
+        if (b.type === 'text' && b.text && b.text.trim()) {
+          lines.push(`- assistant: ${oneLine(b.text, DIAG_LIMITS.text)}`);
+        } else if (b.type === 'tool_use') {
+          calls += 1;
+          names.set(b.id, b.name);
+          lines.push(`- call ${oneLine(b.name, 100)}: ${toolTarget(b.name, b.input)}`);
+        }
+      }
+    } else if (m.type === 'user') {
+      const content = m.message && m.message.content;
+      if (!Array.isArray(content)) continue; // the prompt: omitted
+      for (const b of content) {
+        if (!b || b.type !== 'tool_result') continue;
+        const name = oneLine(names.get(b.tool_use_id) || 'unknown tool', 100);
+        const text = resultText(b.content);
+        if (b.is_error) {
+          errors += 1;
+          lines.push(`- ERROR from ${name}:`, quoteBlock(clip(text, DIAG_LIMITS.error)));
+        } else {
+          lines.push(`- ok from ${name} (${text.length} chars, not shown)`);
+        }
+      }
+    } else if (m.type === 'result') {
+      result = m;
+    }
+  }
+
+  const out = ['# Claude session summary (redacted)', ''];
+  if (result) {
+    const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
+    out.push(
+      `- result: ${oneLine(result.subtype, 50)}, is_error ${result.is_error === true}, ` +
+        `turns ${Number(result.num_turns) || 0}, duration ${Number(result.duration_ms) || 0} ms`,
+      `- tool calls: ${calls}, failed results: ${errors}, permission denials: ${denials.length}`,
+    );
+    for (const d of denials) out.push(`- denied ${oneLine(d.tool_name, 100)}: ${toolTarget(d.tool_name, d.tool_input)}`);
+    for (const e of Array.isArray(result.errors) ? result.errors : []) out.push(`- error: ${oneLine(e, DIAG_LIMITS.error)}`);
+    if (typeof result.result === 'string' && result.result.trim()) {
+      out.push('- final response:', quoteBlock(clip(result.result, DIAG_LIMITS.result)));
+    }
+  } else {
+    out.push(`- result: none recorded; tool calls: ${calls}, failed results: ${errors}`);
+  }
+  out.push('', '## Session', '', ...(lines.length ? lines : ['- (no messages)']), '');
+  let text = out.join('\n');
+  if (text.length > DIAG_LIMITS.total) text = `${text.slice(0, DIAG_LIMITS.total)}\n\n[summary truncated]\n`;
+  return text;
+}
+
+/**
+ * Write the redacted summary of an execution file to outDir and export its
+ * path as output `path`. Returns the path, or null if there is no input.
+ */
+function writeDiagnostics({ core, executionFile, outDir }) {
+  if (!executionFile || !fs.existsSync(executionFile)) {
+    core.info('No Claude execution file; no diagnostics written.');
+    return null;
+  }
+  let messages = null;
+  try {
+    messages = JSON.parse(fs.readFileSync(executionFile, 'utf8'));
+  } catch (error) {
+    core.warning(`Claude execution file is not valid JSON: ${error.message}`);
+  }
+  const text = Array.isArray(messages)
+    ? summarizeExecution(messages)
+    : '# Claude session summary (redacted)\n\nThe execution file could not be parsed.\n';
+  fs.mkdirSync(outDir, { recursive: true });
+  const file = path.join(outDir, 'claude-session-summary.md');
+  fs.writeFileSync(file, text);
+  core.setOutput('path', file);
+  core.info(`Redacted session summary written to ${file} (${text.length} chars).`);
+  return file;
 }
 
 /** Required check for agent PRs (pull_request event). */
@@ -995,6 +1163,7 @@ module.exports = {
   classifyRequest,
   decideGrantCommand,
   describeEvent,
+  diagnosticsArtifact,
   evaluateAuthorization,
   findMarkers,
   gitClient,
@@ -1007,10 +1176,13 @@ module.exports = {
   planGuardDecision,
   planPath,
   profileArgs,
+  redact,
   report,
   reportPath,
   resolve,
   setOutputs,
+  summarizeExecution,
   taskBranch,
   taskFromBranch,
+  writeDiagnostics,
 };
