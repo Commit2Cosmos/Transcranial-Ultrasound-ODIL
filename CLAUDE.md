@@ -56,12 +56,25 @@ After explicit approval:
 - Write docs/reports/<task-id>.md using the report template.
 - Update the feature register and decision records where the change warrants
   it; otherwise state in the report why no update is needed.
-- Commit the plan together with the implementation, report, and knowledge updates.
+- Commit the plan, implementation, report, and knowledge updates on the task
+  branch as atomic commits (see Commits).
 - Push the task branch and open a PR using the PR template. Never merge.
 
 After the PR is opened, make further changes only when the user asks.
 In-scope fixes on the same branch need no new approval, but the report, feature register and decision records should be updated and always kept up-to-date.
 Commit and push them to the same branch and PR.
+
+## Commits
+
+- Make each commit one logical, self-contained change; do not bundle unrelated
+  changes or split one change across commits. Typically: the plan first, then
+  each implementation step with its tests, then the report and knowledge updates.
+- Each commit should leave the tests passing where feasible.
+- Use Conventional Commit messages: `<type>: <description>`, imperative and
+  lower case, e.g. `feat: add TV regulariser` or `docs: plan for 2-tv-regulariser`.
+- Types: `feat` (new capability), `fix` (bug fix), `refactor` (no behaviour
+  change), `perf`, `test`, `docs` (plans, reports, decisions, register, README),
+  `build` (dependencies, packaging), `ci` (workflows), `chore` (other maintenance).
 
 ## Project knowledge
 
