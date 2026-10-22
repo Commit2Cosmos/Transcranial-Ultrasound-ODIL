@@ -1,2 +1,3 @@
 - Check all tests (unit, integration, e2e)
 - Check for unused logic
+- Change black to ruff (in Actions too)
