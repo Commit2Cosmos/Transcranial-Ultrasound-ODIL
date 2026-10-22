@@ -36,7 +36,7 @@ changed.
 | Path check (scratch script, `python3 -I`): backticked paths and decision links in `docs/features.md` against `git ls-files`, or `git cat-file -e 7c130ad^:<path>` for Removed rows | branch head | 74 references; all resolve except `docs/reports/2-feature-inventory.md` (this file, created after the check) and `tests/test_optimisation.py` in Notes (confirmed present at `7c130ad^`, cited as removed there) | session output |
 | F-ID check (same script) | — | F-001–F-017, unique, sequential | session output |
 | `uv run --frozen python -m pytest tests/ -q` | Python 3.13.7, torch 2.14.1, numpy 2.5.4, scipy 1.18.1, macOS | 210 passed | session output |
-| `git diff --name-only main` | after commits | only the plan, register, report and D-003–D-005 | session output |
+| `git diff --name-only main..HEAD` | after commits | only the plan, register, report and D-003–D-005 | session output |
 
 Not run: notebooks, Stride reference, any inversion beyond the test suite's
 tiny run, any numerical validation.
