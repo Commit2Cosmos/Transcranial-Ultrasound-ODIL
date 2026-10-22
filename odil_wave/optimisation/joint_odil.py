@@ -130,11 +130,6 @@ class SlownessLatent:
     def c_of_z(self, z: torch.Tensor) -> torch.Tensor:
         return self.m_of_z(z).clamp_min(1e-30).rsqrt()
 
-    def dm_dz(self, z: torch.Tensor) -> torch.Tensor:
-        """Analytic dm/dz = (m_max - m_min) * z_scale * s * (1 - s)."""
-        s = torch.sigmoid(self.z_scale * z)
-        return (self.m_max - self.m_min) * self.z_scale * s * (1.0 - s)
-
     def sigmoid_deriv(self, z: torch.Tensor) -> torch.Tensor:
         s = torch.sigmoid(self.z_scale * z)
         return s * (1.0 - s)
@@ -373,55 +368,6 @@ class JointFreqODIL(Optimiser):
         u_recv = u[:, :, self._ri, self._rj]
         r_data = u_recv - self._obs_traces
         return r_pde, r_data
-
-    def lap(self, u: torch.Tensor) -> torch.Tensor:
-        """Non-dimensional Laplacian used inside the PDE residual (same BC)."""
-        return self.wave_eq._lap.apply(u, bc=self.wave_eq._bc)
-
-    def _zero_pad_interior(self, interior: torch.Tensor) -> torch.Tensor:
-        """Embed an interior-shaped field in a full grid padded with **zeros**.
-
-        (``build_full_c`` pads with ``pml_c``; a *perturbation* ``dk`` must be
-        zero in PML because PML ``c`` is frozen.)
-        """
-        full = torch.zeros(
-            self.Nx, self.Ny, dtype=interior.dtype, device=interior.device
-        )
-        full[self._interior_slice] = interior
-        return full
-
-    def residual_jvp_analytic(
-        self,
-        u_re: torch.Tensor,
-        u_im: torch.Tensor,
-        z_m: torch.Tensor,
-        du_re: torch.Tensor,
-        du_im: torch.Tensor,
-        dz_m: torch.Tensor,
-    ) -> torch.Tensor:
-        """Hand-derived directional derivative ``D r_pde[du, dm]`` (no autograd).
-
-        For the repository operator ``r_pde = H(k)u - q`` with ``k = 1/(c0**2 m)``
-        (see the module / audit notes),
-
-            D r_pde[du, dm] = H(k)·du  -  ∇'^2 u · dk ,
-            H(k)·du = WaveEquation.residual(du, c, 0),
-            dk = (∂k/∂m)·dm,  ∂k/∂m = -1/(c0**2 m^2),
-            dm = (dm/dz)·dz_m   (interior only; dk = 0 in PML).
-
-        Directions ``du_*`` / ``dz_m`` are in **scaled** coordinates
-        (``du`` physical = ``u_ref·(du_re + i du_im)``).
-        """
-        u = self.physical_u(u_re, u_im)
-        du = self.u_ref * torch.complex(du_re, du_im)
-        c_full = self.c_full_of_z(z_m)
-        Ju = self.wave_eq.residual(du, c_full, torch.zeros_like(self.sources))
-        m = self.latent.m_of_z(z_m)
-        dm = self.latent.dm_dz(z_m) * dz_m
-        dk_int = -(dm / (m * m)) / (self.c0**2)
-        dk_full = self._zero_pad_interior(dk_int)
-        Jm = -self.lap(u) * dk_full
-        return Ju + Jm
 
     def objective(
         self,
