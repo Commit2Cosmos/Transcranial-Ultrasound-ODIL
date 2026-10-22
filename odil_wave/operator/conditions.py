@@ -128,9 +128,7 @@ class Sponge(Conditions):
     ) -> torch.Tensor:
         """Add sigma-weighted damping to a PDE residual fu."""
         # sigma: (nx, ny); lambda_t: (1, nf, 1, 1); u: (..., nf, nx, ny)
-        return fu + self.weight * (
-            self.sigma_sum * lambda_t * u + self.sigma_prod * u
-        )
+        return fu + self.weight * (self.sigma_sum * lambda_t * u + self.sigma_prod * u)
 
     def apply(
         self, fu: torch.Tensor, u: torch.Tensor, lambda_t: torch.Tensor

@@ -28,9 +28,7 @@ def discrete_lambda_tt(omega_nd: torch.Tensor, dt_nd: float) -> torch.Tensor:
     return -(4.0 / dt_nd**2) * torch.sin(0.5 * omega_nd * dt_nd) ** 2
 
 
-def _map_frequency_to_bin(
-    freqs_all: torch.Tensor, f_hz: float
-) -> tuple[int, float]:
+def _map_frequency_to_bin(freqs_all: torch.Tensor, f_hz: float) -> tuple[int, float]:
     """Nearest FFT bin for a requested physical frequency (avoids the 0 Hz bin)."""
     f = float(f_hz)
     k = int(torch.argmin(torch.abs(freqs_all - f)).item())
@@ -137,7 +135,9 @@ class FrequencySelection:
                 f"fft_bins must lie in [0, {n_time - 1}], got {bins.tolist()}"
             )
         # Physical frequencies for the unnormalized DFT on grid.t
-        freqs_all = torch.fft.fftfreq(n_time, d=dt, device=grid.device, dtype=grid.dtype)
+        freqs_all = torch.fft.fftfreq(
+            n_time, d=dt, device=grid.device, dtype=grid.dtype
+        )
         frequencies = freqs_all[bins]
         omega = 2.0 * math.pi * frequencies
         omega_nd = omega * grid.t0
@@ -168,7 +168,9 @@ class FrequencySelection:
         ).reshape(-1)
         n_time = int(grid.nt)
         dt = float(grid.dt)
-        freqs_all = torch.fft.fftfreq(n_time, d=dt, device=grid.device, dtype=grid.dtype)
+        freqs_all = torch.fft.fftfreq(
+            n_time, d=dt, device=grid.device, dtype=grid.dtype
+        )
 
         bins = []
         for f in f_req:
