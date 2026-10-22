@@ -10,7 +10,7 @@ These affirm:
   c-history cadence, and rebuilds from saved records.
 * ``ForwardLoss`` / ``InverseLoss`` are (near) zero at the true wavefield+model,
   scale with the PDE/data weights, support trace observations, per-receiver
-  normalisation, ``evaluate_z`` and weight overrides, and validate their inputs.
+  normalisation and weight overrides, and validate their inputs.
 """
 
 import numpy as np
@@ -236,15 +236,6 @@ def test_inverse_loss_weights_override(wave_stack):
         loss.evaluate(amp, wave_stack.model.c, weights_override={"pde": 0.0})
     )
     assert data_only < full  # dropping the PDE term lowers the loss
-
-
-def test_inverse_loss_evaluate_z(wave_stack):
-    """evaluate_z routes PDE through z-f and data through u; ~0 at (src, truth)."""
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
-    )
-    Lz = loss.evaluate_z(loss.sources, wave_stack.amp, wave_stack.model.c)
-    assert float(Lz) < 1e-18
 
 
 def test_inverse_loss_per_receiver_normalisation(wave_stack):

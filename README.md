@@ -14,7 +14,7 @@ L(u, c) = w_pde · mean|r_pde|²  +  w_data · mean|r_data|²  +  w_reg · R(c)
 
 where `r_pde` is the discrete wave-equation residual and `r_data` is the misfit
 at the receivers. The PDE is a *soft* penalty, so `u` and `c` are recovered
-jointly (or block-by-block).
+jointly.
 
 ---
 
@@ -29,11 +29,11 @@ Everything importable lives under the `odil_wave` package:
 | `geometry`        | `AcquisitionGeometry` — receiver ring with an evenly-spaced source subset ("octet") on it. |
 | `models`          | `VelocityModel` — the `c` field and built-in profiles (`shepp_logan`, `…_skull`, …). |
 | `wavefield`       | `Wavefield` — the complex field `u(freq, x, y)` for one shot; multi-shot batches used by losses/optimisers stack these to `(n_shots, nf, nx, ny)`. |
-| `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10), PML sponge/Neumann conditions, plus `LeapfrogSolver` (time) and `HelmholtzSolver` (frequency) forward solvers. |
+| `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10), PML sponge/Neumann conditions, plus the `HelmholtzSolver` (frequency) forward solver. |
 | `loss`            | `InverseLoss` / `ForwardLoss` — assemble the PDE + data (+ regulariser) terms; `Regulariser` (Tikhonov / TV). |
-| `optimisation`    | Inversion drivers: `LBFGSB` (block-coordinate dual L-BFGS), `JointFreqODIL` (full-space joint), frequency-continuation loop, u-block Hessian (`UBlockHessian`) for the exact wavefield solve. |
+| `optimisation`    | Inversion driver: `JointFreqODIL` (full-space joint L-BFGS over `u` and `c`). |
 | `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
-| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`, `diagnostics`. |
+| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`. |
 
 Top-level `main.py` is the CLI entry point; `configs/default_inverse.yaml` is the
 reference configuration.
@@ -82,7 +82,6 @@ Each run writes a self-contained directory under `outputs/<run_id>/`:
 - `metadata.json` — env, seed, git, grid summary.
 - `bands/band_XX_*/` — recovered `c_final.npy` + per-band summary/metrics.
 - `final/c_final.npy`, `final/run_summary.json` — final model + SSIM / rel-c-error.
-- `diagnostics/…` — optional block-coordinate diagnostics (when enabled).
 
 ---
 
@@ -98,22 +97,15 @@ defaults in `odil_wave/experiment/config.py`.
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
 | `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center` | Ring transmission geometry (ultrasound-style). |
 | `physics`      | `space_order` (2/4/6/8/10), `pml_weight` | Higher `space_order` reduces numerical dispersion. |
-| `truth` / `init` | `profile`, `scale` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`). |
-| `observation`  | `method` (`leapfrog_fft`/`helmholtz`), `normalize_data` | `leapfrog_fft` (default) avoids the inverse crime; `helmholtz` does not. Per-receiver normalisation stabilises the data term. |
+| `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
+| `observation`  | `normalize_data`, `pml_width` | Observed data are a Helmholtz solve on the truth model (inverse crime). Per-receiver normalisation stabilises the data term. |
 | `continuation` | `warm_start` (`helmholtz`/`none`), `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser` | Set `reg > 0` to activate Tikhonov / TV. |
-| `optimiser`    | `name` (`lbfgsb`/`joint`), `n_iter`, `u_steps`, `c_steps` | See below. |
+| `optimiser`    | `name` (`joint`), `n_iter`, `log_every`, `joint.*` | See below. |
 | `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
-| `diagnostics`  | `enabled`, `per_outer_field_maps`, `verify_hessian` | Extra per-outer maps (LBFGSB only; expensive). |
 
-### Optimisers
+### Optimiser
 
-- **`lbfgsb`** (default) — block-coordinate dual L-BFGS. Each outer iteration
-  updates the wavefield `u`-block, then the `c`-block. Key knobs under
-  `optimiser.lbfgsb`: `u_solve` (`optim` = L-BFGS u-step, or `exact` = direct
-  sparse `u* = u₀ − H⁻¹g`), `u_precond` (`z` reparameterises `u = A(c)⁻¹z`),
-  `c_lr` / `c_max_iter`, and `c_grad_smooth_sigma` (the sole c-gradient
-  preconditioner).
 - **`joint`** — full-space ODIL (`JointFreqODIL`): a single persistent L-BFGS
   over the wavefield `u` and a bounded squared-slowness latent for `c` together,
   no block alternation. `u` is scaled by a fixed per-(shot, frequency) reference;
@@ -132,12 +124,9 @@ there is no per-band source rotation or scheduling.
 
 ## Important points
 
-- **No inverse crime by default.** With `observation.method: leapfrog_fft`
-  (the default), observed data is a broadband *leapfrog time* solve FFT'd onto
-  the band bins, so the inversion's frequency operator never regenerates its
-  own data. The alternative `method: helmholtz` solves the truth model with the
-  same frequency-domain operator the inversion uses, which does commit the
-  inverse crime.
+- **Inverse crime.** Observed data are a Helmholtz solve on the truth model
+  with the same frequency-domain operator the inversion uses, so the inversion
+  regenerates its own data exactly (a deliberate inverse-crime baseline).
 - **Non-dimensional physics.** The grid rescales length/velocity/time so the
   discrete residual is dimensionless; physical `dx, dt, …` are retained only for
   plotting/indexing.

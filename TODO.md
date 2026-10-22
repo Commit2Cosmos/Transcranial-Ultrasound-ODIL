@@ -1,0 +1,2 @@
+- Check all tests (unit, integration, e2e)
+- Check for unused logic

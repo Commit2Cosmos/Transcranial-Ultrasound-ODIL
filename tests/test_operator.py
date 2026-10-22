@@ -1,17 +1,16 @@
 """Tests for the ``odil_wave.operator`` package.
 
-Covers ``base.py``, ``conditions.py``, ``spatial.py``, ``temporal.py``,
-``utils.py`` (``WaveEquation``), ``helmholtz.py`` and ``leapfrog.py``.
+Covers ``base.py``, ``conditions.py``, ``spatial.py``, ``utils.py``
+(``WaveEquation``) and ``helmholtz.py``.
 
 Most tests use hand-built tensors or a tiny synthetic :class:`Grid`/
 :class:`Wavefield` (no solver) so they run in well under a second; the
-Helmholtz/leapfrog integration tests use one small shared fixture (12x12
-total grid) so the handful of real linear solves stay fast too.
+Helmholtz integration tests use one small shared fixture (12x12 total grid)
+so the handful of real linear solves stay fast too.
 """
 
 from __future__ import annotations
 
-import math
 from types import SimpleNamespace
 
 import odil_wave  # noqa: F401  (import before torch avoids an OpenMP abort; see test_optimisation.py)
@@ -44,23 +43,14 @@ from odil_wave.operator.spatial import (
     _cross_laplacian_kernel,
     _fourth_derivative_1d,
 )
-from odil_wave.operator.temporal import (
-    TimeOperator2ndOrder,
-    TimeOperator4thOrder,
-    _first_time_derivative,
-    _ic_ghost_row,
-    _make_endpoint_masks,
-)
 from odil_wave.operator.utils import WaveEquation
 from odil_wave.operator.helmholtz import (
-    HelmholtzFactorCache,
     HelmholtzSolver,
     _laplacian_kernel,
     _reflect_index,
     assemble_laplacian_csr,
     np_complex_dtype,
 )
-from odil_wave.operator.leapfrog import LeapfrogSolver
 
 
 # --------------------------------------------------------------------------- #
@@ -91,7 +81,7 @@ def _make_wavefield(grid, f0=8e4, **wf_overrides):
 @pytest.fixture(scope="module")
 def tiny_setup():
     """A minimal real forward setup (grid/velocity/source/geometry/wavefield),
-    shared read-only across the Helmholtz/leapfrog integration tests."""
+    shared read-only across the Helmholtz integration tests."""
     grid = _make_grid()
     vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
     source = SourceSignal(grid, kind="ricker", f0=8e4)
@@ -197,7 +187,9 @@ def test_sponge_apply_is_alias_for_apply_residual():
     fu = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     lambda_t = torch.tensor(0.3j, dtype=torch.complex64).view(1, 1, 1, 1)
-    assert torch.equal(sponge.apply(fu, u, lambda_t), sponge.apply_residual(fu, u, lambda_t))
+    assert torch.equal(
+        sponge.apply(fu, u, lambda_t), sponge.apply_residual(fu, u, lambda_t)
+    )
 
 
 def test_sponge_zero_weight_is_a_no_op():
@@ -271,7 +263,9 @@ def test_fourth_derivative_1d_matches_manual_stencil_formula():
 
 
 def test_cross_laplacian_kernel_6th_order_matches_known_coefficients():
-    K = _cross_laplacian_kernel(_C6, _C6_CENTER, cx=1.0, cy=1.0, dtype=torch.float64, device="cpu")
+    K = _cross_laplacian_kernel(
+        _C6, _C6_CENTER, cx=1.0, cy=1.0, dtype=torch.float64, device="cpu"
+    )
     p = len(_C6)  # 3 -> 7x7 kernel
     assert K.shape == (1, 1, 7, 7)
     assert K[0, 0, p, p].item() == pytest.approx(_C6_CENTER * 2.0)
@@ -327,105 +321,9 @@ def test_laplacian_2nd_order_kernel_matches_helmholtz_dense_kernel():
     dense_kernel = Laplacian2ndOrder(wf)._kernel
     sparse_kernel, pad = _laplacian_kernel(2, grid.dx_nd, grid.dy_nd)
     assert pad == 1
-    assert torch.allclose(dense_kernel[0, 0], torch.as_tensor(sparse_kernel, dtype=dense_kernel.dtype))
-
-
-# --------------------------------------------------------------------------- #
-# temporal.py
-# --------------------------------------------------------------------------- #
-def test_make_endpoint_masks_basic():
-    mask_first, mask_last = _make_endpoint_masks(6, "cpu")
-    assert mask_first.shape == (6, 1, 1)
-    assert mask_first[0].item() and not mask_first[1:].any()
-    assert mask_last[-1].item() and not mask_last[:-1].any()
-
-
-def test_make_endpoint_masks_second_layer():
-    m_first, m_first2, m_last, m_last2 = _make_endpoint_masks(6, "cpu", second_layer=True)
-    assert m_first2[1].item() and not m_first2[torch.arange(6) != 1].any()
-    assert m_last2[-2].item() and not m_last2[torch.arange(6) != 4].any()
-
-
-def test_ic_ghost_row_matches_manual_formula():
-    u = torch.arange(3 * 2 * 2, dtype=torch.float64).reshape(3, 2, 2)
-    init_ut = torch.full((2, 2), 5.0, dtype=torch.float64)
-    dt = 0.1
-    out = _ic_ghost_row(u, dt, init_ut, k=2.0)
-    expected = u[0:1] - 2.0 * dt * init_ut
-    assert torch.allclose(out, expected)
-
-
-def test_first_time_derivative_exact_on_linear_field_except_the_last_row():
-    # Documented, intentional behaviour (see the "one-sided" comment in
-    # _first_time_derivative): the last row reuses u[-1] as its own future
-    # neighbour instead of extrapolating, so it is only first-order accurate
-    # there. Every other row (including the first, via the IC ghost row) is
-    # exact for a field linear in time.
-    grid = _make_grid(pml_width=0, interior_shape=(2, 2), init_nt=10)
-    b = 3.0
-    t_nd = torch.arange(grid.nt, dtype=grid.dtype) * grid.dt_nd
-    u = (b * t_nd + 1.0).view(-1, 1, 1).expand(-1, 2, 2).contiguous()
-    mask_first, mask_last = _make_endpoint_masks(grid.nt, grid.device)
-    init_ut = torch.full((2, 2), b, dtype=grid.dtype)
-
-    out = _first_time_derivative(u, grid.dt_nd, init_ut, mask_first, mask_last)
-    assert torch.allclose(out[:-1, 0, 0], torch.full((grid.nt - 1,), b, dtype=grid.dtype))
-    assert out[-1, 0, 0].item() == pytest.approx(b / 2.0)
-
-
-@pytest.mark.parametrize(
-    "a,b,c,label",
-    [
-        (0.0, 0.0, 5.0, "constant"),
-        (0.0, 3.0, 1.0, "linear"),
-        (4.0, 2.0, 1.0, "quadratic"),
-    ],
-)
-def test_time_operator_2nd_order_exact_everywhere(a, b, c, label):
-    grid = _make_grid(pml_width=0, interior_shape=(2, 2), init_nt=12)
-    t_nd = torch.arange(grid.nt, dtype=grid.dtype) * grid.dt_nd
-    u = (a * t_nd**2 + b * t_nd + c).view(-1, 1, 1).expand(-1, 2, 2).contiguous()
-    wf = _make_wavefield(grid, init_velocity=torch.full((2, 2), b / grid.t0, dtype=grid.dtype))
-
-    utt = TimeOperator2ndOrder(wf).apply(u)
-    expected = torch.full_like(utt, 2.0 * a)
-    assert torch.allclose(utt, expected, atol=1e-4), label
-
-
-@pytest.mark.parametrize(
-    "a,b,c,label",
-    [
-        (0.0, 0.0, 5.0, "constant"),
-        (0.0, 3.0, 1.0, "linear"),
-        (4.0, 2.0, 1.0, "quadratic"),
-    ],
-)
-def test_time_operator_4th_order_exact_everywhere_including_last_two_rows(a, b, c, label):
-    """Regression test for the fixed last-two-rows bug (see conversation history):
-    before the fix, TimeOperator4thOrder was wrong at rows NT-2 and NT-1 for any
-    non-constant field (it fell through to the centered formula fed mirrored,
-    not extrapolated, ghost values). It must now match TimeOperator2ndOrder's
-    exactness at every row, including the last two.
-    """
-    grid = _make_grid(pml_width=0, interior_shape=(2, 2), init_nt=12, dtype=torch.float64)
-    t_nd = torch.arange(grid.nt, dtype=grid.dtype) * grid.dt_nd
-    u = (a * t_nd**2 + b * t_nd + c).view(-1, 1, 1).expand(-1, 2, 2).contiguous()
-    wf = _make_wavefield(grid, init_velocity=torch.full((2, 2), b / grid.t0, dtype=grid.dtype))
-
-    utt = TimeOperator4thOrder(wf).apply(u)
-    expected = torch.full_like(utt, 2.0 * a)
-    assert torch.allclose(utt, expected, atol=1e-6), label
-    # explicitly check the previously-broken rows
-    assert utt[-1, 0, 0].item() == pytest.approx(2.0 * a, abs=1e-6), f"{label}: last row"
-    assert utt[-2, 0, 0].item() == pytest.approx(2.0 * a, abs=1e-6), f"{label}: second-to-last row"
-
-
-def test_time_operator_4th_order_requires_at_least_five_time_steps():
-    grid = _make_grid(pml_width=0, interior_shape=(2, 2), init_nt=4)
-    wf = _make_wavefield(grid)
-    u = torch.zeros(grid.nt, 2, 2)
-    with pytest.raises(IndexError):
-        TimeOperator4thOrder(wf).apply(u)
+    assert torch.allclose(
+        dense_kernel[0, 0], torch.as_tensor(sparse_kernel, dtype=dense_kernel.dtype)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -574,7 +472,9 @@ def test_assemble_laplacian_csr_shape():
 def test_helmholtz_factor_cache_matvec_rejects_wrong_shape(tiny_setup):
     solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
     cache = solver.factorize(tiny_setup.vm.c.detach())
-    bad = torch.zeros(2, 3, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype)
+    bad = torch.zeros(
+        2, 3, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
+    )
     with pytest.raises(ValueError):
         cache.matvec(bad)
 
@@ -582,7 +482,9 @@ def test_helmholtz_factor_cache_matvec_rejects_wrong_shape(tiny_setup):
 def test_helmholtz_factor_cache_solve_rejects_bad_trans(tiny_setup):
     solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
     cache = solver.factorize(tiny_setup.vm.c.detach())
-    rhs = torch.zeros(1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype)
+    rhs = torch.zeros(
+        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
+    )
     with pytest.raises(ValueError):
         cache.solve(rhs, trans="X")
 
@@ -591,9 +493,9 @@ def test_helmholtz_factor_cache_solve_inverts_matvec(tiny_setup):
     solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
     cache = solver.factorize(tiny_setup.vm.c.detach())
     torch.manual_seed(1)
-    u = torch.randn(2, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64).to(
-        tiny_setup.wf.cdtype
-    )
+    u = torch.randn(
+        2, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64
+    ).to(tiny_setup.wf.cdtype)
     z = cache.matvec(u)
     u_recovered = cache.solve(z, trans="N")
     assert torch.allclose(u_recovered, u, atol=1e-4, rtol=1e-4)
@@ -602,7 +504,9 @@ def test_helmholtz_factor_cache_solve_inverts_matvec(tiny_setup):
 def test_helmholtz_factor_cache_solve_counters(tiny_setup):
     solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
     cache = solver.factorize(tiny_setup.vm.c.detach())
-    rhs = torch.zeros(1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype)
+    rhs = torch.zeros(
+        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
+    )
 
     assert cache.n_forward_solves == 0
     assert cache.n_adjoint_solves == 0
@@ -618,20 +522,24 @@ def test_helmholtz_factor_cache_solve_counters(tiny_setup):
 
 
 def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2, pml_weight=1.0)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, pml_weight=1.0
+    )
     c = tiny_setup.vm.c.detach()
     H = solver.assemble_H_sparse(c, freq_idx=0)
 
     torch.manual_seed(2)
-    amp = torch.randn(1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64).to(
-        tiny_setup.wf.cdtype
-    )
+    amp = torch.randn(
+        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64
+    ).to(tiny_setup.wf.cdtype)
     source = torch.zeros_like(amp)
     r = solver.wave_eq.residual(amp, c, source)
 
     flat = amp.reshape(-1).cpu().numpy().astype(H.dtype)
     Hu = (H @ flat).reshape(tiny_setup.grid.nx, tiny_setup.grid.ny)
-    assert torch.allclose(r[0, 0], torch.as_tensor(Hu, dtype=r.dtype), atol=1e-4, rtol=1e-4)
+    assert torch.allclose(
+        r[0, 0], torch.as_tensor(Hu, dtype=r.dtype), atol=1e-4, rtol=1e-4
+    )
 
 
 def test_helmholtz_solver_solve_smoke(tiny_setup):
@@ -649,67 +557,3 @@ def test_helmholtz_solver_solve_smoke(tiny_setup):
     r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
     src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())
     assert r_rms / max(src_rms, 1e-30) < 1e-3  # well-converged direct solve
-
-
-# --------------------------------------------------------------------------- #
-# leapfrog.py
-# --------------------------------------------------------------------------- #
-def test_leapfrog_solver_invalid_space_order_raises(tiny_setup):
-    with pytest.raises(ValueError):
-        LeapfrogSolver(tiny_setup.wf, tiny_setup.geom, space_order=3)
-
-
-def test_leapfrog_solver_raises_when_cfl_exceeds_stability_limit():
-    # Force a large dt via a tiny init_nt so the CFL number blows past the
-    # space_order=2 stability limit (cfl_limit=1.0).
-    grid = _make_grid(pml_width=2, init_nt=3)
-    vm = VelocityModel(grid, profile="homogeneous", base=2000.0)
-    source = SourceSignal(grid, kind="ricker", f0=8e4)
-    freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = AcquisitionGeometry(grid, source, freq, n_receivers=4, n_sources=2)
-    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
-    with pytest.raises(ValueError):
-        LeapfrogSolver(wf, geom, space_order=2)
-
-
-def test_leapfrog_solver_stable_cfl_does_not_raise(tiny_setup):
-    # Grid's default (init_nt=None) CFL-safety-derived dt keeps cfl well
-    # under the stability limit.
-    grid = _make_grid(pml_width=2, init_nt=None, cfl_safety=0.5)
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
-    source = SourceSignal(grid, kind="ricker", f0=8e4)
-    freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = AcquisitionGeometry(grid, source, freq, n_receivers=4, n_sources=2)
-    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
-    LeapfrogSolver(wf, geom, space_order=2)  # must not raise
-
-
-def test_leapfrog_solver_warns_close_to_cfl_limit():
-    # nt is ceil()'d from t_max/dt_cfl, so cfl jumps in discrete steps as
-    # cfl_safety varies; 0.99 lands the actual cfl at ~0.99 (space_order=2
-    # limit is 1.0), inside the >0.9*limit warning band. init_nt must be
-    # None (the default override below) for cfl_safety to actually drive dt.
-    grid = _make_grid(pml_width=2, init_nt=None, cfl_safety=0.99)
-    vm = VelocityModel(grid, profile="homogeneous", base=2000.0)
-    source = SourceSignal(grid, kind="ricker", f0=8e4)
-    freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = AcquisitionGeometry(grid, source, freq, n_receivers=4, n_sources=2)
-    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
-    with pytest.warns(RuntimeWarning):
-        LeapfrogSolver(wf, geom, space_order=2)
-
-
-def test_leapfrog_solver_solve_smoke():
-    grid = _make_grid(pml_width=2, interior_shape=(8, 8), init_nt=None, cfl_safety=0.5)
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
-    source = SourceSignal(grid, kind="ricker", f0=8e4)
-    freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = AcquisitionGeometry(grid, source, freq, n_receivers=4, n_sources=2)
-    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
-
-    solver = LeapfrogSolver(wf, geom, space_order=2)
-    amp = solver.solve(verbose=False)
-    assert amp.shape == (geom.n_sources, grid.nt, grid.nx, grid.ny)
-    assert torch.isfinite(amp).all()
-    assert solver.diagnostics is not None
-    assert solver.diagnostics["ratio"] < 1.0  # residual smaller than the source itself

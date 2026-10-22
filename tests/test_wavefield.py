@@ -1,7 +1,7 @@
 """Tests for the ``odil_wave.wavefield`` package (``Wavefield`` and its helpers).
 
 Covers construction/validation, shapes/dtypes, the ``amplitude`` property
-(getter/setter), ``init_ut``/``init_ut_nd``, the private ``_normalize_amplitude``
+(getter/setter), the private ``_normalize_amplitude``
 helper, and the ``show``/``animate`` plotting methods' validation and (lightweight,
 Agg-backend) success paths.
 
@@ -101,7 +101,7 @@ def test_normalize_amplitude_invalid_mode_raises():
 # --------------------------------------------------------------------------- #
 # Wavefield construction / validation
 # --------------------------------------------------------------------------- #
-def test_wavefield_default_amplitude_and_init_ut_are_zero_with_expected_shapes():
+def test_wavefield_default_amplitude_is_zero_with_expected_shape():
     grid = _make_grid()
     freq = _make_freq(grid, [8e4, 9e4])
     wf = Wavefield(grid=grid, frequency_selection=freq)
@@ -110,10 +110,6 @@ def test_wavefield_default_amplitude_and_init_ut_are_zero_with_expected_shapes()
     assert wf.amplitude.shape == (2, grid.nx, grid.ny)
     assert torch.is_complex(wf.amplitude)
     assert torch.count_nonzero(wf.amplitude) == 0
-
-    assert wf.init_ut.shape == (grid.nx, grid.ny)
-    assert not torch.is_complex(wf.init_ut)
-    assert torch.count_nonzero(wf.init_ut) == 0
 
 
 def test_wavefield_dtype_device_and_cdtype_match_grid():
@@ -153,19 +149,6 @@ def test_wavefield_init_amplitude_is_cast_and_stored():
     assert wf.amplitude.dtype == wf.cdtype
     assert torch.allclose(wf.amplitude.real, torch.as_tensor(raw, dtype=wf.dtype))
     assert torch.count_nonzero(wf.amplitude.imag) == 0
-
-
-def test_wavefield_init_velocity_and_init_ut_nd_scaling():
-    grid = _make_grid()
-    freq = _make_freq(grid, [8e4])
-    init_velocity = np.full((grid.nx, grid.ny), 3.0)
-    wf = Wavefield(grid=grid, frequency_selection=freq, init_velocity=init_velocity)
-
-    assert torch.allclose(wf.init_ut, torch.full((grid.nx, grid.ny), 3.0, dtype=wf.dtype))
-    expected_nd = 3.0 * grid.t0
-    assert torch.allclose(
-        wf.init_ut_nd, torch.full((grid.nx, grid.ny), expected_nd, dtype=wf.dtype)
-    )
 
 
 def test_wavefield_accepts_a_second_grid_with_matching_metadata():

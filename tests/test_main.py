@@ -33,7 +33,7 @@ def test_dry_run_with_config_file(capsys):
     code = main.main(["--config", str(DEFAULT_CONFIG), "--dry-run"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "optimiser       : lbfgsb" in out
+    assert "optimiser       : joint" in out
     assert "bands (1):" in out
 
 

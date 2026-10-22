@@ -11,9 +11,7 @@ from .spatial import (
     Laplacian8thOrder,
     Laplacian10thOrder,
 )
-from .temporal import TimeOperator2ndOrder, TimeOperator4thOrder
 from .utils import WaveEquation
-from .leapfrog import LeapfrogSolver
 from .helmholtz import HelmholtzFactorCache, HelmholtzSolver
 
 __all__ = [
@@ -26,10 +24,7 @@ __all__ = [
     "NeumannMirrorBC2nd",
     "NeumannMirrorBC4th",
     "Sponge",
-    "TimeOperator2ndOrder",
-    "TimeOperator4thOrder",
     "WaveEquation",
-    "LeapfrogSolver",
     "HelmholtzSolver",
     "HelmholtzFactorCache",
 ]

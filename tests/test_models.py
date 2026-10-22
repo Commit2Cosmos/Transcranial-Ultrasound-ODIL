@@ -70,37 +70,38 @@ def test_shepp_logan_skull_validates_params(grid):
 # --------------------------------------------------------------------------- #
 # PML embedding
 # --------------------------------------------------------------------------- #
-def test_build_full_c_edge_replicates(grid):
-    """pml_fill='edge' replicates the interior boundary outward."""
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0, pml_fill="edge")
+def _pml_ring(grid):
+    """Boolean full-grid mask of the PML ring (everything outside the interior)."""
+    ring = torch.ones(grid.shape, dtype=torch.bool)
+    ring[grid.interior_slice] = False
+    return ring
+
+
+def test_build_full_c_constant_fill(grid):
+    """The whole PML ring is padded with the fixed pml_c, not the interior edge."""
+    vm = VelocityModel(grid, profile="homogeneous", base=1500.0, pml_c=1234.0)
+    # Non-uniform interior so an edge-replicating fill would differ from pml_c.
     ci = (
         torch.arange(grid.interior_nx * grid.interior_ny, dtype=grid.dtype).reshape(
             grid.interior_shape
         )
-        + 1500.0
+        + 1600.0
     )
     full = vm.build_full_c(ci)
     assert full.shape == grid.shape
     assert torch.allclose(full[grid.interior_slice], ci)
-    # the outermost corner replicates the nearest interior corner value.
-    assert float(full[0, 0]) == pytest.approx(float(ci[0, 0]))
+    assert torch.all(full[_pml_ring(grid)] == 1234.0)
 
 
-def test_build_full_c_constant_fill(grid):
-    """pml_fill='constant' pads the ring with the fixed pml_c."""
-    vm = VelocityModel(
-        grid, profile="homogeneous", base=1500.0, pml_fill="constant", pml_c=1234.0
+def test_from_field_build_full_c_pads_with_pml_c(grid):
+    """from_field models use the same constant pml_c fill."""
+    vm = VelocityModel.from_field(
+        grid, torch.full(grid.shape, 1600.0, dtype=grid.dtype), pml_c=1500.0
     )
-    ci = torch.full(grid.interior_shape, 1600.0, dtype=grid.dtype)
+    ci = torch.full(grid.interior_shape, 1700.0, dtype=grid.dtype)
     full = vm.build_full_c(ci)
-    assert float(full[0, 0]) == pytest.approx(1234.0)
     assert torch.allclose(full[grid.interior_slice], ci)
-
-
-def test_pml_fill_replicate_alias(grid):
-    """'replicate' is accepted as an alias for 'edge'."""
-    vm = VelocityModel(grid, profile="homogeneous", pml_fill="replicate")
-    assert vm.pml_fill == "edge"
+    assert torch.all(full[_pml_ring(grid)] == 1500.0)
 
 
 def test_from_field_custom_profile(grid):
@@ -126,12 +127,6 @@ def test_skull_placeholder_not_implemented(grid):
     """The placeholder 'skull' profile raises NotImplementedError."""
     with pytest.raises(NotImplementedError):
         VelocityModel(grid, profile="skull")
-
-
-def test_bad_pml_fill_raises(grid):
-    """An unknown PML-fill mode is rejected."""
-    with pytest.raises(ValueError):
-        VelocityModel(grid, profile="homogeneous", pml_fill="bogus")
 
 
 def test_masks_require_skull_profile(grid):

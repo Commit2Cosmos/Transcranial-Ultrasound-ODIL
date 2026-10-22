@@ -1,5 +1,7 @@
 import pytest
 
+from odil_wave import InverseLoss, LossConfig, WaveEquation, Wavefield
+import torch
 from odil_wave.experiment import (
     ConfigError,
     RunConfig,
@@ -33,11 +35,10 @@ TINY_GRID = {
         "profile": "overdensity",
         "base": 1500.0,
         "contrast": 100.0,
-        "pml_fill": "edge",
         "extra": {"radius": 0.012},
     },
-    "init": {"profile": "homogeneous", "base": 1500.0, "pml_fill": "edge"},
-    "observation": {"method": "helmholtz", "normalize_data": "none", "pml_width": None},
+    "init": {"profile": "homogeneous", "base": 1500.0},
+    "observation": {"normalize_data": "none", "pml_width": None},
     "continuation": {"warm_start": "helmholtz", "bands": [{"frequencies_hz": [40e3]}]},
     "metrics": {"ssim": {"mask": "none"}},
 }
@@ -48,10 +49,17 @@ TINY_GRID = {
 # --------------------------------------------------------------------------- #
 def test_resolve_config_mints_run_id_and_canonicalises():
     """A partial config resolves fully, mints a run id and canonicalises names."""
-    cfg = resolve_config({"optimiser": {"name": "l-bfgs-b"}})
+    cfg = resolve_config({"optimiser": {"name": "joint-odil"}})
     assert isinstance(cfg, RunConfig)
     assert cfg.run.run_id  # auto-minted, non-empty
-    assert cfg.optimiser.name == "lbfgsb"
+    assert cfg.optimiser.name == "joint"
+
+
+def test_default_optimiser_is_joint():
+    """With no optimiser given, the resolved config uses the joint solver."""
+    cfg = resolve_config({})
+    assert cfg.optimiser.name == "joint"
+    assert "_joint_" in cfg.run.run_id
 
 
 def test_resolve_config_overlays_user_fields():
@@ -110,11 +118,12 @@ def test_apply_overrides_bad_form_raises():
 def test_canonical_name_aliases():
     """Optimiser / regulariser aliases normalise, unknown names raise."""
     assert canonical_optimiser_name("pure_joint") == "joint"
-    assert canonical_optimiser_name("alt") == "lbfgsb"
+    assert canonical_optimiser_name("joint_odil") == "joint"
     assert canonical_regulariser_name("l2") == "tikhonov"
     assert canonical_regulariser_name("tv") == "tv_iso"
-    with pytest.raises(ConfigError):
-        canonical_optimiser_name("nope")
+    for name in ("nope", "lbfgsb", "l-bfgs-b", "lbfgs-b", "alt"):
+        with pytest.raises(ConfigError):
+            canonical_optimiser_name(name)
 
 
 # --------------------------------------------------------------------------- #
@@ -134,15 +143,39 @@ def test_validate_config_accepts_default():
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
         {"metrics": {"ssim": {"win_size": 4}}},
-        {"observation": {"method": "nope"}},
         {"runtime": {"dtype": "float16"}},
-        {"optimiser": {"name": "lbfgsb", "lbfgsb": {"u_precond": "bad"}}},
+        {"optimiser": {"joint": {"inner_max_iter": 0}}},
     ],
 )
 def test_validate_config_rejects_bad(bad):
     """Representative malformed configs raise ConfigError."""
     with pytest.raises(ConfigError):
         validate_config(resolve_config(bad))
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        {"optimiser": {"name": "lbfgsb"}},
+        {"optimiser": {"lbfgsb": {}}},
+        {"optimiser": {"u_steps": 5}},
+        {"optimiser": {"clamp": True}},
+        {"observation": {"method": "leapfrog_fft"}},
+        {"physics": {"time_order": 2}},
+        {"truth": {"pml_fill": "constant"}},
+        {"init": {"pml_fill": "edge"}},
+        {"diagnostics": {"enabled": False}},
+        {
+            "continuation": {
+                "bands": [{"frequencies_hz": [40e3], "c_grad_smooth_sigma": 1.0}]
+            }
+        },
+    ],
+)
+def test_removed_settings_are_rejected(removed):
+    """lbfgsb / leapfrog / PML-fill-mode settings no longer resolve."""
+    with pytest.raises(ConfigError):
+        resolve_config(removed)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +199,28 @@ def test_make_band_produces_observed_data():
     assert len(band.observed_wfs) == problem.cfg.acquisition.n_sources
     # not PML-split, so full wavefields (no reduced traces).
     assert band.observed_traces is None
+
+
+def test_observed_data_satisfy_inverse_operator_on_truth():
+    """Observations are a Helmholtz solve on the truth model (inverse crime): the
+    inversion's own PDE residual vanishes at (observed u, truth c)."""
+    problem = build_problem(resolve_config(TINY_GRID))
+    band = problem.make_band([40e3])
+    wf = Wavefield(problem.grid, band.freq, velocity_model=problem.truth_velocity)
+    loss = InverseLoss(
+        observed_wavefield=band.observed_wfs,
+        config=LossConfig(
+            WaveEquation(
+                wf, space_order=problem.space_order, pml_weight=problem.pml_weight
+            ),
+            band.geom,
+            weights={"pde": 1.0, "data": 1.0},
+        ),
+    )
+    amp = torch.stack([w.amplitude for w in band.observed_wfs])
+    loss.evaluate(amp, problem.truth_velocity.c)
+    assert loss._last_residuals["pde_src_ratio"] < 1e-8
+    assert loss._last_residuals["data_rms"] == 0.0
 
 
 def test_warm_start_toggles_with_config():
