@@ -145,6 +145,7 @@ jobs:
     outputs:
       run_attempt: ${{ steps.resolve.outputs.run_attempt }}
       invoked_at: ${{ steps.resolve.outputs.invoked_at }}
+      sandbox: ${{ steps.sandbox.outputs.result }}
     env:
       # Strip Anthropic credentials from Bash/hook/MCP subprocesses.
       # GitHub tokens are not stripped (see docs/agent-workflow.md).
@@ -195,19 +196,19 @@ jobs:
           BRANCH: ${{ steps.resolve.outputs.branch }}
         run: git switch -c "$BRANCH"
 
-      - name: Install Claude subprocess isolation dependencies
+      # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 runs Claude's subprocesses in
+      # Bubblewrap. Installs it, grants it user namespaces under AppArmor if
+      # needed, and runs a command inside it; fails before Claude starts if
+      # that does not work. See docs/agent-workflow.md ("Subprocess sandbox").
+      - name: Prepare and verify sandbox
+        id: sandbox
         shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap socat
-          command -v bwrap
-          bwrap --version
-          command -v socat
+        run: bash "$RUNNER_TEMP/claude-trusted/.github/scripts/claude-sandbox.sh"
 
       # Pinned to the commit audited for this setup (v1 on 2026-10-22,
       # Claude Code 2.1.308). Re-audit before changing; see docs/agent-workflow.md.
       - name: Run Claude
+        id: agent
         uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -217,7 +218,44 @@ jobs:
             --model opus
           additional_permissions: ${{ steps.resolve.outputs.additional_permissions }}
 
-  # Posts refusals and failure notes, and fails a new planning run that left
+      # Redacted summary of the agent session, never the raw transcript, for
+      # failed jobs and for new planning runs (whose deliverable the report
+      # job checks afterwards). The repository is public: artifacts can be
+      # downloaded by any signed-in GitHub user. Neither step can change the
+      # job result. See docs/agent-workflow.md ("Session diagnostics").
+      - name: Summarize agent session (redacted)
+        id: diagnostics
+        if: >-
+          always() && steps.agent.outcome != 'skipped' &&
+          (failure() || (steps.resolve.outputs.profile == 'plan' && steps.resolve.outputs.pr_number == ''))
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+        with:
+          script: |
+            const dir = `${process.env.RUNNER_TEMP}/claude-trusted`;
+            const t = require(`${dir}/.github/scripts/claude-task.js`);
+            t.writeDiagnostics({
+              core,
+              executionFile: process.env.EXECUTION_FILE || `${process.env.RUNNER_TEMP}/claude-execution-output.json`,
+              outDir: `${process.env.RUNNER_TEMP}/claude-diagnostics`,
+            });
+
+      - name: Upload agent session summary
+        if: always() && steps.diagnostics.outputs.path != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Name and retention are quoted in the PLAN_NO_DELIVERABLE notice
+          # (diagnosticsArtifact, DIAGNOSTICS_RETENTION_DAYS in claude-task.js).
+          name: claude-diagnostics-attempt-${{ github.run_attempt }}
+          path: ${{ steps.diagnostics.outputs.path }}
+          retention-days: 5
+          if-no-files-found: ignore
+
+  # Posts refusals and failure notes (SANDBOX_PREFLIGHT_FAILED when the
+  # sandbox step stopped the claude job), and fails a new planning run that left
   # neither a published plan with a draft PR nor a clarification comment for
   # this run (PLAN_NO_DELIVERABLE). See docs/agent-workflow.md.
   report:

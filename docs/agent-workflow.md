@@ -12,7 +12,8 @@ smoke tests.
 | `.github/workflows/claude.yml` | Single handler for new issues and `@claude` in issue comments, PR comments, review bodies and inline review comments |
 | `.github/workflows/plan-guard.yml` | Required check on PRs: plan-only before authorization, plan unchanged after it |
 | `.github/workflows/claude-code-review.yml` | One advisory review when a same-repo PR becomes ready for review (or is opened non-draft) |
-| `.github/scripts/claude-task.js` | Controller logic: authorization, discovery, approval, profiles, prompt, plan guard |
+| `.github/scripts/claude-task.js` | Controller logic: authorization, discovery, approval, profiles, prompt, plan guard, redacted session summary |
+| `.github/scripts/claude-sandbox.sh` | Prepares Bubblewrap for Claude Code's subprocess isolation and proves that a command runs inside it (see [Subprocess sandbox](#subprocess-sandbox)) |
 | `.github/scripts/claude-task.test.js` | Unit tests (`node --test .github/scripts/claude-task.test.js`, run by `tests.yml`) |
 
 ### `claude.yml` jobs
@@ -36,10 +37,17 @@ smoke tests.
    - Re-resolves the decision. It aborts if the result differs from the
      gate's. It records the run attempt and the invocation time as job
      outputs.
+   - Prepares and verifies the subprocess sandbox
+     (`claude-sandbox.sh`). If that fails, the job fails before Claude
+     starts.
    - Runs `anthropics/claude-code-action` in agent mode with the
      controller-built prompt and tool profile, plus `--model opus`.
+   - For failed jobs and new planning runs, uploads a redacted session
+     summary (see [Session diagnostics](#session-diagnostics)).
 4. **report** (`issues`/`pull-requests: write`)
-   - Posts refusals, revocation acknowledgements and failure notes.
+   - Posts refusals, revocation acknowledgements and failure notes. A failed
+     sandbox preflight gets its own note and fails with
+     `SANDBOX_PREFLIGHT_FAILED`.
    - Fails a new planning run that left no verifiable deliverable
      (`PLAN_NO_DELIVERABLE`; see [Completion checks](#completion-checks)).
 
@@ -109,6 +117,59 @@ request on an approved task still gets the read profile.
   "opus"`. Run 39773385519 (before this flag) passed no model and initialized
   `claude-sonnet-5-5`. Which model the `opus` alias resolves to has not been
   observed in a live run.
+
+## Subprocess sandbox
+
+The claude job sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, so Claude Code runs
+every Bash subprocess in Bubblewrap with Anthropic credentials removed.
+Without `bwrap`, Claude Code refuses to start (run 39772040277). At startup
+it checks only that a `bwrap` binary exists (Claude Code 2.1.308, observed in
+the binary). An installed `bwrap` that cannot create its namespaces therefore
+passes startup and fails each command at run time. Such a tool error is not
+a permission denial.
+
+`claude-sandbox.sh` runs before `Run Claude`, from the trusted controller
+copy:
+1. Installs `bubblewrap` and `socat` if missing. It logs the `bwrap` path and
+   version, the kernel, and `kernel.apparmor_restrict_unprivileged_userns`.
+2. **Probe.** As the runner user, runs `/bin/sh` in `bwrap` with new user,
+   pid, ipc, uts and net namespaces, a read-only root, `/proc`, `/dev` and a
+   writable bind mount. It passes only if the marker the shell writes is
+   visible outside.
+3. If the probe passes, nothing on the system is changed.
+4. If it fails while the restriction is `1`, the script installs
+   `/etc/apparmor.d/claude-code-bwrap`. That profile grants `userns` to the
+   resolved `bwrap` path (`flags=(unconfined)`), the form Ubuntu uses for
+   applications that need user namespaces. The script loads it with
+   `apparmor_parser -r` and probes again.
+5. On final failure it emits an `::error::` annotation and the probe output,
+   sets output `result=failed`, and exits non-zero. Claude is not invoked.
+
+**Security scope.** On Ubuntu 24.04 with the restriction set to `1`, an
+unprivileged process may create a user namespace but gets no capabilities in
+it, unless its executable has an AppArmor profile granting `userns`.
+- The pinned action's own setup (used only with `allowed_non_write_users`)
+  sets the sysctl to `0`, lifting the restriction for every process on the
+  VM.
+- The profile keeps the default for every other executable. It is not a
+  containment boundary, though: any process, including repository code in
+  the implement profile, can execute `bwrap` to obtain a user namespace.
+  Nested namespaces inside Claude's sandbox are limited by Claude Code's own
+  `--disable-userns` handling, not by this profile.
+- Neither option widens what the job can do. On GitHub-hosted runners the
+  runner user has passwordless `sudo`, and the VM is discarded after the job.
+
+**Evidence and gaps.**
+- Unverified on GitHub-hosted runners: whether the first probe fails there,
+  and whether the profile loads and is enough. The "Prepare and verify
+  sandbox" log of the first hosted run answers both.
+- The probe approximates Claude Code's `bwrap` arguments; it does not
+  reproduce them exactly.
+- A working sandbox does not prove that every scrub-mode restriction allows
+  publication: `.git` and `gh` paths are protected, and network and script
+  calls are mediated. Session diagnostics show such failures.
+- `claude-code-review.yml` sets the same variable but does not run this
+  script, so it is expected to fail at Claude Code startup until it does.
 
 ## What is enforced by code, and what is not
 
@@ -200,8 +261,12 @@ comment lists:
 - the draft PR state;
 - the clarification result ("none found" or "unverifiable: <reason>").
 
-It says that the workflow does not know why the agent stopped. It contains no
-agent output.
+It says that the workflow does not know why the agent stopped. It names the
+diagnostics artifact for the claude job's attempt. The comment itself
+contains no agent output.
+
+A failed sandbox preflight is reported instead as `SANDBOX_PREFLIGHT_FAILED`.
+Claude was not invoked, so there is no deliverable to check.
 
 **Recovery.** The supported path is a fresh `@claude plan` comment on the
 issue, after inspecting any branch or PR the run left. If the branch exists
@@ -217,9 +282,44 @@ not a supported recovery for this check.
   that ignores the template, or a missing issue comment after a published
   plan.
 - Question quality is not judged; the check only requires a question line.
-- The agent's final response is not recorded: `show_full_output` stays at
-  the action's default (false) and the execution file is not uploaded.
-  Diagnostic run metadata is a separate, deferred task.
+- The claude job stays green when the agent ends without a deliverable. The
+  report job and the run are red.
+
+## Session diagnostics
+
+`show_full_output` stays false. The action's execution file
+(`$RUNNER_TEMP/claude-execution-output.json`) is the full transcript: the
+prompt, file contents and command output. It is never uploaded.
+
+After `Run Claude`, two steps run when the agent step ran and either an
+earlier step failed or the run is a new planning run (the report job decides
+afterwards whether its deliverable is missing):
+- `writeDiagnostics` (trusted controller) writes
+  `claude-session-summary.md`. It contains:
+  - the init block (model, permission mode, Claude Code version, tools);
+  - each tool call's name and target: the Bash command, or the file path or
+    pattern; never file contents, edit bodies or other inputs (only their
+    keys);
+  - for failed tool results, the first 1000 characters; successful results
+    appear only as a character count;
+  - assistant text truncated to 500 characters (thinking blocks omitted);
+  - the result block: subtype, turns, denials, errors, and the final
+    response truncated to 4000 characters.
+
+  The prompt is omitted. Every string is redacted before truncation (GitHub
+  tokens, Anthropic keys, JWTs, URL credentials, authorization headers), and
+  the file is capped at 200,000 characters.
+- `actions/upload-artifact` (v7.0.1, pinned) uploads it as
+  `claude-diagnostics-attempt-<attempt>`, kept for 5 days.
+
+Both steps are `continue-on-error` and cannot change the job result. The
+action revokes its GitHub App token before they run.
+
+**Exposure.** The repository is public, so any signed-in GitHub user can
+download the artifact while it exists. Redaction is pattern-based: a secret
+in an unrecognised format, inside a failed command's output or in the
+agent's text, would be published. Delete the artifact from the run page if
+that happens.
 
 ## Remaining risks
 
@@ -292,7 +392,9 @@ Do not move to a newer action or a floating `@v1` without re-checking:
 - the token scopes for `additional_permissions` (`src/github/token.ts`);
 - git credential setup (`src/github/operations/git-config.ts`);
 - argument parsing (`base-action/src/parse-sdk-options.ts`);
-- the Claude Code version installed.
+- the Claude Code version installed, and its subprocess-scrub sandbox: the
+  `bwrap` arguments it builds and the paths it protects. Keep the probe in
+  `claude-sandbox.sh` representative.
 
 Then repeat the profile checks above.
 
@@ -337,3 +439,6 @@ that introduced this workflow.
 | 13 | Clarification | `@claude plan` on an issue too vague to plan | `claude[bot]` comment ending with the run's clarification marker; report job succeeds |
 | 14 | Report-only re-run | After 12, re-run only the failed report job | Fails again with "clarification unverifiable: claude job attempt 1, report attempt 2" |
 | 15 | Model | Any run | Claude init log shows the model the `opus` alias resolved to; record it |
+| 16 | Sandbox preflight | Any claude job | "Prepare and verify sandbox" logs the restriction value and the first probe's result, and whether the AppArmor profile was needed; the step passes before `Run Claude` |
+| 17 | Sandbox failure | Not reproducible on demand; observe if it occurs | The step fails with an `::error::` annotation; `Run Claude` is skipped; the report posts the sandbox note and fails with `SANDBOX_PREFLIGHT_FAILED` |
+| 18 | Session diagnostics | After 1 (or 12, 13) | Run has artifact `claude-diagnostics-attempt-1` with 5-day retention, containing only `claude-session-summary.md`; check it for unredacted secrets |
