@@ -64,6 +64,12 @@ After the PR is opened, make further changes only when the user asks.
 In-scope fixes on the same branch need no new approval, but the report, feature register and decision records should be updated and always kept up-to-date.
 Commit and push them to the same branch and PR.
 
+After the user says the PR has been merged:
+1. Confirm the PR state is merged (e.g. `gh pr view <number> --json state`);
+   if it is not, stop and report.
+2. Check out the default branch and pull it.
+3. Delete the task branch locally and on the remote.
+
 ## Commits
 
 - Make each commit one logical, self-contained change; do not bundle unrelated
