@@ -16,7 +16,7 @@ from odil_wave import (
 )
 from odil_wave.experiment import build_problem, resolve_config, run_inverse, runner
 
-from conftest import make_grid
+from conftest import make_grid, tiny_run_config
 
 
 def _rel_c_error(model, truth, grid) -> float:
@@ -67,52 +67,9 @@ def test_forward_to_loss_gradient_flows():
     assert float(c.grad.abs().max()) > 0
 
 
-def _tiny_config(tmp_path, run_id: str = "tiny") -> dict:
-    """User config for a tiny single-band joint inversion under ``tmp_path``."""
-    return {
-        "run": {"output_root": str(tmp_path), "run_id": run_id},
-        "runtime": {"dtype": "float64"},
-        "grid": {
-            "interior_shape": [20, 20],
-            "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
-            "c_min": 1400.0,
-            "c_max": 1750.0,
-            "t_max": 6e-5,
-            "init_nt": 200,
-            "pml_width": 6,
-        },
-        "source": {"kind": "tone_burst", "f0": 40e3, "n_cycles": 2.0},
-        "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
-        "physics": {"space_order": 2},
-        "truth": {
-            "profile": "overdensity",
-            "base": 1500.0,
-            "contrast": 150.0,
-            "extra": {"radius": 0.012},
-        },
-        "init": {"profile": "homogeneous", "base": 1500.0},
-        "observation": {
-            "normalize_data": "none",
-            "pml_width": None,
-        },
-        "continuation": {
-            "warm_start": "helmholtz",
-            "bands": [{"frequencies_hz": [40e3]}],
-        },
-        "loss": {"weights": {"pde": 1.0, "data": 100.0, "reg": 0.0}},
-        "optimiser": {
-            "name": "joint",
-            "n_iter": 10,
-            "log_every": 1,
-            "joint": {"inner_max_iter": 20, "data_weight": 10.0, "z_scale": 10.0},
-        },
-        "metrics": {"ssim": {"mask": "none"}},
-    }
-
-
 def test_run_inverse_tiny_problem_recovers(tmp_path):
     """A full tiny run_inverse completes, writes artifacts, and improves the model."""
-    user_cfg = _tiny_config(tmp_path)
+    user_cfg = tiny_run_config(tmp_path)
     cfg = resolve_config(user_cfg)
 
     # Baseline error of the (homogeneous) starting model against the truth.
@@ -148,7 +105,7 @@ def test_run_inverse_tiny_problem_recovers(tmp_path):
 
 def test_run_inverse_two_bands_chain_models(tmp_path, monkeypatch):
     """Each band writes its artifacts and band 2 starts from band 1's model."""
-    user_cfg = _tiny_config(tmp_path, run_id="two_bands")
+    user_cfg = tiny_run_config(tmp_path, run_id="two_bands")
     user_cfg["continuation"]["bands"] = [
         {"frequencies_hz": [30e3]},
         {"frequencies_hz": [40e3]},
