@@ -1,7 +1,11 @@
 # Plan: <task-id> — <title>
 
-Task: <issue or task description>
-Status: Draft
+Task: #<issue number>
+Branch: agent/issue-<task-id>
+
+<!-- Lifecycle (Draft / Approved / Implemented / Rejected) is recorded by the
+PR and its authorization comments, not in this file: editing the plan after
+approval invalidates the approval. See CLAUDE.md. -->
 
 ## Objective
 Intended outcome and explicit requirements.
