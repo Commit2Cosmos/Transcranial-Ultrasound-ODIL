@@ -1,7 +1,9 @@
 # Report: <task-id> — <title>
 
 Task:
+
 Branch:
+
 Plan approved: <date>
 
 ## Outcome

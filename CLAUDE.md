@@ -32,7 +32,7 @@ Task IDs:
 For a new task:
 1. Inspect the task and relevant repository context. Ask clarifying questions if the task is ambigous, unclear or there are multiple ways of performing it.
 2. Create the task branch from the up-to-date default branch. Write
-   docs/plans/<task-id>.md using the plan template and, where a consequential
+   docs/plans/<task-id>.md using the plan template (only fill in the sections that are appropriate for the task at hand) and, where a consequential
    decision is involved, a proposed decision record.
 3. Do not commit or push the plan or decision record.
 4. Do not modify implementation, tests, dependencies, or configuration.

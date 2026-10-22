@@ -1,7 +1,9 @@
 # Plan: <task-id> — <title>
 
 Task: <task description>
+
 Branch: <n>/<short-description>
+
 Status: Draft | Approved <date>
 
 ## Objective
