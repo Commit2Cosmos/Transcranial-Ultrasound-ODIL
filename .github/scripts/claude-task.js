@@ -21,6 +21,9 @@ const TASK_BRANCH_RE = /^agent\/issue-([1-9][0-9]{0,9})$/;
 const MARKER_AUTHOR = 'github-actions[bot]';
 const MARKER_RE = /<!-- claude-task:activated comment=(\d+) sha=([0-9a-f]{40}) -->/g;
 const WRITE_PERMISSIONS = new Set(['admin', 'write']);
+// Login of the Claude GitHub App, which posts the agent's comments.
+const AGENT_AUTHOR = 'claude[bot]';
+const RUN_ID_RE = /^[1-9][0-9]{0,19}$/;
 
 const VERBS = new Set(['plan', 'approve-plan', 'routine', 'fix', 'continue', 'revoke']);
 const GRANT_VERBS = new Set(['approve-plan', 'routine']);
@@ -405,6 +408,8 @@ function planInstructions(s) {
   if (!s.prNumber) {
     return [
       common,
+      'In that case end the comment with this exact line, which the workflow uses to verify this run:',
+      clarificationMarker(s.runId, s.runAttempt),
       `Otherwise commit it (\`git add ${s.plan}\`, \`git commit -m "..."\`), push with exactly \`git push origin ${s.branch}\`,`,
       `and open the draft PR: \`gh pr create --draft --base ${s.defaultBranch} --head ${s.branch} --title '...' --body '...'\`.`,
       'The PR body follows .github/pull_request_template.md with Stage "Plan review", says',
@@ -751,7 +756,7 @@ function readPolicy(trustedDir) {
 }
 
 /** Export a resolve() result as step outputs. */
-function setOutputs(core, s, { trustedDir, trustedSha } = {}) {
+function setOutputs(core, s, { trustedDir, trustedSha, runId, runAttempt } = {}) {
   core.setOutput('decision', s.decision);
   core.setOutput('message', s.message || '');
   core.setOutput('notify', s.notify ? String(s.notify) : '');
@@ -770,8 +775,12 @@ function setOutputs(core, s, { trustedDir, trustedSha } = {}) {
       repo: `${s.owner}/${s.repo}`,
       policy: readPolicy(trustedDir),
       trustedSha,
+      runId,
+      runAttempt,
     });
     core.setOutput('prompt', prompt);
+    core.setOutput('run_attempt', runAttempt ? String(runAttempt) : '');
+    core.setOutput('invoked_at', new Date().toISOString());
     core.setOutput('claude_args', profileArgs(s.profile, { n: s.n, allowPrCreate: s.allowPrCreate }));
     core.setOutput('additional_permissions', additionalPermissions(s.profile));
   }
@@ -797,8 +806,135 @@ async function activate({ github, context, prNumber, commentId, sha }) {
   return true;
 }
 
-/** After the Claude job: post refusals/notes and check that a planning run left a PR. */
-async function report({ github, context, core, gate, claudeResult }) {
+// ---------------------------------------------------------------------------
+// Completion check for new planning runs
+
+/** Exact line that ends a new planning run's clarification comment. */
+function clarificationMarker(runId, attempt) {
+  if (!RUN_ID_RE.test(String(runId)) || !RUN_ID_RE.test(String(attempt))) {
+    throw new Error(`invalid run identity: ${runId}/${attempt}`);
+  }
+  return `<!-- claude-task:clarification run=${runId} attempt=${attempt} -->`;
+}
+
+/**
+ * Why the claude job's invocation metadata cannot identify this run's
+ * clarification, or null if it can. A report re-run alone reuses the outputs
+ * of an earlier attempt and is rejected here.
+ */
+function invocationProblem({ runId, runAttempt, claude, now = Date.now() }) {
+  if (!RUN_ID_RE.test(String(runId))) return 'run id unknown';
+  if (!claude.run_attempt) return 'claude job run_attempt missing';
+  if (!RUN_ID_RE.test(String(claude.run_attempt))) return 'claude job run_attempt invalid';
+  if (!RUN_ID_RE.test(String(runAttempt))) return 'report attempt unknown';
+  if (String(claude.run_attempt) !== String(runAttempt)) {
+    return `claude job attempt ${claude.run_attempt}, report attempt ${runAttempt}`;
+  }
+  if (!claude.invoked_at) return 'claude job invoked_at missing';
+  const t = Date.parse(claude.invoked_at);
+  if (!Number.isFinite(t)) return 'claude job invoked_at invalid';
+  if (t > now) return 'claude job invoked_at is in the future';
+  return null;
+}
+
+/**
+ * Whether a comment is the clarification for one invocation: posted by the
+ * Claude app after the invocation started, carrying its run/attempt marker and
+ * at least one question.
+ */
+function isClarification(c, { marker, invokedAt }) {
+  if (!marker || !c.user || c.user.login !== AGENT_AUTHOR || c.user.type !== 'Bot') return false;
+  const since = Date.parse(invokedAt);
+  if (!Number.isFinite(since) || !(Date.parse(c.created_at) >= since)) return false;
+  const body = String(c.body || '');
+  if (!body.includes(marker)) return false;
+  return body
+    .split(marker)
+    .join('')
+    .split(/\r?\n/)
+    .some((line) => line.trim().length >= 15 && /[A-Za-z].*\?/.test(line));
+}
+
+/** Remote state of a new planning run: branch head, plan file at it, open PR from it. */
+async function planPublication(github, owner, repo, { branch, plan }) {
+  const sha = await branchSha(github, owner, repo, branch);
+  if (!sha) return { branch: null, plan: false, pr: null };
+  let hasPlan = false;
+  try {
+    const { data } = await github.rest.repos.getContent({ owner, repo, path: plan, ref: sha });
+    hasPlan = data.type === 'file';
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  const prs = await github.paginate(github.rest.pulls.list, {
+    owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 100,
+  });
+  const pr = prs[0] ? { number: prs[0].number, draft: prs[0].draft === true } : null;
+  return { branch: sha, plan: hasPlan, pr };
+}
+
+function noDeliverableNotice({ branch, plan, pub, runUrl, attempt, clarification }) {
+  let pr = 'none';
+  if (!pub.branch) pr = 'none (no branch)';
+  else if (pub.pr) pr = pub.pr.draft ? `#${pub.pr.number}` : `#${pub.pr.number} is open but not a draft`;
+  return [
+    'PLAN_NO_DELIVERABLE: this planning run finished without a deliverable the workflow could verify.',
+    '',
+    `- Run: ${runUrl} (attempt ${RUN_ID_RE.test(String(attempt)) ? attempt : 'unknown'})`,
+    `- Branch \`${branch}\`: ${pub.branch ? `found at ${pub.branch}` : 'not found'}`,
+    `- \`${plan}\` on that branch: ${!pub.branch ? 'not checked (no branch)' : pub.plan ? 'present' : 'missing'}`,
+    `- Open draft PR from that branch: ${pr}`,
+    `- Clarification comment for this run: ${clarification}`,
+    '',
+    'The workflow does not know why the agent stopped. If a branch or PR exists, inspect it first. ' +
+      'Then comment `@claude plan` on this issue for a fresh invocation.',
+  ].join('\n');
+}
+
+/**
+ * A new planning run succeeds only if the task branch holds the plan and has an
+ * open draft PR, or this invocation posted a clarification comment.
+ */
+async function checkPlanDeliverable({ github, context, core, gate, claude, runAttempt, post, runUrl }) {
+  const { owner, repo } = context.repo;
+  const n = taskFromBranch(gate.branch);
+  if (!n || n !== Number(gate.notify)) throw new Error(`unexpected task branch ${gate.branch} for #${gate.notify}`);
+  const plan = planPath(n);
+  // Repository state alone proves publication: the gate admitted this run only
+  // because no task PR existed, so invocation metadata is not needed here.
+  const pub = await planPublication(github, owner, repo, { branch: gate.branch, plan });
+  if (pub.branch && pub.plan && pub.pr && pub.pr.draft) {
+    core.info(`Plan published: ${gate.branch} at ${pub.branch}, draft PR #${pub.pr.number}.`);
+    return;
+  }
+  const problem = invocationProblem({ runId: context.runId, runAttempt, claude });
+  let clarification = `unverifiable: ${problem}`;
+  if (!problem) {
+    const marker = clarificationMarker(context.runId, claude.run_attempt);
+    const comments = await github.paginate(github.rest.issues.listComments, {
+      owner, repo, issue_number: n, since: claude.invoked_at, per_page: 100,
+    });
+    const found = comments.find((c) => isClarification(c, { marker, invokedAt: claude.invoked_at }));
+    if (found) {
+      core.info(`Clarification requested: ${found.html_url}`);
+      return;
+    }
+    clarification = 'none found';
+  }
+  await post(noDeliverableNotice({ branch: gate.branch, plan, pub, runUrl, attempt: runAttempt, clarification }));
+  core.setFailed(
+    `PLAN_NO_DELIVERABLE: branch=${pub.branch || 'none'} plan=${pub.plan ? 'present' : 'missing'} ` +
+      `pr=${pub.pr ? `#${pub.pr.number}${pub.pr.draft ? '' : ' (not draft)'}` : 'none'} ` +
+      `clarification=${problem ? `unverifiable (${problem})` : 'none'}`,
+  );
+}
+
+/**
+ * After the Claude job: post refusals/notes and verify that a new planning run
+ * left a deliverable. Plan revisions, read-only and implementation runs are
+ * judged by the Claude job result only (see docs/agent-workflow.md).
+ */
+async function report({ github, context, core, gate, claudeResult, claude = {}, runAttempt }) {
   const { owner, repo } = context.repo;
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
   const target = Number(gate.notify);
@@ -818,13 +954,7 @@ async function report({ github, context, core, gate, claudeResult }) {
     return;
   }
   if (gate.profile === 'plan' && !gate.pr_number) {
-    const pushed = await branchSha(github, owner, repo, gate.branch);
-    if (!pushed) return; // nothing committed (e.g. questions asked instead)
-    const prs = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${gate.branch}` });
-    if (prs.data.length === 0) {
-      await post(`\`${gate.branch}\` was pushed but no draft PR exists. Comment \`@claude plan\` to retry: ${runUrl}`);
-      core.setFailed('planning run pushed a branch without opening a PR');
-    }
+    await checkPlanDeliverable({ github, context, core, gate, claude, runAttempt, post, runUrl });
   }
 }
 
@@ -861,6 +991,7 @@ module.exports = {
   additionalPermissions,
   buildPrompt,
   checkGrant,
+  clarificationMarker,
   classifyRequest,
   decideGrantCommand,
   describeEvent,
@@ -868,6 +999,8 @@ module.exports = {
   findMarkers,
   gitClient,
   inspect,
+  invocationProblem,
+  isClarification,
   latestRevocationId,
   parseCommand,
   planGuard,

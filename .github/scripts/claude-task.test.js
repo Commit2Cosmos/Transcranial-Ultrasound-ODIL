@@ -1,6 +1,6 @@
 'use strict';
 
-// Run with: node --test .github/scripts/
+// Run with: node --test .github/scripts/claude-task.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
@@ -78,7 +78,7 @@ const PERMS = new Map([
   ['reader', 'read'],
 ]);
 
-function fakeGithub({ permissions = PERMS, pulls = {}, prList = [], branches = {}, comments = [] } = {}) {
+function fakeGithub({ permissions = PERMS, pulls = {}, prList = [], branches = {}, files = {}, comments = [] } = {}) {
   const created = [];
   const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
   const github = {
@@ -93,6 +93,11 @@ function fakeGithub({ permissions = PERMS, pulls = {}, prList = [], branches = {
         getBranch: async ({ branch }) => {
           if (!branches[branch]) throw notFound();
           return { data: { commit: { sha: branches[branch] } } };
+        },
+        // files: { '<ref>:<path>': true }
+        getContent: async ({ path: p, ref }) => {
+          if (!files[`${ref}:${p}`]) throw notFound();
+          return { data: { type: 'file', path: p } };
         },
       },
       pulls: {
@@ -515,14 +520,196 @@ test('activate posts one marker and is idempotent', async () => {
   await assert.rejects(t.activate({ github, context: ctx, prNumber: '9', commentId: 'x', sha }), /invalid/);
 });
 
-test('report flags a planning run that pushed a branch without a PR', async () => {
+// ---------------------------------------------------------------------------
+// Completion check for new planning runs (context run id 1, attempt 2)
+
+const PLAN_SHA = 'e'.repeat(40);
+const INVOKED = '2026-02-01T10:00:00.000Z';
+const AFTER = '2026-02-01T10:05:00.000Z';
+const RUN = { run_attempt: '2', invoked_at: INVOKED };
+const QUESTION = 'Should the plan keep the joint formulation or split the solver?';
+const PUBLISHED = {
+  branches: { 'agent/issue-7': PLAN_SHA },
+  files: { [`${PLAN_SHA}:docs/plans/7.md`]: true },
+  prList: [{ number: 9, draft: true }],
+};
+
+function planGate(extra = {}) {
+  return { decision: 'run', profile: 'plan', pr_number: '', notify: '7', branch: 'agent/issue-7', ...extra };
+}
+
+function claudeComment(body, extra = {}) {
+  return comment('claude[bot]', body, { created_at: AFTER, updated_at: AFTER, ...extra });
+}
+
+function clarification(run = 1, attempt = 2, extra = {}) {
+  return claudeComment(`I need one decision first.\n\n${QUESTION}\n\n${t.clarificationMarker(run, attempt)}`, extra);
+}
+
+async function runReport(api = {}, { claude = RUN, runAttempt = '2', gate = planGate(), claudeResult = 'success' } = {}) {
   const failures = [];
-  const core = { setFailed: (m) => failures.push(m) };
-  const github = fakeGithub({ branches: { 'agent/issue-7': 'e'.repeat(40) } });
-  const gate = { decision: 'run', profile: 'plan', pr_number: '', notify: '7', branch: 'agent/issue-7' };
-  await t.report({ github, context: context('issues', {}), core, gate, claudeResult: 'success' });
-  assert.equal(failures.length, 1);
-  assert.match(github.created[0].body, /no draft PR/);
+  const core = { setFailed: (m) => failures.push(m), info: () => {} };
+  const github = fakeGithub(api);
+  await t.report({ github, context: context('issue_comment', {}), core, gate, claudeResult, claude, runAttempt });
+  return { failures, posted: github.created.map((c) => c.body) };
+}
+
+function assertNoDeliverable(r, ...patterns) {
+  assert.equal(r.failures.length, 1);
+  assert.match(r.failures[0], /^PLAN_NO_DELIVERABLE: /);
+  assert.equal(r.posted.length, 1);
+  assert.match(r.posted[0], /^PLAN_NO_DELIVERABLE: /);
+  assert.match(r.posted[0], /actions\/runs\/1 \(attempt (2|unknown)\)/);
+  assert.match(r.posted[0], /does not know why the agent stopped/);
+  assert.match(r.posted[0], /comment `@claude plan` on this issue for a fresh invocation/);
+  for (const p of patterns) assert.match(`${r.failures[0]}\n${r.posted[0]}`, p);
+}
+
+test('planning run with no branch and no comment fails with PLAN_NO_DELIVERABLE', async () => {
+  const r = await runReport();
+  assertNoDeliverable(
+    r,
+    /Branch `agent\/issue-7`: not found/,
+    /`docs\/plans\/7\.md` on that branch: not checked \(no branch\)/,
+    /Open draft PR from that branch: none \(no branch\)/,
+    /Clarification comment for this run: none found/,
+    /branch=none plan=missing pr=none clarification=none$/m,
+  );
+});
+
+test('correctly marked comments from other authors are not clarifications', async () => {
+  const body = `${QUESTION}\n${t.clarificationMarker(1, 2)}`;
+  for (const c of [
+    comment('github-actions[bot]', body, { created_at: AFTER }),
+    comment('other-app[bot]', body, { created_at: AFTER }),
+    comment('claude', body, { created_at: AFTER }),
+    comment('maint', body, { created_at: AFTER }),
+    claudeComment(body, { user: { login: 'claude[bot]', type: 'User' } }),
+  ]) {
+    assertNoDeliverable(await runReport({ comments: [c] }), /clarification=none$/m);
+  }
+});
+
+test('Claude comments from a different invocation are not clarifications', async () => {
+  for (const c of [
+    clarification(1, 1), // earlier attempt of this run
+    clarification(2, 2), // another run
+    claudeComment(`I need one decision first.\n\n${QUESTION}`), // no marker
+    clarification(1, 2, { created_at: '2026-02-01T09:59:59.000Z' }), // before this invocation
+  ]) {
+    assertNoDeliverable(await runReport({ comments: [c] }), /clarification=none$/m);
+  }
+});
+
+test('a correlated comment without question content is not a clarification', async () => {
+  const m = t.clarificationMarker(1, 2);
+  for (const body of [m, `Thanks, nothing to ask.\n${m}`, `Why?\n${m}`, `${m} Is this a question?`.replace('?', '.')]) {
+    assertNoDeliverable(await runReport({ comments: [claudeComment(body)] }), /clarification=none$/m);
+  }
+});
+
+test('a correlated clarification from Claude completes the planning run', async () => {
+  const comments = [
+    comment('github-actions[bot]', 'unrelated', { created_at: AFTER }),
+    clarification(1, 1),
+    clarification(1, 2),
+  ];
+  const r = await runReport({ comments });
+  assert.deepEqual(r, { failures: [], posted: [] });
+  // CRLF line endings and the marker on its own line are accepted too.
+  const crlf = claudeComment(`${QUESTION}\r\n${t.clarificationMarker(1, 2)}`);
+  assert.deepEqual(await runReport({ comments: [crlf] }), { failures: [], posted: [] });
+});
+
+test('a branch missing the plan or the draft PR fails with its publication state', async () => {
+  const branches = { 'agent/issue-7': PLAN_SHA };
+  const files = { [`${PLAN_SHA}:docs/plans/7.md`]: true };
+  assertNoDeliverable(
+    await runReport({ branches, prList: [{ number: 9, draft: true }] }),
+    /found at e{40}/, /`docs\/plans\/7\.md` on that branch: missing/, /Open draft PR from that branch: #9/,
+    /branch=e{40} plan=missing pr=#9 clarification=none/,
+  );
+  assertNoDeliverable(
+    await runReport({ branches, files }),
+    /`docs\/plans\/7\.md` on that branch: present/, /Open draft PR from that branch: none$/m,
+    /plan=present pr=none/,
+  );
+  assertNoDeliverable(
+    await runReport({ branches, files, prList: [{ number: 9, draft: false }] }),
+    /#9 is open but not a draft/, /pr=#9 \(not draft\)/,
+  );
+  assertNoDeliverable(
+    await runReport({ branches, files: { 'main:docs/plans/7.md': true }, prList: [{ number: 9, draft: true }] }),
+    /on that branch: missing/,
+  );
+});
+
+test('a fully published plan completes the run, even without invocation metadata', async () => {
+  assert.deepEqual(await runReport(PUBLISHED), { failures: [], posted: [] });
+  assert.deepEqual(await runReport(PUBLISHED, { claude: {} }), { failures: [], posted: [] });
+  assert.deepEqual(await runReport(PUBLISHED, { claude: { run_attempt: '1', invoked_at: INVOKED } }), { failures: [], posted: [] });
+});
+
+test('missing or inconsistent invocation metadata makes clarification unverifiable', async () => {
+  const future = new Date(Date.now() + 3600e3).toISOString();
+  const cases = [
+    [{}, '2', 'claude job run_attempt missing', clarification(1, 2)],
+    [{ run_attempt: 'x', invoked_at: INVOKED }, '2', 'claude job run_attempt invalid', clarification(1, 2)],
+    [{ run_attempt: '1', invoked_at: INVOKED }, '2', 'claude job attempt 1, report attempt 2', clarification(1, 1)],
+    [{ run_attempt: '2', invoked_at: INVOKED }, null, 'report attempt unknown', clarification(1, 2)],
+    [{ run_attempt: '2' }, '2', 'claude job invoked_at missing', clarification(1, 2)],
+    [{ run_attempt: '2', invoked_at: 'yesterday' }, '2', 'claude job invoked_at invalid', clarification(1, 2)],
+    [{ run_attempt: '2', invoked_at: future }, '2', 'claude job invoked_at is in the future', clarification(1, 2, { created_at: future })],
+  ];
+  for (const [claude, runAttempt, reason, c] of cases) {
+    const r = await runReport({ comments: [c] }, { claude, runAttempt });
+    assertNoDeliverable(r);
+    assert.ok(r.posted[0].includes(`Clarification comment for this run: unverifiable: ${reason}`), reason);
+    assert.ok(r.failures[0].endsWith(`clarification=unverifiable (${reason})`), reason);
+  }
+  assert.equal(t.invocationProblem({ runId: 1, runAttempt: '2', claude: RUN }), null);
+  assert.equal(t.invocationProblem({ runId: undefined, runAttempt: '2', claude: RUN }), 'run id unknown');
+});
+
+test('plan revisions, read-only runs and failed Claude jobs keep their completion semantics', async () => {
+  const quiet = { failures: [], posted: [] };
+  assert.deepEqual(await runReport({}, { gate: planGate({ pr_number: '9' }) }), quiet);
+  assert.deepEqual(await runReport({}, { gate: planGate({ profile: 'read' }) }), quiet);
+  assert.deepEqual(await runReport({}, { gate: planGate({ profile: 'implement', pr_number: '9' }) }), quiet);
+  const failed = await runReport({}, { claudeResult: 'failure' });
+  assert.deepEqual(failed.failures, ['Claude job result: failure']);
+  assert.match(failed.posted[0], /did not complete \(failure\)/);
+});
+
+test('isClarification requires the Claude app, timing, marker and a question', () => {
+  const marker = t.clarificationMarker(1, 2);
+  const ok = clarification(1, 2);
+  assert.equal(t.isClarification(ok, { marker, invokedAt: INVOKED }), true);
+  assert.equal(t.isClarification(ok, { marker: null, invokedAt: INVOKED }), false);
+  assert.equal(t.isClarification(ok, { marker, invokedAt: 'never' }), false);
+  assert.equal(t.isClarification({ ...ok, user: null }, { marker, invokedAt: INVOKED }), false);
+  assert.equal(t.isClarification({ ...ok, created_at: AFTER }, { marker, invokedAt: AFTER }), true);
+});
+
+test('buildPrompt asks for the clarification marker only on new planning runs', () => {
+  const base = {
+    repo: `${OWNER}/${REPO}`, actor: 'maint', profile: 'plan', request: { verb: 'plan' },
+    event: { source: 'issue-comment', url: 'u', title: 'T', body: 'b' },
+    n: 7, branch: 'agent/issue-7', plan: 'docs/plans/7.md', report: 'docs/reports/7.md',
+    defaultBranch: 'main', policy: 'POLICY', trustedSha: '1'.repeat(40), runId: 1, runAttempt: '2',
+  };
+  assert.ok(t.buildPrompt(base).includes('<!-- claude-task:clarification run=1 attempt=2 -->'));
+  assert.doesNotMatch(t.buildPrompt({ ...base, prNumber: 9, head: 'f'.repeat(40) }), /claude-task:clarification/);
+  assert.throws(() => t.buildPrompt({ ...base, runAttempt: undefined }), /invalid run identity/);
+  assert.throws(() => t.clarificationMarker('1 attempt=9', 2), /invalid run identity/);
+});
+
+test('profile arguments leave the model to the workflow (--model exactly once)', () => {
+  for (const [profile, opts] of [['read', { n: 7 }], ['plan', { n: 7, allowPrCreate: true }], ['implement', { n: 7 }]]) {
+    const args = t.profileArgs(profile, opts);
+    assert.doesNotMatch(args, /--model/);
+    assert.equal(`${args} --model opus`.match(/--model/g).length, 1);
+  }
 });
 
 test('buildPrompt marks request text as untrusted and embeds trusted policy', () => {

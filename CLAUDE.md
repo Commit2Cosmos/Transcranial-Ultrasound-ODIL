@@ -109,8 +109,9 @@ command, regardless of authorization state:
 
 ### Pull requests and review
 - Planning PRs are drafts with Stage "Plan review", say `Related to #N`, and
-  use no closing keywords. **[prompt]** (the workflow fails the run if a pushed
-  task branch has no PR **[code]**)
+  use no closing keywords. **[prompt]** (the workflow fails a new planning
+  run that leaves neither the plan with a draft PR nor a clarification
+  comment for that run **[code]**)
 - Before authorization, a task PR may change only `docs/plans/N.md`; after
   it, the plan must stay unchanged. **[code]** via the required `plan-guard`
   check, which blocks merging, not pushing.
