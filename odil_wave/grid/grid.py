@@ -212,6 +212,18 @@ class Grid:
         p = self.pml_width
         return (slice(p, p + self.interior_nx), slice(p, p + self.interior_ny))
 
+    @property
+    def interior_center(self) -> Tuple[float, float]:
+        """Physical ``(x, y)`` centre of the interior (non-PML) region.
+
+        Returns
+        -------
+        tuple of float
+            Midpoint of ``interior_extent`` along each axis.
+        """
+        (x0, x1), (y0, y1) = self.interior_extent
+        return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
     def _sigma_max(self, L_pml_phys: float) -> float:
         """Peak PML conductivity for a target reflection coefficient.
 

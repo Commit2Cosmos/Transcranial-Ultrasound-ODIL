@@ -40,6 +40,12 @@ def test_spacings_from_extent():
     assert g.x.numel() == g.nx and g.y.numel() == g.ny
 
 
+def test_interior_center_is_interior_midpoint():
+    """interior_center is the midpoint of the interior extent, not the origin."""
+    g = make_grid(interior_extent=((0.01, 0.05), (-0.02, 0.04)))
+    assert g.interior_center == pytest.approx((0.03, 0.01))
+
+
 def test_cfl_derived_nt_when_init_nt_none():
     """With init_nt unset, nt is chosen so the CFL number stays under the safety."""
     g = make_grid(init_nt=None)

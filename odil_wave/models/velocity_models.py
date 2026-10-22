@@ -53,6 +53,12 @@ def velocity_norm(vmin: float, vcenter: float, vmax: float):
 class VelocityModel:
     """2D velocity field c(x, y) attached to a Grid (full extended grid).
 
+    ``overdensity`` kwargs (via ``**profile_kwargs``):
+
+    * ``radius`` (float, default ``0.3``) — anomaly radius in metres.
+    * ``center`` ((float, float), default: interior centre of the grid) —
+      physical ``(x, y)`` centre of the anomaly.
+
     ``shepp_logan_skull`` kwargs (via ``**profile_kwargs``):
 
     * ``skull_alpha`` (float in ``[0, 1]``, default ``1``) — contrast scale:
@@ -291,7 +297,7 @@ class VelocityModel:
 
         if self.profile == "overdensity":
             r = self.profile_kwargs.get("radius", 0.3)
-            cx, cy = self.profile_kwargs.get("center", (0.0, 0.0))
+            cx, cy = self.profile_kwargs.get("center", g.interior_center)
             mask = (g.X - cx) ** 2 + (g.Y - cy) ** 2 <= r**2
             return torch.where(
                 mask, torch.full_like(base_field, self.base + self.contrast), base_field
