@@ -36,6 +36,19 @@ def test_overdensity_anomaly(grid):
     assert 0 < n_hot < grid.nx * grid.ny
 
 
+def test_overdensity_default_center_is_interior_center(grid):
+    """Without ``center`` the anomaly is centred on the interior region."""
+    vm = VelocityModel(
+        grid, profile="overdensity", base=1500.0, contrast=200.0, radius=0.012
+    )
+    hot = vm.c > 1500.0
+    cx = float(grid.X[hot].mean())
+    cy = float(grid.Y[hot].mean())
+    assert (cx, cy) == pytest.approx(grid.interior_center, abs=grid.dx)
+    # the whole anomaly lies inside the interior.
+    assert int(hot.sum()) == int(hot[grid.interior_slice].sum())
+
+
 def test_shepp_logan_masks_and_skull(grid):
     """Shepp-Logan builds head/interior/rim masks with a ~3000 m/s skull rim."""
     vm = VelocityModel(grid, profile="shepp_logan")

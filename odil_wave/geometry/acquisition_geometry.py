@@ -89,7 +89,7 @@ class AcquisitionGeometry:
         sigma_s: Optional[float] = None,
         a_frac: float = 0.55,
         b_frac: float = 0.70,
-        ring_center: Tuple[float, float] = (0.0, 0.0),
+        ring_center: Optional[Tuple[float, float]] = None,
         source_spatial: str = "gaussian",
     ):
         """Build the receiver/source ring for a given grid.
@@ -120,8 +120,9 @@ class AcquisitionGeometry:
         a_frac, b_frac : float, default 0.55, 0.70
             Semi-axes of the receiver ellipse as a fraction of the half-width
             / half-height of the grid's interior region.
-        ring_center : (float, float), default (0.0, 0.0)
-            Physical-coordinate centre of the receiver ellipse.
+        ring_center : (float, float), optional
+            Physical-coordinate centre of the receiver ellipse. Defaults to
+            the centre of the grid's interior region.
         source_spatial : {"gaussian", "point"}, default "gaussian"
             Spatial injection profile: ``"gaussian"`` is a Gaussian blob of
             width `sigma_s`; ``"point"`` is a unit Kronecker delta at the
@@ -140,7 +141,7 @@ class AcquisitionGeometry:
         )
         self.a_frac = a_frac
         self.b_frac = b_frac
-        self.ring_center = ring_center
+        self.ring_center = grid.interior_center if ring_center is None else ring_center
         self.source_spatial = source_spatial
 
         self.recv_ij = self._place_ellipse(self.n_receivers)

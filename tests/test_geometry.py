@@ -49,6 +49,24 @@ def test_ring_on_grid_and_counts(grid, source, freq_selection):
     assert torch.equal(geom.src_ij, geom.recv_ij[idx])
 
 
+def test_default_ring_center_is_interior_center(grid, source, freq_selection):
+    """Without ring_center the ring is centred on the interior region."""
+    geom = AcquisitionGeometry(grid, source, freq_selection, n_receivers=8)
+    assert geom.ring_center == pytest.approx(grid.interior_center)
+    explicit = AcquisitionGeometry(
+        grid, source, freq_selection, n_receivers=8, ring_center=(0.02, 0.03)
+    )
+    assert explicit.ring_center == (0.02, 0.03)
+
+
+def test_fixture_ring_lies_in_interior(geometry, grid):
+    """Every receiver and source of the shared fixture sits outside the PML."""
+    sx, sy = grid.interior_slice
+    for ij in (geometry.recv_ij, geometry.src_ij):
+        assert torch.all((ij[:, 0] >= sx.start) & (ij[:, 0] < sx.stop))
+        assert torch.all((ij[:, 1] >= sy.start) & (ij[:, 1] < sy.stop))
+
+
 def test_src_position_matches_grid_axes(geometry, grid):
     """src_position returns the physical coordinates of the source node."""
     x, y = geometry.src_position(0)

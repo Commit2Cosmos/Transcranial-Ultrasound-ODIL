@@ -14,9 +14,9 @@ from odil_wave import (
     WaveEquation,
     Wavefield,
 )
-from odil_wave.experiment import build_problem, resolve_config, run_inverse
+from odil_wave.experiment import build_problem, resolve_config, run_inverse, runner
 
-from conftest import make_grid
+from conftest import make_grid, tiny_run_config
 
 
 def _rel_c_error(model, truth, grid) -> float:
@@ -69,45 +69,7 @@ def test_forward_to_loss_gradient_flows():
 
 def test_run_inverse_tiny_problem_recovers(tmp_path):
     """A full tiny run_inverse completes, writes artifacts, and improves the model."""
-    user_cfg = {
-        "run": {"output_root": str(tmp_path), "run_id": "tiny"},
-        "runtime": {"dtype": "float64"},
-        "grid": {
-            "interior_shape": [20, 20],
-            "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
-            "c_min": 1400.0,
-            "c_max": 1750.0,
-            "t_max": 6e-5,
-            "init_nt": 200,
-            "pml_width": 6,
-        },
-        "source": {"kind": "tone_burst", "f0": 40e3, "n_cycles": 2.0},
-        "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
-        "physics": {"space_order": 2},
-        "truth": {
-            "profile": "overdensity",
-            "base": 1500.0,
-            "contrast": 150.0,
-            "extra": {"radius": 0.012},
-        },
-        "init": {"profile": "homogeneous", "base": 1500.0},
-        "observation": {
-            "normalize_data": "none",
-            "pml_width": None,
-        },
-        "continuation": {
-            "warm_start": "helmholtz",
-            "bands": [{"frequencies_hz": [40e3]}],
-        },
-        "loss": {"weights": {"pde": 1.0, "data": 100.0, "reg": 0.0}},
-        "optimiser": {
-            "name": "joint",
-            "n_iter": 10,
-            "log_every": 1,
-            "joint": {"inner_max_iter": 20, "data_weight": 10.0, "z_scale": 10.0},
-        },
-        "metrics": {"ssim": {"mask": "none"}},
-    }
+    user_cfg = tiny_run_config(tmp_path)
     cfg = resolve_config(user_cfg)
 
     # Baseline error of the (homogeneous) starting model against the truth.
@@ -139,3 +101,54 @@ def test_run_inverse_tiny_problem_recovers(tmp_path):
     losses = [r["loss_total"] for r in records if r.get("loss_total") is not None]
     assert len(losses) >= 2
     assert losses[-1] <= losses[0]
+
+
+def test_run_inverse_two_bands_chain_models(tmp_path, monkeypatch):
+    """Each band writes its artifacts and band 2 starts from band 1's model."""
+    user_cfg = tiny_run_config(tmp_path, run_id="two_bands")
+    user_cfg["continuation"]["bands"] = [
+        {"frequencies_hz": [30e3]},
+        {"frequencies_hz": [40e3]},
+    ]
+    user_cfg["optimiser"]["n_iter"] = 3
+    cfg = resolve_config(user_cfg)
+    init_c = build_problem(cfg).init_velocity.c
+
+    # Record the starting model handed to each band.
+    band_inputs = []
+    original = runner.run_frequency_band
+
+    def spy(problem, velocity_model, *args, **kwargs):
+        band_inputs.append(velocity_model)
+        return original(problem, velocity_model, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "run_frequency_band", spy)
+    result = run_inverse(cfg)
+    assert result.status == "completed"
+
+    # --- one artifact directory per band ------------------------------------ #
+    band_dirs = sorted(p for p in (result.run_dir / "bands").iterdir() if p.is_dir())
+    assert [p.name[:7] for p in band_dirs] == ["band_00", "band_01"]
+    for band_dir, freqs in zip(band_dirs, ([30e3], [40e3])):
+        for name in (
+            "c_final.npy",
+            "c_final_metadata.json",
+            "band_config.yaml",
+            "band_summary.json",
+        ):
+            assert (band_dir / name).exists()
+        meta = json.loads((band_dir / "c_final_metadata.json").read_text())
+        assert meta["frequencies_hz"] == freqs
+
+    # --- band 1 starts from the init model, band 2 from band 1's result ----- #
+    assert len(band_inputs) == 2
+    assert torch.equal(band_inputs[0].c, init_c)
+    assert band_inputs[1] is result.band_results[0].velocity_model
+    band0_c = np.load(band_dirs[0] / "c_final.npy")
+    np.testing.assert_allclose(
+        band_inputs[1].c.detach().cpu().numpy(), band0_c, rtol=1e-6
+    )
+    # the run's final model is the last band's.
+    np.testing.assert_array_equal(
+        np.load(result.final_c_path), np.load(band_dirs[1] / "c_final.npy")
+    )

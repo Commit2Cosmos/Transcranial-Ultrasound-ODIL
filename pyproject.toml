@@ -49,6 +49,9 @@ select = ["E", "F", "W"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
+markers = [
+    "mps: runs the optimiser on an Apple MPS device (skipped when unavailable)",
+]
 filterwarnings = [
     "ignore:FigureCanvasAgg is non-interactive, and thus cannot be shown:UserWarning"
 ]

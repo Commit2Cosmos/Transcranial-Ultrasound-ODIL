@@ -49,6 +49,49 @@ def make_grid(**overrides) -> Grid:
     return Grid(**kw)
 
 
+def tiny_run_config(tmp_path, run_id: str = "tiny") -> dict:
+    """User config for a tiny single-band joint inversion under ``tmp_path``."""
+    return {
+        "run": {"output_root": str(tmp_path), "run_id": run_id},
+        "runtime": {"dtype": "float64"},
+        "grid": {
+            "interior_shape": [20, 20],
+            "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
+            "c_min": 1400.0,
+            "c_max": 1750.0,
+            "t_max": 6e-5,
+            "init_nt": 200,
+            "pml_width": 6,
+        },
+        "source": {"kind": "tone_burst", "f0": 40e3, "n_cycles": 2.0},
+        "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
+        "physics": {"space_order": 2},
+        "truth": {
+            "profile": "overdensity",
+            "base": 1500.0,
+            "contrast": 150.0,
+            "extra": {"radius": 0.012},
+        },
+        "init": {"profile": "homogeneous", "base": 1500.0},
+        "observation": {
+            "normalize_data": "none",
+            "pml_width": None,
+        },
+        "continuation": {
+            "warm_start": "helmholtz",
+            "bands": [{"frequencies_hz": [40e3]}],
+        },
+        "loss": {"weights": {"pde": 1.0, "data": 100.0, "reg": 0.0}},
+        "optimiser": {
+            "name": "joint",
+            "n_iter": 10,
+            "log_every": 1,
+            "joint": {"inner_max_iter": 20, "data_weight": 10.0, "z_scale": 10.0},
+        },
+        "metrics": {"ssim": {"mask": "none"}},
+    }
+
+
 @pytest.fixture
 def grid() -> Grid:
     """A fresh tiny grid for a single test."""
