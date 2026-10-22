@@ -1,8 +1,9 @@
 # D-001: Use plan-first agent-assisted development
 
-Status: Proposed
+Status: Accepted
 Features: Not applicable
-Source: Initial workflow discussion; repository PR pending
+Source: PR #3 (https://github.com/Commit2Cosmos/Transcranial-Ultrasound-ODIL/pull/3);
+prior initial workflow discussion not recorded in the repository
 Supersedes: —
 Superseded by: —
 
