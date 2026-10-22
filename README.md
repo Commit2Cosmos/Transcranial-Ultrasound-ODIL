@@ -166,7 +166,7 @@ end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
 
 ```bash
 pip install -e .           # editable install; see pyproject.toml for the full dependency list
-pip install -e ".[dev]"    # + black, flake8, pre-commit, ipykernel, torchinfo
+pip install -e ".[dev]"    # + black, ruff, pre-commit, ipykernel, torchinfo
 ```
 
 Requires Python ≥ 3.12.

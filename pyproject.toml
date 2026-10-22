@@ -27,7 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "black>=24.0",
-    "flake8>=7.0",
+    "ruff>=0.17",
     "pre-commit>=3.0",
     "ipykernel",
     "torchinfo",
@@ -40,6 +40,13 @@ include = ["odil_wave*"]
 
 [project.scripts]
 #odil-wave = "odil_wave.cli:main"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 filterwarnings = [

@@ -4,10 +4,11 @@ repos:
     hooks:
       - id: black
 
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.0.0
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.2
     hooks:
-      - id: flake8
+      - id: ruff-check
+        types_or: [python, pyi]
 
 # this defines pre-commit hooks to be run locally before each commit
-# it includes black for code formatting and flake8 for linting
+# it includes black for code formatting and ruff for linting
