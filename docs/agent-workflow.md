@@ -13,7 +13,7 @@ smoke tests.
 | `.github/workflows/plan-guard.yml` | Required check on PRs: plan-only before authorization, plan unchanged after it |
 | `.github/workflows/claude-code-review.yml` | One advisory review when a same-repo PR becomes ready for review (or is opened non-draft) |
 | `.github/scripts/claude-task.js` | Controller logic: authorization, discovery, approval, profiles, prompt, plan guard |
-| `.github/scripts/claude-task.test.js` | Unit tests (`node --test .github/scripts/`, run by `tests.yml`) |
+| `.github/scripts/claude-task.test.js` | Unit tests (`node --test .github/scripts/claude-task.test.js`, run by `tests.yml`) |
 
 ### `claude.yml` jobs
 
@@ -34,12 +34,14 @@ smoke tests.
    - Loads the controller from the gate's trusted revision, moves it out of
      the workspace, and checks out the task.
    - Re-resolves the decision. It aborts if the result differs from the
-     gate's.
+     gate's. It records the run attempt and the invocation time as job
+     outputs.
    - Runs `anthropics/claude-code-action` in agent mode with the
-     controller-built prompt and tool profile.
+     controller-built prompt and tool profile, plus `--model opus`.
 4. **report** (`issues`/`pull-requests: write`)
    - Posts refusals, revocation acknowledgements and failure notes.
-   - Fails if a planning run pushed `agent/issue-N` without opening a PR.
+   - Fails a new planning run that left no verifiable deliverable
+     (`PLAN_NO_DELIVERABLE`; see [Completion checks](#completion-checks)).
 
 ### Action mode and branches
 
@@ -101,6 +103,12 @@ request on an approved task still gets the read profile.
 
 - **Bypass:** in the implement profile, `sh -c 'gh pr merge 9'` **was
   executed**. Bash prefix rules are not isolation.
+- **Model:** `claude.yml` appends `--model opus` once to the generated
+  arguments (`profileArgs` never emits `--model`). For every profile, the
+  pinned parser turns the final `claude_args` into `sdkOptions.model =
+  "opus"`. Run 39773385519 (before this flag) passed no model and initialized
+  `claude-sonnet-5-5`. Which model the `opus` alias resolves to has not been
+  observed in a live run.
 
 ## What is enforced by code, and what is not
 
@@ -125,6 +133,7 @@ Enforced by trusted controller code (tested in `claude-task.test.js`):
   - the plan is unchanged since that SHA;
   - no fallback to an older grant; fails closed if the SHA cannot be resolved.
 - Tool profile selection and the per-profile permission rules.
+- Completion of new planning runs (see below).
 - Merge gating by `plan-guard` (only once it is a required check).
 
 Prompt-only rules (the agent is instructed, but nothing stops a determined or
@@ -136,6 +145,81 @@ prompt-injected agent with the relevant tools):
 - Treating issue, PR and repository text as data.
 - Truthful reports, conditional knowledge updates, PR body conventions.
 - One final comment per run.
+
+## Completion checks
+
+After a successful Claude job, the report job checks the deliverable only for
+new planning runs. Other runs are judged by the Claude job result.
+
+| Run | Passes when |
+|---|---|
+| New planning run (no task PR) | (a) the plan is published, or (b) a correlated clarification exists; otherwise `PLAN_NO_DELIVERABLE` |
+| Plan revision (`@claude plan` on a task PR) | Claude job succeeded |
+| Read-only request | Claude job succeeded |
+| Implementation (`approve-plan`, `routine`, `fix`, `continue`) | Claude job succeeded |
+
+(a) **Published plan**, read from the repository:
+- `agent/issue-N` exists;
+- `docs/plans/N.md` is a file at its head commit;
+- an open PR from it is a draft.
+
+No invocation metadata is needed for (a): the gate admits a new planning run
+only when the task has no PR.
+
+(b) **Clarification.** The planning prompt asks the agent to end a
+clarification comment with
+`<!-- claude-task:clarification run=<run id> attempt=<attempt> -->`. A comment
+on issue N counts only if:
+- its author is `claude[bot]` with type `Bot`;
+- it was created at or after the claude job's recorded invocation time;
+- it contains the marker for this run ID and attempt;
+- after removing the marker, it has a line of at least 15 characters that
+  contains a letter and a `?`.
+
+The marker is not a secret: anyone could copy it, but only the `claude[bot]`
+author is accepted.
+
+The clarification check needs the claude job's `run_attempt` and
+`invoked_at` outputs. It reports **unverifiable**, with the reason, and
+never accepts a comment, if:
+- either output is missing or malformed;
+- `invoked_at` is in the future;
+- `run_attempt` differs from the report job's attempt. This happens when
+  only the failed report job is re-run, because GitHub then reuses the
+  earlier attempt's outputs.
+
+For a new planning run, a bad run identity fails the claude job before Claude
+starts.
+
+**Notice.** When neither (a) nor (b) holds, the report job posts a fixed
+comment starting `PLAN_NO_DELIVERABLE` and fails with the same code. The
+comment lists:
+- the run link and attempt;
+- whether the branch was found, with its SHA;
+- whether the plan file is present;
+- the draft PR state;
+- the clarification result ("none found" or "unverifiable: <reason>").
+
+It says that the workflow does not know why the agent stopped. It contains no
+agent output.
+
+**Recovery.** The supported path is a fresh `@claude plan` comment on the
+issue, after inspecting any branch or PR the run left. If the branch exists
+without a PR, the gate reuses it only if it is plan-only. Re-running jobs is
+not a supported recovery for this check.
+
+**Remaining gaps:**
+- Plan revisions, read-only requests and implementation runs pass on the
+  Claude job result alone. A revision that pushes nothing, a read-only run
+  that posts no answer, or an implementation run that stops early is not
+  detected.
+- Partial outcomes are not inspected beyond (a): extra commits, a PR body
+  that ignores the template, or a missing issue comment after a published
+  plan.
+- Question quality is not judged; the check only requires a question line.
+- The agent's final response is not recorded: `show_full_output` stays at
+  the action's default (false) and the execution file is not uploaded.
+  Diagnostic run metadata is a separate, deferred task.
 
 ## Remaining risks
 
@@ -249,3 +333,7 @@ that introduced this workflow.
 | 9 | Revocation | `@claude revoke`, then `@claude continue` | Continue refused; no fallback to the earlier approval |
 | 10 | Ready PR | A maintainer marks the PR ready for review | Exactly one advisory review naming the reviewed SHA; none while it was a draft |
 | 11 | Read-only on approved task | `@claude explain the change` | Read profile: answer only, no commits |
+| 12 | Silent planning run | `@claude plan` on an issue where the agent ends without publishing or asking (as in run 39773385519) | report job fails with `PLAN_NO_DELIVERABLE`; issue comment with run link and branch/plan/PR state |
+| 13 | Clarification | `@claude plan` on an issue too vague to plan | `claude[bot]` comment ending with the run's clarification marker; report job succeeds |
+| 14 | Report-only re-run | After 12, re-run only the failed report job | Fails again with "clarification unverifiable: claude job attempt 1, report attempt 2" |
+| 15 | Model | Any run | Claude init log shows the model the `opus` alias resolved to; record it |

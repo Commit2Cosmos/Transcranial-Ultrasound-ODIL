@@ -140,6 +140,11 @@ jobs:
       pull-requests: read
       actions: read
       id-token: write
+    # Invocation identity for the report job's completion check. A re-run of
+    # the report job alone sees an earlier attempt's values and is rejected.
+    outputs:
+      run_attempt: ${{ steps.resolve.outputs.run_attempt }}
+      invoked_at: ${{ steps.resolve.outputs.invoked_at }}
     env:
       # Strip Anthropic credentials from Bash/hook/MCP subprocesses.
       # GitHub tokens are not stripped (see docs/agent-workflow.md).
@@ -179,7 +184,10 @@ jobs:
               core.setFailed(`Task state changed since the gate: ${s.decision} ${s.profile || ''} ${s.message || s.reason || ''}`);
               return;
             }
-            t.setOutputs(core, s, { trustedDir: dir, trustedSha: process.env.TRUSTED_SHA });
+            t.setOutputs(core, s, {
+              trustedDir: dir, trustedSha: process.env.TRUSTED_SHA,
+              runId: context.runId, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            });
 
       - name: Create task branch
         if: steps.resolve.outputs.create_branch == 'true'
@@ -204,11 +212,14 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ steps.resolve.outputs.prompt }}
-          claude_args: ${{ steps.resolve.outputs.claude_args }}
+          claude_args: >-
+            ${{ steps.resolve.outputs.claude_args }}
+            --model opus
           additional_permissions: ${{ steps.resolve.outputs.additional_permissions }}
 
-  # Posts refusals and failure notes, and checks that a planning run that
-  # pushed a branch also opened its draft PR.
+  # Posts refusals and failure notes, and fails a new planning run that left
+  # neither a published plan with a draft PR nor a clarification comment for
+  # this run (PLAN_NO_DELIVERABLE). See docs/agent-workflow.md.
   report:
     needs: [gate, claude]
     if: always() && needs.gate.result == 'success' && needs.gate.outputs.notify != ''
@@ -231,10 +242,13 @@ jobs:
         env:
           GATE: ${{ toJSON(needs.gate.outputs) }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
+          CLAUDE_OUTPUTS: ${{ toJSON(needs.claude.outputs) }}
         with:
           script: |
             const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
             await t.report({
               github, context, core,
               gate: JSON.parse(process.env.GATE), claudeResult: process.env.CLAUDE_RESULT,
+              claude: JSON.parse(process.env.CLAUDE_OUTPUTS || '{}') || {},
+              runAttempt: process.env.GITHUB_RUN_ATTEMPT,
             });
