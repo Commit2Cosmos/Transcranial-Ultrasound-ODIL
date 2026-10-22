@@ -117,15 +117,14 @@ Implemented:
 | 12 | CLI entry point `main.py` | Supported |
 | 13 | Run analysis plots/animations and live band view | Supported (review: no direct tests found) |
 | 14 | Example and main notebooks | Supported (review: notebooks vs. capability) |
-| 15 | Stride external reference forward/FWI material | Supported (review: reference material, not part of the package) |
 
 Removed:
 
 | # | Capability | Status |
 |---|------------|--------|
-| 16 | Block-coordinate dual L-BFGS optimiser (`LBFGSB`, u-block Hessian, Helmholtz u-transform) | Removed (`7c130ad`, PR #2) |
-| 17 | Leapfrog time-domain solver and `leapfrog_fft` observations | Removed (`7c130ad`, PR #2) |
-| 18 | Block-coordinate diagnostics (`experiment/diagnostics.py`) | Removed (`7c130ad`, PR #2) |
+| 15 | Block-coordinate dual L-BFGS optimiser (`LBFGSB`, u-block Hessian, Helmholtz u-transform) | Removed (`7c130ad`, PR #2) |
+| 16 | Leapfrog time-domain solver and `leapfrog_fft` observations | Removed (`7c130ad`, PR #2) |
+| 17 | Block-coordinate diagnostics (`experiment/diagnostics.py`) | Removed (`7c130ad`, PR #2) |
 
 `Wavefield` folds into 7/8. Deprecated sparse operators (`2e75cbe`) and the
 removed reproduction/PINN notebooks (`f3a7341`) are noted in the report, not
@@ -263,3 +262,12 @@ Risks:
 - Capability boundaries are a judgement call.
 - Pre-fork/upstream history is not inspectable from this repository, so
   older removed or rejected capabilities may be missed; the report will say so.
+
+## Plan changes
+- 2026-10-22, during implementation; renewed approval
+  given 2026-10-22: the Stride
+  reference material is dropped from the register; the former entry 15 is
+  removed and the Removed entries become 15–17. Reason: `stride/` was deleted
+  in the maintainer's working tree during implementation, and the maintainer
+  chose to leave Stride out. That deletion is the maintainer's own change and
+  is not committed by this task; the report records the omission.
