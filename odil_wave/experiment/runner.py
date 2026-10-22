@@ -3,8 +3,7 @@ per frequency band, and write a self-contained artifact directory per run.
 
 Public entry points
 --------------------
-``run_inverse(config) -> RunResult``            dispatch by ``optimiser.name``
-``run_inverse_lbfgsb(config) -> RunResult``      force the lbfgsb solver, then run
+``run_inverse(config) -> RunResult``            run every continuation band
 ``run_frequency_band(...) -> BandResult``        one continuation stage
 ``build_problem(config) -> Problem``             (re-exported from problem.py)
 """
@@ -33,8 +32,6 @@ from .config import (
     RunConfig,
     canonical_optimiser_name,
     canonical_regulariser_name,
-    deep_merge,
-    resolve_config,
     validate_config,
 )
 from .problem import Problem, build_problem, grid_summary
@@ -190,19 +187,6 @@ def _final_recovery_metrics(problem: Problem, velocity_model: Any) -> Dict[str, 
 # --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
-def _effective_c_grad_smooth_sigma(lb, band_cfg: Optional[BandCfg]) -> float:
-    """Per-band ``c_grad_smooth_sigma`` override, falling back to the global one."""
-    if band_cfg is not None and band_cfg.c_grad_smooth_sigma is not None:
-        return float(band_cfg.c_grad_smooth_sigma)
-    return float(lb.c_grad_smooth_sigma)
-
-
-def _schedule_tuple(sch) -> tuple:
-    """Pack a :class:`SchedulerCfg` as the ``(factor, every_n, direction)`` tuple
-    the optimiser consumes (torch-free, so LBFGSB need not import the config)."""
-    return (float(sch.factor), int(sch.every_n), str(sch.direction).lower())
-
-
 def _build_optimiser(
     problem: Problem,
     band_ctx,
@@ -210,9 +194,8 @@ def _build_optimiser(
     loss: InverseLoss,
     n_iter: int,
     u_init,
-    band_cfg: Optional[BandCfg] = None,
 ):
-    """Construct the configured optimiser for one band.
+    """Construct the joint optimiser for one band.
 
     Parameters
     ----------
@@ -228,96 +211,47 @@ def _build_optimiser(
         Outer-iteration budget for this band.
     u_init :
         Warm-start wavefield (or ``None``).
-    band_cfg : BandCfg, optional
-        Per-band overrides (e.g. ``c_grad_smooth_sigma``).
 
     Returns
     -------
-    optimiser
-        An ``LBFGSB`` or ``JointFreqODIL`` instance per ``optimiser.name``.
-
-    Notes
-    -----
-    Raises :class:`ValueError` for an unhandled optimiser name.
+    JointFreqODIL
+        The configured joint optimiser.
     """
     cfg = problem.cfg
     opt = cfg.optimiser
-    name = canonical_optimiser_name(opt.name)
-    shared = dict(
-        clamp=opt.clamp,
+    canonical_optimiser_name(opt.name)  # raises ConfigError on a bad name
+
+    # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
+    # closed-form, WRI or multigrid. data_weight is fixed (never adapted).
+    from odil_wave.optimisation import JointFreqODIL
+
+    jo = opt.joint
+    ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
+    joint_kw = dict(
         u_init=u_init,
-        line_search_fn=opt.line_search_fn,
         n_iter=n_iter,
-        u_steps=opt.u_steps,
-        max_iter=opt.max_iter,
-        history_size=opt.history_size,
-        tolerance_grad=opt.tolerance_grad,
-        tolerance_change=opt.tolerance_change,
+        inner_max_iter=jo.inner_max_iter,
+        history_size=jo.history_size,
+        line_search_fn=ls,
+        tolerance_grad=jo.tolerance_grad,
+        tolerance_change=jo.tolerance_change,
+        lbfgs_lr=jo.lbfgs_lr,
+        data_weight=jo.data_weight,
+        reg_weight=jo.reg_weight,
+        c_min=jo.c_min,
+        c_max=jo.c_max,
+        eps_u=jo.eps_u,
+        eps_data=jo.eps_data,
+        eps_pde=jo.eps_pde,
+        u_scale_factor=jo.u_scale_factor,
+        pde_scale_factor=jo.pde_scale_factor,
+        data_scale_factor=jo.data_scale_factor,
+        z_scale=jo.z_scale,
+        logit_clip=jo.logit_clip,
+        log_every=opt.log_every,
+        verbose=jo.verbose,
     )
-
-    if name == "lbfgsb":
-        from odil_wave.optimisation import LBFGSB
-
-        lb = opt.lbfgsb
-        c_grad_smooth_sigma = _effective_c_grad_smooth_sigma(lb, band_cfg)
-        return LBFGSB(
-            wf_inv,
-            loss,
-            **shared,
-            c_steps=opt.c_steps,
-            z_steps=lb.z_steps,
-            u_precond=lb.u_precond,
-            u_solve=lb.u_solve,
-            z_optim=lb.z_optim,
-            z_lr=lb.z_lr,
-            c_lr=lb.c_lr,
-            c_max_iter=lb.c_max_iter,
-            c_history_size=lb.c_history_size,
-            reset_c_history=lb.reset_c_history,
-            c_line_search_fn=lb.c_line_search_fn,
-            c_param=lb.c_param,
-            c_grad_smooth_sigma=c_grad_smooth_sigma,
-            pde_weight_schedule=_schedule_tuple(lb.pde_weight_schedule),
-            c_grad_smooth_sigma_schedule=_schedule_tuple(
-                lb.c_grad_smooth_sigma_schedule
-            ),
-        )
-
-    if name == "joint":
-        # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
-        # closed-form, WRI or multigrid. data_weight is fixed (never adapted).
-        from odil_wave.optimisation import JointFreqODIL
-
-        jo = opt.joint
-        ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
-        joint_kw = dict(
-            clamp=opt.clamp,
-            u_init=u_init,
-            n_iter=n_iter,
-            inner_max_iter=jo.inner_max_iter,
-            history_size=jo.history_size,
-            line_search_fn=ls,
-            tolerance_grad=jo.tolerance_grad,
-            tolerance_change=jo.tolerance_change,
-            lbfgs_lr=jo.lbfgs_lr,
-            data_weight=jo.data_weight,
-            reg_weight=jo.reg_weight,
-            c_min=jo.c_min,
-            c_max=jo.c_max,
-            eps_u=jo.eps_u,
-            eps_data=jo.eps_data,
-            eps_pde=jo.eps_pde,
-            u_scale_factor=jo.u_scale_factor,
-            pde_scale_factor=jo.pde_scale_factor,
-            data_scale_factor=jo.data_scale_factor,
-            z_scale=jo.z_scale,
-            logit_clip=jo.logit_clip,
-            log_every=opt.log_every,
-            verbose=jo.verbose,
-        )
-        return JointFreqODIL(wf_inv, loss, **joint_kw)
-
-    raise ValueError(f"unhandled optimiser {name!r}")
+    return JointFreqODIL(wf_inv, loss, **joint_kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -356,7 +290,6 @@ def run_frequency_band(
         wf_inv,
         space_order=problem.space_order,
         pml_weight=problem.pml_weight,
-        time_order=cfg.physics.time_order,
     )
     loss_config = LossConfig(
         wave_eq=wave_eq,
@@ -388,28 +321,9 @@ def run_frequency_band(
         )
     tape.bind_loss(loss)
 
-    opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init, band_cfg)
+    opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
     minimise_kwargs: Dict[str, Any] = {"on_iteration": tape.on_iteration}
-    diag_cfg = getattr(cfg, "diagnostics", None)
-    if (
-        diag_cfg is not None
-        and diag_cfg.enabled
-        and canonical_optimiser_name(cfg.optimiser.name) == "lbfgsb"
-        and problem.truth_velocity is not None
-    ):
-        from .diagnostics import DiagnosticsCollector
-
-        diag_dir = bands_dir.parent / "diagnostics" / f"band_{band_index:02d}_{label}"
-        minimise_kwargs["diagnostics"] = DiagnosticsCollector(
-            out_dir=diag_dir,
-            truth_velocity=problem.truth_velocity,
-            grid=problem.grid,
-            per_outer_field_maps=diag_cfg.per_outer_field_maps,
-            u_depths=diag_cfg.u_depths,
-            verify_hessian=diag_cfg.verify_hessian,
-        )
-
     t_opt = time.perf_counter()
     recovered_wfs, _ = opt.minimise(**minimise_kwargs)
     optimise_s = time.perf_counter() - t_opt
@@ -463,7 +377,6 @@ def run_frequency_band(
         freqs,
         n_iter,
         band_ctx,
-        band_cfg,
     )
 
     wall_s = time.perf_counter() - t0
@@ -573,7 +486,6 @@ def _dump_band_config(
     freqs,
     n_iter,
     band_ctx,
-    band_cfg: Optional[BandCfg] = None,
 ):
     """Write the effective per-band configuration to ``path`` as YAML.
 
@@ -591,8 +503,6 @@ def _dump_band_config(
         Effective outer-iteration budget for the band.
     band_ctx :
         Per-band context (used for FFT bins / shot count).
-    band_cfg : BandCfg, optional
-        Per-band overrides recorded for the lbfgsb optimiser.
 
     Returns
     -------
@@ -607,17 +517,11 @@ def _dump_band_config(
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
         "n_shots": int(band_ctx.geom.n_sources),
         "warm_start": cfg.continuation.warm_start,
-        "observation_method": cfg.observation.method,
         "normalize_data": cfg.observation.normalize_data,
         "physics": _asdict(cfg.physics),
         "loss_weights": dict(cfg.loss.weights),
         "optimiser": _asdict(cfg.optimiser),
     }
-    name = canonical_optimiser_name(cfg.optimiser.name)
-    if name == "lbfgsb":
-        payload["effective_c_grad_smooth_sigma"] = _effective_c_grad_smooth_sigma(
-            cfg.optimiser.lbfgsb, band_cfg
-        )
     _dump_yaml(payload, path)
 
 
@@ -675,7 +579,6 @@ def run_inverse(
     meta["seed_record"] = seed_record
     meta["n_bands"] = len(band_stages)
     meta["n_config_bands"] = len(config.continuation.bands)
-    meta["observation_method"] = config.observation.method
     meta["config_warnings"] = warnings
 
     t_run0 = time.perf_counter()
@@ -783,40 +686,3 @@ def run_inverse(
         _atomic_json(run_dir / "failure.json", err)
         print(f"[run {config.run.run_id}] FAILED: {type(exc).__name__}: {exc}")
         raise
-
-
-def _rerun_with_optimiser(config: RunConfig, name: str) -> RunResult:
-    """Re-resolve ``config`` with a forced optimiser and fresh run id, then run.
-
-    Parameters
-    ----------
-    config : RunConfig
-        Base configuration.
-    name : str
-        Optimiser name to force (e.g. ``"lbfgsb"``).
-
-    Returns
-    -------
-    RunResult
-        Result of the re-run inversion.
-    """
-    merged = deep_merge(
-        config.to_dict(), {"optimiser": {"name": name}, "run": {"run_id": ""}}
-    )
-    return run_inverse(resolve_config(merged))
-
-
-def run_inverse_lbfgsb(config: RunConfig) -> RunResult:
-    """Run the inversion forcing the lbfgsb optimiser.
-
-    Parameters
-    ----------
-    config : RunConfig
-        Base configuration (its optimiser name is overridden).
-
-    Returns
-    -------
-    RunResult
-        Result of the lbfgsb inversion.
-    """
-    return _rerun_with_optimiser(config, "lbfgsb")

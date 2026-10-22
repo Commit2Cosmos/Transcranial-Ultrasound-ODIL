@@ -1,6 +1,5 @@
 from .config import (
     ConfigError,
-    DiagnosticsCfg,
     RunConfig,
     apply_overrides,
     canonical_optimiser_name,
@@ -10,7 +9,6 @@ from .config import (
     resolve_config,
     validate_config,
 )
-from .diagnostics import DiagnosticsCollector
 from .plots import (
     LiveVelocityView,
     animate_bands,
@@ -30,14 +28,12 @@ from .runner import (
     RunResult,
     run_frequency_band,
     run_inverse,
-    run_inverse_lbfgsb,
 )
 
 __all__ = [
     # config
     "ConfigError",
     "RunConfig",
-    "DiagnosticsCfg",
     "resolve_config",
     "validate_config",
     "load_config_file",
@@ -45,8 +41,6 @@ __all__ = [
     "apply_overrides",
     "deep_merge",
     "canonical_optimiser_name",
-    # diagnostics
-    "DiagnosticsCollector",
     # problem
     "Problem",
     "BandContext",
@@ -71,6 +65,5 @@ __all__ = [
     "RunResult",
     "BandResult",
     "run_inverse",
-    "run_inverse_lbfgsb",
     "run_frequency_band",
 ]

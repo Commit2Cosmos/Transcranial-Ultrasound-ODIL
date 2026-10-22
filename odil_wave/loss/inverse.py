@@ -18,9 +18,8 @@ class InverseLoss(DiscreteLoss):
     Global means keep the loss / gradient scale invariant to ``N_f`` and
     ``N_s`` so fair comparisons do not conflate more data with a larger loss.
 
-    ``c_interior`` is the field passed to the regulariser. ``LBFGSB`` passes
-    the normalised parameter ``c_new = c / c_ref`` so Tikhonov is scale-stable;
-    the PDE always uses physical ``c_full``.
+    ``c_interior`` is the field passed to the regulariser; the PDE always uses
+    physical ``c_full``.
 
     Observations: full complex wavefields ``(n_shots, nf, nx, ny)`` or
     complex receiver traces ``(n_shots, nf, n_receivers)``.
@@ -206,79 +205,6 @@ class InverseLoss(DiscreteLoss):
         if weights_override is not None:
             w = {**w, **weights_override}
         # Global mean (not sum-over-shots): scale-invariant in N_f and N_s.
-        pde_terms = mean_abs_sq(r_pde)
-        data_terms = mean_abs_sq(r_data)
-        L = w["pde"] * pde_terms + w["data"] * data_terms
-
-        if self.config.regulariser is not None and c_interior is not None:
-            L = L + w.get("reg", 0.0) * self.config.regulariser(c_interior)
-
-        if L.is_complex():
-            L = L.real
-
-        self.evaluations += 1
-        with torch.no_grad():
-            pde_rms = float(mean_abs_sq(r_pde).sqrt().detach().cpu())
-            data_rms = float(mean_abs_sq(r_data).sqrt().detach().cpu())
-            src_rms = float(mean_abs_sq(self.sources).sqrt().detach().cpu())
-
-        self._last_residuals = {
-            "pde_rms": pde_rms,
-            "data_rms": data_rms,
-            "pde_loss": float(pde_terms.detach().cpu()),
-            "data_loss": float(data_terms.detach().cpu()),
-            "pde_src_ratio": pde_rms / max(src_rms, 1e-30),
-        }
-
-        return L
-
-    def evaluate_z(
-        self,
-        z: torch.Tensor,
-        u: torch.Tensor,
-        c_full: torch.Tensor,
-        c_interior: torch.Tensor | None = None,
-        weights_override: dict | None = None,
-    ) -> torch.Tensor:
-        """Loss for ``u_precond='z'``: PDE in ``z``, data through ``u``.
-
-        Parameters
-        ----------
-        z : torch.Tensor
-            Preconditioned wavefield variable.
-        u : torch.Tensor
-            Wavefield ``A(c)^{-1} z`` for the current ``c``.
-        c_full : torch.Tensor
-            Full-grid velocity field.
-        c_interior : torch.Tensor, optional
-            Interior velocity passed to the regulariser.
-        weights_override : dict, optional
-            Per-block weights overriding ``config.weights`` for this call.
-
-        Returns
-        -------
-        torch.Tensor
-            Real scalar loss with the same reduction as :meth:`evaluate`.
-
-        Notes
-        -----
-        The PDE residual is ``z - f'`` (with ``f'`` = :attr:`sources`) and the
-        data residual is the receiver sample of ``u`` minus the observations.
-        """
-        r_pde = z - self.sources
-
-        i = self.config.geometry.recv_ij[:, 0]
-        j = self.config.geometry.recv_ij[:, 1]
-        syn_tr = u[:, :, i, j]
-        obs_tr = self._obs_traces()
-        if self._trace_scale is not None:
-            syn_tr = syn_tr / self._trace_scale
-            obs_tr = obs_tr / self._trace_scale
-        r_data = syn_tr - obs_tr
-
-        w = self.config.weights
-        if weights_override is not None:
-            w = {**w, **weights_override}
         pde_terms = mean_abs_sq(r_pde)
         data_terms = mean_abs_sq(r_data)
         L = w["pde"] * pde_terms + w["data"] * data_terms

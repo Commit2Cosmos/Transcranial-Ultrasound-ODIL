@@ -166,7 +166,6 @@ class JointFreqODIL(Optimiser):
         wavefield: Wavefield,
         loss: InverseLoss,
         *,
-        clamp: bool = True,  # bounds always via latent map; kept for API parity
         u_init=None,
         n_iter: int = 50,
         inner_max_iter: int = 20,
@@ -622,7 +621,6 @@ class JointFreqODIL(Optimiser):
                 self.grid,
                 c_full_final,
                 pml_c=self.vm_in.pml_c,
-                pml_fill=self.vm_in.pml_fill,
             )
             u_final = self.physical_u(u_re.detach(), u_im.detach())
 

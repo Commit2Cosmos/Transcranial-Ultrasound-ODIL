@@ -9,7 +9,7 @@ from odil_wave.geometry import (
 )
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
-from odil_wave.operator import WaveEquation, LeapfrogSolver, HelmholtzSolver
+from odil_wave.operator import WaveEquation, HelmholtzSolver
 from odil_wave.loss import (
     LossConfig,
     LossTape,
@@ -17,13 +17,7 @@ from odil_wave.loss import (
     InverseLoss,
     Regulariser,
 )
-from odil_wave.optimisation import (
-    LBFGSB,
-    BandTimingStats,
-    FrequencyBand,
-    FrequencyContinuationResult,
-    run_frequency_continuation,
-)
+from odil_wave.optimisation import JointFreqODIL
 
 __all__ = [
     "Grid",
@@ -34,16 +28,11 @@ __all__ = [
     "VelocityModel",
     "Wavefield",
     "WaveEquation",
-    "LeapfrogSolver",
     "HelmholtzSolver",
     "LossConfig",
     "LossTape",
     "ForwardLoss",
     "InverseLoss",
     "Regulariser",
-    "LBFGSB",
-    "BandTimingStats",
-    "FrequencyBand",
-    "FrequencyContinuationResult",
-    "run_frequency_continuation",
+    "JointFreqODIL",
 ]

@@ -84,7 +84,7 @@ class GridCfg:
     * ``interior_shape``: ``[ny, nx]`` interior cells (PML added outside).
     * ``c_min`` / ``c_max``: m/s velocity bounds (``c_min`` < ``c_max``).
     * ``interior_extent``: metres, ``[[y0, y1], [x0, x1]]`` physical domain.
-    * ``t_max``: s; forward time window (leapfrog observation).
+    * ``t_max``: s; time window (sets ``dt`` and the FFT frequency bins).
     * ``init_nt``: ``None`` -> CFL-derived, else int >= 1 time steps.
     * ``pml_width``: cells; absorbing-border thickness (inverse grid).
     * ``pml_power``: PML grading polynomial order (typ. 2-4).
@@ -167,12 +167,10 @@ class PhysicsCfg:
     Params:
     * ``space_order``: spatial FD stencil order ``2`` | ``4`` | ``6`` | ``8``
       (higher = more accurate, costlier).
-    * ``time_order``: temporal FD order (leapfrog: 2).
     * ``pml_weight``: >= 0; PML-residual weight in the PDE loss.
     """
 
     space_order: int = 2
-    time_order: int = 2
     pml_weight: float = 1.0
 
 
@@ -186,11 +184,8 @@ class ModelCfg:
     * ``scale``: phantom contrast scale.
     * ``base``: m/s background velocity.
     * ``contrast``: profile contrast fraction.
-    * ``pml_c``: ``None`` -> derived; constant PML fill velocity used when
-      ``pml_fill == "constant"``.
-    * ``pml_fill``: ``"edge"`` (replicate the interior boundary outward, so c
-      is continuous across the interior<->PML interface) | ``"constant"`` (pad
-      with ``pml_c``).
+    * ``pml_c``: ``None`` -> derived; constant velocity the PML ring is
+      padded with.
     * ``skull_alpha``: [0, 1]; shepp_logan_skull only (skull contrast fraction).
     * ``skull_sigma``: >= 0 grid cells; shepp_logan_skull only, Gaussian soft
       edge (try 1-3).
@@ -203,7 +198,6 @@ class ModelCfg:
     base: float = 1500.0
     contrast: float = 0.4
     pml_c: Optional[float] = None
-    pml_fill: str = "edge"
     skull_alpha: float = 1.0
     skull_sigma: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -213,10 +207,10 @@ class ModelCfg:
 class ObservationCfg:
     """How the observed ("true") data is synthesised and normalised.
 
+    Observed data are always a frequency-domain Helmholtz solve on the truth
+    model (the same operator as the inversion, i.e. the inverse crime).
+
     Params:
-    * ``method``: ``"leapfrog_fft"`` (broadband leapfrog time solve then FFT
-      onto each band's bins; avoids the inverse crime) | ``"helmholtz"``
-      (frequency-domain Helmholtz solve on the truth model).
     * ``normalize_data``: ``None`` | ``"none"`` | ``"per_receiver"``.
     * ``verbose``: bool.
     * ``pml_width``: ``None`` -> ``grid.pml_width``, else int >= 0
@@ -225,7 +219,6 @@ class ObservationCfg:
       split) and reduced to receiver traces.
     """
 
-    method: str = "leapfrog_fft"
     normalize_data: str = "per_receiver"
     verbose: bool = False
     pml_width: Optional[int] = None
@@ -240,13 +233,10 @@ class BandCfg:
       inverted jointly (multi-frequency stage).
     * ``n_iter``: ``None`` -> ``optimiser.n_iter``, else int >= 1 per-stage
       iteration budget.
-    * ``c_grad_smooth_sigma``: ``None`` -> ``lbfgsb.c_grad_smooth_sigma``, else
-      float >= 0 per-stage override (LBFGSB only; ignored by other optimisers).
     """
 
     frequencies_hz: List[float] = field(default_factory=lambda: [40e3])
     n_iter: Optional[int] = None
-    c_grad_smooth_sigma: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -293,73 +283,6 @@ class LossCfg:
         default_factory=lambda: {"pde": 1.0, "data": 100.0, "reg": 0.0}
     )
     regulariser: RegulariserCfg = field(default_factory=RegulariserCfg)
-
-
-@dataclass(frozen=True)
-class SchedulerCfg:
-    """Multiplicative outer-loop scheduler for a single LBFGSB knob.
-
-    The scheduled value starts at its base (the knob's configured value) and,
-    when active, is rescaled every outer whose index is a positive multiple of
-    ``every_n``. Inactive (a no-op leaving the value at its base) whenever
-    ``factor == 0`` or ``every_n == 0``. Only ``pde_weight`` and
-    ``c_grad_smooth_sigma`` are schedulable.
-
-    Params:
-    * ``factor``: >= 0 multiplier applied to the knob.
-    * ``every_n``: >= 0 cadence in outers.
-    * ``direction``: ``"increase"`` (x ``factor``) | ``"decrease"`` (/ ``factor``).
-    """
-
-    factor: float = 0.0
-    every_n: int = 0
-    direction: str = "increase"
-
-
-@dataclass(frozen=True)
-class LBFGSBCfg:
-    """Params specific to the block-coordinate dual L-BFGS (LBFGSB).
-
-    Params:
-    * ``z_steps``: int >= 1; z-block substeps per outer (``u_precond == "z"``
-      only).
-    * ``u_precond``: ``None`` | ``"z"`` (reduced-space source-extension
-      preconditioner for the wavefield block).
-    * ``u_solve``: ``"optim"`` (one fresh L-BFGS u-block step) | ``"exact"``
-      (replace the u-block by the exact minimiser via a direct sparse Hessian
-      factorisation; incompatible with ``u_precond == "z"``).
-    * ``z_optim``: ``"gd"`` (Armijo steepest descent) | ``"lbfgs"``
-      (``u_precond == "z"`` only).
-    * ``z_lr``: > 0; z-block initial step when ``z_optim == "gd"``.
-    * ``c_lr``: model-block L-BFGS learning rate.
-    * ``c_max_iter``: model-block L-BFGS max iterations.
-    * ``c_history_size``: model-block L-BFGS history length.
-    * ``reset_c_history``: reset the model-block L-BFGS history each outer.
-    * ``c_line_search_fn``: model-block L-BFGS line search: ``None``/``"none"``
-      (fixed step of size ``c_lr``, the default) | ``"strong_wolfe"``.
-    * ``c_param``: model variable ``"velocity"`` (optimise c) |
-      ``"squared_slowness"`` (optimise 1/c^2; incompatible with
-      ``u_precond == "z"``).
-    * ``c_grad_smooth_sigma``: >= 0 Gaussian smoothing of the c-gradient in
-      grid cells (0 = off; try 1-3). Schedulable.
-    * ``pde_weight_schedule`` / ``c_grad_smooth_sigma_schedule``:
-      :class:`SchedulerCfg` for the only two schedulable knobs.
-    """
-
-    z_steps: int = 1
-    u_precond: Optional[str] = None
-    u_solve: str = "optim"
-    z_optim: str = "gd"
-    z_lr: float = 1.0
-    c_lr: float = 5.0
-    c_max_iter: int = 6
-    c_history_size: int = 10
-    reset_c_history: bool = True
-    c_line_search_fn: Optional[str] = None
-    c_param: str = "velocity"
-    c_grad_smooth_sigma: float = 0.0
-    pde_weight_schedule: SchedulerCfg = field(default_factory=SchedulerCfg)
-    c_grad_smooth_sigma_schedule: SchedulerCfg = field(default_factory=SchedulerCfg)
 
 
 @dataclass(frozen=True)
@@ -413,35 +336,19 @@ class JointODILCfg:
 
 @dataclass(frozen=True)
 class OptimiserCfg:
-    """Optimiser selection + shared block-coordinate settings.
+    """Optimiser selection + outer-loop settings.
 
     Params:
-    * ``name``: ``"lbfgsb"`` | ``"joint"`` (aliases resolved via
+    * ``name``: ``"joint"`` (aliases resolved via
       :func:`canonical_optimiser_name`).
     * ``log_every``: int >= 1 metric-logging cadence in outers.
     * ``n_iter``: int >= 1 outer iterations (per band unless ``band.n_iter``).
-    * ``u_steps``: wavefield-block L-BFGS steps per outer.
-    * ``c_steps``: model-block updates per outer.
-    * ``max_iter``: L-BFGS max iterations per block step.
-    * ``history_size``: L-BFGS history length.
-    * ``tolerance_grad`` / ``tolerance_change``: stopping tolerances.
-    * ``line_search_fn``: ``"strong_wolfe"`` | ``"none"``.
-    * ``clamp``: enforce [c_min, c_max] via a logistic reparam.
-    * ``lbfgsb`` / ``joint``: per-optimiser sub-blocks.
+    * ``joint``: :class:`JointODILCfg` solver settings.
     """
 
-    name: str = "lbfgsb"
+    name: str = "joint"
     log_every: int = 5
     n_iter: int = 20
-    u_steps: int = 20
-    c_steps: int = 1
-    max_iter: int = 20
-    history_size: int = 10
-    tolerance_grad: float = 1e-7
-    tolerance_change: float = 1e-9
-    line_search_fn: str = "strong_wolfe"
-    clamp: bool = True
-    lbfgsb: LBFGSBCfg = field(default_factory=LBFGSBCfg)
     joint: JointODILCfg = field(default_factory=JointODILCfg)
 
 
@@ -479,36 +386,6 @@ class MetricsCfg:
 
 
 @dataclass(frozen=True)
-class DiagnosticsCfg:
-    """Block-coordinate diagnostics (LBFGSB only; off by default).
-
-    When ``enabled`` the run captures per-outer block-diagnostic quantities from
-    inside ``LBFGSB.minimise`` (a no-op when disabled) and writes, into
-    ``<run_dir>/diagnostics/``:
-
-    * ``scalars.csv`` — per-outer cos(update,-grad) for the u/c blocks, block
-      gradient L2 norms, relative model error and relative PDE/data residuals,
-      plus the scheduled ``c_lr`` / ``c_grad_smooth_sigma`` in effect.
-    * ``summary.png`` — the trajectory panels built from those scalars.
-    * ``c_evolution.png`` — physical interior velocity after each outer.
-    * ``outer_XX.png`` — per-outer wavefield term-induced update maps at several
-      u-solve depths + the c-gradient and velocity update at the exact wavefield
-      minimiser; only when ``per_outer_field_maps``.
-
-    Params:
-    * ``enabled`` / ``per_outer_field_maps``: bool toggles.
-    * ``u_depths``: ``None`` -> auto ``1, 5, 10, ..., u_steps``, else list of
-      int >= 1 u-solve depths (rows of ``outer_XX``).
-    * ``verify_hessian``: add the sparse-H vs autograd-Hvp correctness gate.
-    """
-
-    enabled: bool = False
-    per_outer_field_maps: bool = True
-    u_depths: Optional[List[int]] = None
-    verify_hessian: bool = False
-
-
-@dataclass(frozen=True)
 class RunConfig:
     """Top-level fully-resolved experiment configuration."""
 
@@ -527,7 +404,6 @@ class RunConfig:
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
-    diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
 
     # -- serialisation ----------------------------------------------------- #
     def to_dict(self) -> Dict[str, Any]:
@@ -721,10 +597,6 @@ def apply_overrides(
 
 
 _OPTIMISER_ALIASES = {
-    "lbfgsb": "lbfgsb",
-    "lbfgs-b": "lbfgsb",
-    "l-bfgs-b": "lbfgsb",
-    "alt": "lbfgsb",
     "joint": "joint",
     "pure_joint": "joint",
     "pure-joint": "joint",
@@ -735,7 +607,7 @@ _OPTIMISER_ALIASES = {
 
 
 def canonical_optimiser_name(name: str) -> str:
-    """Normalise an optimiser ``name`` (or alias) to ``lbfgsb`` / ``joint``."""
+    """Normalise an optimiser ``name`` (or alias) to ``joint``."""
     key = str(name).strip().lower()
     if key not in _OPTIMISER_ALIASES:
         raise ConfigError(
@@ -787,7 +659,7 @@ def resolve_config(
 
     # Normalise optimiser name in the dict so it is validated and recorded.
     opt = merged.setdefault("optimiser", {})
-    opt["name"] = canonical_optimiser_name(opt.get("name", "lbfgsb"))
+    opt["name"] = canonical_optimiser_name(opt.get("name", "joint"))
 
     # Mint a run_id if none was supplied.
     run = merged.setdefault("run", {})
@@ -802,14 +674,12 @@ def _make_run_id(merged: Dict[str, Any]) -> str:
 
     Format::
 
-        <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>[_<precond>]_<f0>_<bands>
+        <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>_<f0>_<bands>
 
-    e.g. ``280726_133521_shepp-logan_125x125_lbfgsb_80_40-50-60-70`` — where
+    e.g. ``280726_133521_shepp-logan_125x125_joint_80_40-50-60-70`` — where
     ``problem`` is the truth profile, ``grid`` the interior shape, ``f0`` and
     ``bands`` are frequencies in kHz (bands joined by ``-``; multiple
-    frequencies within one continuation stage joined by ``+``). The ``precond``
-    token (``smooth``) appears only when the LBFGSB c-gradient smoothing is
-    active (``c_grad_smooth_sigma`` > 0); it is omitted otherwise.
+    frequencies within one continuation stage joined by ``+``).
     """
     ts = time.strftime("%d%m%y_%H%M%S", time.localtime())
 
@@ -819,13 +689,12 @@ def _make_run_id(merged: Dict[str, Any]) -> str:
     grid_size = "x".join(str(int(n)) for n in shape) or "grid"
 
     opt = merged.get("optimiser", {}) or {}
-    optimiser = canonical_optimiser_name(opt.get("name", "lbfgsb"))
-    precond = _precond_token(optimiser, opt)
+    optimiser = canonical_optimiser_name(opt.get("name", "joint"))
 
     f0 = _khz_token((merged.get("source", {}) or {}).get("f0"))
     bands = _bands_token((merged.get("continuation", {}) or {}).get("bands", []) or [])
 
-    parts = [ts, problem, grid_size, optimiser, precond, f0, bands]
+    parts = [ts, problem, grid_size, optimiser, f0, bands]
     return "_".join(p for p in parts if p)
 
 
@@ -856,18 +725,6 @@ def _bands_token(bands: List[Any]) -> str:
     return "-".join(stage_tokens) or "na"
 
 
-def _precond_token(optimiser: str, opt: Dict[str, Any]) -> str:
-    """The active c-gradient smoothing token (``smooth``), or ``""`` when none."""
-    if optimiser == "lbfgsb":
-        lb = opt.get("lbfgsb", {}) or {}
-        try:
-            if float(lb.get("c_grad_smooth_sigma", 0.0)) > 0.0:
-                return "smooth"
-        except (TypeError, ValueError):
-            return ""
-    return ""
-
-
 def validate_config(cfg: "RunConfig") -> List[str]:
     """Validate a resolved config ``cfg``.
 
@@ -881,76 +738,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError("optimiser.log_every must be >= 1")
     if cfg.optimiser.n_iter < 1:
         raise ConfigError("optimiser.n_iter must be >= 1")
-
-    if name == "lbfgsb":
-        lb = cfg.optimiser.lbfgsb
-        if lb.u_precond not in (None, "z"):
-            raise ConfigError(
-                f"optimiser.lbfgsb.u_precond must be null or 'z', "
-                f"got {lb.u_precond!r}"
-            )
-        if str(lb.z_optim).lower() not in ("gd", "lbfgs"):
-            raise ConfigError(
-                f"optimiser.lbfgsb.z_optim must be 'gd' or 'lbfgs', "
-                f"got {lb.z_optim!r}"
-            )
-        if lb.z_lr <= 0:
-            raise ConfigError("optimiser.lbfgsb.z_lr must be > 0")
-        if lb.z_steps < 1:
-            raise ConfigError("optimiser.lbfgsb.z_steps must be >= 1")
-        if str(lb.c_param).lower() not in ("velocity", "squared_slowness"):
-            raise ConfigError(
-                "optimiser.lbfgsb.c_param must be 'velocity' or "
-                f"'squared_slowness', got {lb.c_param!r}"
-            )
-        if str(lb.c_param).lower() == "squared_slowness":
-            if lb.u_precond == "z":
-                raise ConfigError(
-                    "optimiser.lbfgsb.c_param='squared_slowness' is not "
-                    "supported with u_precond='z' yet"
-                )
-        if str(lb.u_solve).lower() not in ("optim", "exact"):
-            raise ConfigError(
-                f"optimiser.lbfgsb.u_solve must be 'optim' or 'exact', "
-                f"got {lb.u_solve!r}"
-            )
-        if str(lb.u_solve).lower() == "exact" and lb.u_precond == "z":
-            raise ConfigError(
-                "optimiser.lbfgsb.u_solve='exact' is incompatible with "
-                "u_precond='z' (the exact solve replaces the direct u block)"
-            )
-        if lb.c_grad_smooth_sigma < 0:
-            raise ConfigError(
-                "optimiser.lbfgsb.c_grad_smooth_sigma must be >= 0, "
-                f"got {lb.c_grad_smooth_sigma}"
-            )
-        if lb.c_line_search_fn is not None and str(lb.c_line_search_fn).lower() not in (
-            "none",
-            "strong_wolfe",
-        ):
-            raise ConfigError(
-                "optimiser.lbfgsb.c_line_search_fn must be null, 'none', or "
-                f"'strong_wolfe', got {lb.c_line_search_fn!r}"
-            )
-        for sname, sch in (
-            ("pde_weight_schedule", lb.pde_weight_schedule),
-            ("c_grad_smooth_sigma_schedule", lb.c_grad_smooth_sigma_schedule),
-        ):
-            if sch.factor < 0:
-                raise ConfigError(
-                    f"optimiser.lbfgsb.{sname}.factor must be >= 0, "
-                    f"got {sch.factor}"
-                )
-            if sch.every_n < 0:
-                raise ConfigError(
-                    f"optimiser.lbfgsb.{sname}.every_n must be >= 0, "
-                    f"got {sch.every_n}"
-                )
-            if str(sch.direction).lower() not in ("increase", "decrease"):
-                raise ConfigError(
-                    f"optimiser.lbfgsb.{sname}.direction must be 'increase' "
-                    f"or 'decrease', got {sch.direction!r}"
-                )
 
     if name == "joint":
         jo = cfg.optimiser.joint
@@ -973,12 +760,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(
                 "optimiser.joint.line_search_fn must be 'strong_wolfe' or 'none'"
             )
-        if cfg.observation.method != "helmholtz":
-            warnings.append(
-                "optimiser.joint is designed for the inverse-crime baseline "
-                "(observation.method='helmholtz' with matched forward/inverse "
-                f"PML); got observation.method={cfg.observation.method!r}."
-            )
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -989,24 +770,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
-        if band.c_grad_smooth_sigma is not None:
-            if float(band.c_grad_smooth_sigma) < 0:
-                raise ConfigError(
-                    f"band {bi} c_grad_smooth_sigma must be >= 0, "
-                    f"got {band.c_grad_smooth_sigma}"
-                )
-            if name != "lbfgsb":
-                warnings.append(
-                    f"band {bi} sets c_grad_smooth_sigma but "
-                    f"optimiser.name={cfg.optimiser.name!r} has no c-gradient "
-                    "smoothing; it will be ignored."
-                )
 
-    if cfg.observation.method not in ("leapfrog_fft", "helmholtz"):
-        raise ConfigError(
-            f"observation.method must be 'leapfrog_fft' or 'helmholtz', "
-            f"got {cfg.observation.method!r}"
-        )
     if cfg.observation.pml_width is not None and int(cfg.observation.pml_width) < 0:
         raise ConfigError(
             f"observation.pml_width must be >= 0 when set, "
@@ -1071,20 +835,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
 
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):
         _validate_model_cfg(label, model, warnings)
-
-    diag = cfg.diagnostics
-    if diag.enabled:
-        if name != "lbfgsb":
-            warnings.append(
-                f"diagnostics.enabled is set but optimiser.name="
-                f"{cfg.optimiser.name!r}; block diagnostics are only produced "
-                "for the lbfgsb optimiser and will be skipped."
-            )
-        if diag.u_depths is not None:
-            if not diag.u_depths:
-                raise ConfigError("diagnostics.u_depths must be non-empty when set")
-            if any(int(d) < 1 for d in diag.u_depths):
-                raise ConfigError("diagnostics.u_depths values must be >= 1")
 
     return warnings
 

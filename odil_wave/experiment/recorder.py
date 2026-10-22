@@ -3,18 +3,17 @@
 ``RecordingTape`` subclasses :class:`odil_wave.loss.LossTape` and doubles as the
 optimiser's ``on_iteration`` hook:
 
-* ``on_iteration(i, c_full)`` fires once per **outer iteration** in every
-  optimiser (LBFGSB / joint), *before* the tape logs. It stamps the outer
+* ``on_iteration(i, c_full)`` fires once per **outer iteration** of the
+  joint optimiser, *before* the tape logs. It stamps the outer
   iteration index and the current velocity field.
 * the inherited ``log(loss, residuals, pde_src_ratio)`` fires only at the
   optimiser's ``log_every`` cadence and carries the exact loss the solver
   reports. Overriding it lets us emit one structured record per logged
   iteration with the correct outer index, loss, residuals and velocity field —
-  with **zero changes to any optimiser** and identical behaviour across the
-  three solvers.
+  with **zero changes to the optimiser**.
 
 Semantics of one record: it corresponds to a single *logical outer iteration*
-``i`` of the block-coordinate solver, **not** an L-BFGS closure / function
+``i`` of the solver, **not** an L-BFGS closure / function
 evaluation. The cumulative function-evaluation count is logged separately as
 ``n_evaluations`` for diagnostics.
 """

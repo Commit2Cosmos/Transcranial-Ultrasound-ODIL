@@ -26,37 +26,6 @@ SHEPP_PHANTOM_SCALE = 0.90  # phantom occupies this fraction of the interior
 SHEPP_THRESHOLD = 0.05  # head = fill_holes(phantom > threshold)
 
 
-_PML_FILL_MODES = ("constant", "edge")
-
-
-def _normalise_pml_fill(mode: str) -> str:
-    """Validate and canonicalise a PML-fill mode.
-
-    Parameters
-    ----------
-    mode : str
-        Fill mode; ``'replicate'`` is accepted as an alias for ``'edge'``.
-
-    Returns
-    -------
-    str
-        Either ``'constant'`` or ``'edge'``.
-
-    Notes
-    -----
-    Raises ``ValueError`` for an unrecognised mode.
-    """
-    m = str(mode).lower()
-    if m == "replicate":
-        m = "edge"
-    if m not in _PML_FILL_MODES:
-        raise ValueError(
-            f"pml_fill must be one of {list(_PML_FILL_MODES)} "
-            f"(or 'replicate' as an alias for 'edge'); got {mode!r}"
-        )
-    return m
-
-
 def velocity_norm(vmin: float, vcenter: float, vmax: float):
     """Two-slope colorbar normalisation for velocity fields.
 
@@ -102,7 +71,6 @@ class VelocityModel:
         base: float = SOS_WATER,
         contrast: float = 0.4,
         pml_c: Optional[float] = None,
-        pml_fill: str = "edge",
         **profile_kwargs,
     ):
         """Build a velocity field for the given profile on the full grid.
@@ -121,8 +89,6 @@ class VelocityModel:
         pml_c : float, optional
             Fixed PML speed; defaults to the interior background (skull
             profiles) or the field minimum otherwise.
-        pml_fill : str
-            PML fill mode passed to :meth:`build_full_c`.
         **profile_kwargs
             Extra per-profile parameters (see the class docstring).
         """
@@ -131,7 +97,6 @@ class VelocityModel:
         self.base = base
         self.contrast = contrast
         self.profile_kwargs = profile_kwargs
-        self.pml_fill = _normalise_pml_fill(pml_fill)
         self.c = self._build()
         if pml_c is not None:
             self.pml_c = float(pml_c)
@@ -147,7 +112,6 @@ class VelocityModel:
         grid: Grid,
         c: torch.Tensor,
         pml_c: Optional[float] = None,
-        pml_fill: str = "edge",
     ) -> "VelocityModel":
         """Build a VelocityModel from an already-computed full-grid ``c`` tensor.
 
@@ -159,8 +123,6 @@ class VelocityModel:
             Full-grid velocity field; reshaped to ``grid.shape``.
         pml_c : float, optional
             Fixed PML speed; defaults to the field minimum.
-        pml_fill : str
-            PML fill mode.
 
         Returns
         -------
@@ -173,7 +135,6 @@ class VelocityModel:
         vm.base = float("nan")
         vm.contrast = float("nan")
         vm.profile_kwargs = {}
-        vm.pml_fill = _normalise_pml_fill(pml_fill)
         vm.c = c.to(dtype=grid.dtype, device=grid.device).reshape(grid.shape)
         vm.pml_c = float(pml_c) if pml_c is not None else float(vm.c.min())
         vm._head_mask = None
@@ -197,18 +158,13 @@ class VelocityModel:
 
         Notes
         -----
-        ``pml_fill='edge'`` replicates the interior boundary outward so ``c`` is
-        continuous across the interface. ``pml_fill='constant'`` pads with the
-        fixed ``pml_c``, leaving a jump once the interior edge drifts from it.
+        The PML ring is padded with the fixed ``pml_c``, leaving a jump once
+        the interior edge drifts from it.
         """
         p = self.grid.pml_width
         if p == 0:
             return c_interior
-        if self.pml_fill == "constant":
-            return F.pad(c_interior, (p, p, p, p), mode="constant", value=self.pml_c)
-        # 'edge': F.pad replicate needs a 4-D (N, C, H, W) input for 2-D padding.
-        padded = F.pad(c_interior[None, None], (p, p, p, p), mode="replicate")
-        return padded[0, 0]
+        return F.pad(c_interior, (p, p, p, p), mode="constant", value=self.pml_c)
 
     def _shepp_logan_interior_phantom(self, scale: float, threshold: float):
         """Build the Shepp-Logan phantom and head masks on the interior grid.

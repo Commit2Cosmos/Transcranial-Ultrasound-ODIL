@@ -5,6 +5,7 @@ initial velocity models and the (frequency-independent) broadband truth field,
 so every solver operates on an identical problem. Per-band pieces
 (``FrequencySelection``, geometry, observed wavefields, Helmholtz warm start)
 are produced on demand by :meth:`Problem.make_band` / :meth:`Problem.warm_start`.
+Observed data are always a Helmholtz solve on the truth model.
 
 When ``observation.pml_width`` differs from ``grid.pml_width``, observations
 are synthesised on a separate forward grid (thicker PML) and reduced to
@@ -12,20 +13,20 @@ receiver traces for the inverse solve — matching the notebook
 ``PML_FWD`` / ``PML_INV`` split.
 
 Numerical behaviour mirrors the notebook helpers ``build_setup`` /
-``leapfrog_time_data`` / ``leapfrog_freq_wfs`` / ``helmholtz_solve`` exactly.
+``helmholtz_solve`` exactly.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.grid import FrequencySelection, Grid
 from odil_wave.models import VelocityModel
-from odil_wave.operator import HelmholtzSolver, LeapfrogSolver
+from odil_wave.operator import HelmholtzSolver
 from odil_wave.wavefield import Wavefield
 from odil_wave.source import SourceSignal
 
@@ -70,10 +71,6 @@ class Problem:
     forward_grid: Optional[Grid] = None
     forward_truth: Optional[VelocityModel] = None
     forward_source: Optional[SourceSignal] = None
-    # Broadband truth time field cache, keyed by the active source-ring layout
-    # (tuple of ring indices). Every band shares one layout, so it is computed
-    # once. Values live on the observation grid (forward when split, else inverse).
-    _truth_amp_time: Dict[Tuple[int, ...], torch.Tensor] = field(default_factory=dict)
 
     @property
     def observation_grid(self) -> Grid:
@@ -170,51 +167,11 @@ class Problem:
         self, freq: FrequencySelection, geom: AcquisitionGeometry
     ) -> List[Wavefield]:
         """Observed complex wavefields (one per shot) on this band's bins."""
-        method = self.cfg.observation.method
-        verbose = self.cfg.observation.verbose
-        truth = self.observation_truth
-        if method == "helmholtz":
-            wf = Wavefield(geom.grid, freq, velocity_model=truth)
-            solver = HelmholtzSolver(
-                wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
-            )
-            return solver.solve(verbose=verbose)
-        if method == "leapfrog_fft":
-            amp_time = self._ensure_truth_time(geom, verbose=verbose)
-            amp_freq = freq.fft_time_series(amp_time, dim=-3)  # (n_shots, nf, nx, ny)
-            outputs: List[Wavefield] = []
-            for sh in range(amp_freq.shape[0]):
-                wf = Wavefield(geom.grid, freq, velocity_model=truth)
-                wf.amplitude = amp_freq[sh]
-                outputs.append(wf)
-            return outputs
-        raise ValueError(
-            f"unknown observation.method {method!r}; "
-            "expected 'leapfrog_fft' or 'helmholtz'."
+        wf = Wavefield(geom.grid, freq, velocity_model=self.observation_truth)
+        solver = HelmholtzSolver(
+            wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
         )
-
-    def _ensure_truth_time(
-        self, geom: AcquisitionGeometry, verbose: bool = False
-    ) -> torch.Tensor:
-        """Broadband leapfrog time field of the truth model.
-
-        The source/receiver layout is frequency-independent, so a single
-        time-domain solve is FFT'd onto every band's bins (avoids the inverse
-        crime, matching the notebook). Computed once *per source layout* and
-        cached by the active source-ring indices, so bands sharing a layout
-        reuse it while a rotated source octet triggers its own solve.
-        """
-        key = tuple(int(i) for i in geom.source_ring_indices)
-        cached = self._truth_amp_time.get(key)
-        if cached is None:
-            truth = self.observation_truth
-            wf = Wavefield(geom.grid, geom.frequency_selection, velocity_model=truth)
-            solver = LeapfrogSolver(
-                wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
-            )
-            cached = solver.solve(verbose=verbose)
-            self._truth_amp_time[key] = cached
-        return cached
+        return solver.solve(verbose=self.cfg.observation.verbose)
 
     # -- warm start -------------------------------------------------------- #
     def warm_start(
@@ -265,7 +222,6 @@ def _build_velocity(
         profile=spec.profile,
         base=spec.base,
         contrast=spec.contrast,
-        pml_fill=spec.pml_fill,
         **({"pml_c": pml_c} if pml_c is not None else {}),
         **kwargs,
     )

@@ -202,8 +202,7 @@ class AcquisitionGeometry:
         )
 
     def source_field_time(self, src_idx: int) -> torch.Tensor:
-        """Time-domain source field for `src_idx`, used by the leapfrog
-        solver and by `plot_source_field`.
+        """Time-domain source field for `src_idx`, used by `plot_source_field`.
 
         Parameters
         ----------

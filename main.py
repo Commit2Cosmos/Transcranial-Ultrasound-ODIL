@@ -5,7 +5,7 @@ Examples
 --------
     python main.py --config configs/default_inverse.yaml
     python main.py --config configs/default_inverse.yaml \
-        --override optimiser.name=lbfgsb --override optimiser.n_iter=40
+        --override optimiser.n_iter=40
     python main.py --config configs/default_inverse.yaml --dry-run
 
 Run with no ``--config`` to use the built-in defaults.
@@ -24,8 +24,7 @@ def _summarise(cfg) -> str:
     lines.append(f"output dir      : {cfg.run_dir()}")
     lines.append(
         f"optimiser       : {cfg.optimiser.name}  "
-        f"(n_iter={cfg.optimiser.n_iter}, u_steps={cfg.optimiser.u_steps}, "
-        f"c_steps={cfg.optimiser.c_steps}, log_every={cfg.optimiser.log_every})"
+        f"(n_iter={cfg.optimiser.n_iter}, log_every={cfg.optimiser.log_every})"
     )
     lines.append(
         f"runtime         : device={cfg.runtime.device}, dtype={cfg.runtime.dtype}, "
@@ -41,30 +40,13 @@ def _summarise(cfg) -> str:
         f"n_src={cfg.acquisition.n_sources}, ring={cfg.acquisition.ring_center}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
-    lines.append(
-        f"observation     : method={cfg.observation.method}, "
-        f"normalize={cfg.observation.normalize_data}"
-    )
+    lines.append(f"observation     : normalize={cfg.observation.normalize_data}")
     lines.append(f"loss weights    : {cfg.loss.weights}")
     lines.append(f"warm_start      : {cfg.continuation.warm_start}")
     lines.append(
         f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
         f"data_range={cfg.metrics.ssim.data_range}"
     )
-    if cfg.optimiser.name == "lbfgsb":
-        lb = cfg.optimiser.lbfgsb
-        lines.append(
-            f"lbfgsb          : u_precond={lb.u_precond}, u_solve={lb.u_solve}, "
-            f"z_steps={lb.z_steps}, z_optim={lb.z_optim}, z_lr={lb.z_lr}, "
-            f"c_lr={lb.c_lr}, c_grad_smooth_sigma={lb.c_grad_smooth_sigma}"
-        )
-    if cfg.diagnostics.enabled:
-        d = cfg.diagnostics
-        lines.append(
-            f"diagnostics     : enabled (per_outer_field_maps="
-            f"{d.per_outer_field_maps}, u_depths={d.u_depths}, "
-            f"verify_hessian={d.verify_hessian})"
-        )
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]

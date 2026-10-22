@@ -2,8 +2,8 @@
 
 A thin, reproducible run layer over `odil_wave`. Every inversion is fully
 described by a saved, resolved configuration plus a self-contained artifact
-directory, and can be reproduced from them. It supports the implemented
-optimisers — **LBFGSB** and **joint** — behind one config-driven entry point.
+directory, and can be reproduced from them. It runs the **joint** optimiser
+(`JointFreqODIL`) behind one config-driven entry point.
 No notebook runtime is required; there are no interactive prompts.
 
 The numerical behaviour (physics, defaults, frequency handling, solver update
@@ -18,8 +18,8 @@ layer only resolves configuration, orchestrates the run, logs, and saves.
 python main.py --config configs/default_inverse.yaml
 ```
 
-`configs/default_inverse.yaml` reproduces the notebook's single-band 40 kHz
-LBFGSB Shepp-Logan run. Running with **no** `--config` uses the built-in
+`configs/default_inverse.yaml` is the single-band joint Shepp-Logan reference
+run. Running with **no** `--config` uses the built-in
 defaults (identical to the shipped file). YAML and JSON are both accepted;
 scientific notation such as `40e3` is parsed as a float, matching the notebook's
 Python literals.
@@ -32,12 +32,6 @@ from odil_wave.experiment import resolve_config, run_inverse, load_config_file
 cfg = resolve_config(load_config_file("configs/default_inverse.yaml"))
 result = run_inverse(cfg)                 # -> RunResult
 print(result.metrics_summary["final_ssim_head_roi"])
-```
-
-Force the LBFGSB solver (returns a `RunResult`):
-
-```python
-from odil_wave.experiment import run_inverse_lbfgsb
 ```
 
 ## Plotting & analysis
@@ -87,7 +81,6 @@ falling back to a bare string.
 
 ```bash
 python main.py --config configs/default_inverse.yaml \
-    --override optimiser.name=lbfgsb \
     --override optimiser.n_iter=40
 
 # switch to a low->high continuation schedule
@@ -126,12 +119,6 @@ outputs/<run_id>/
   final/
     c_final.npy            # final run-level c (float32)
     run_summary.json       # status, wall time, per-band + final metrics
-  diagnostics/             # only when diagnostics.enabled (lbfgsb + ground truth)
-    band_00_40khz/
-      scalars.csv          # per-outer block cos/norms/residuals + scheduled knobs
-      summary.png          # trajectory panels built from scalars.csv
-      c_evolution.png      # interior velocity after each outer (init .. truth)
-      outer_00.png ...     # per-outer -H^-1 g maps (per_outer_field_maps only)
   failure.json             # only if the run stopped/failed mid-band
 ```
 
@@ -147,8 +134,7 @@ outputs/<run_id>/
 ### Fully-resolved config
 
 `config_resolved.yaml` contains every effective value, including code-derived
-defaults and the default blocks for **all** supported optimisers (`lbfgsb`,
-`joint`) — not just the selected one — so the exact run is reconstructable
+defaults and the full `optimiser.joint` block, so the exact run is reconstructable
 even when the input omitted fields. Derived quantities that are *outputs* rather
 than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 `metadata.json` and the per-band summaries, not in the config.
@@ -160,20 +146,19 @@ than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 One record is appended to `metrics.csv` and `metrics.jsonl` at every
 `optimiser.log_every` **logical outer iterations** (and always on the last
 iteration). A record corresponds to **one accepted outer iteration `i`** of the
-block-coordinate solver — *not* an L-BFGS closure / function evaluation.
+solver — *not* an L-BFGS closure / function evaluation.
 
 Implementation: `RecordingTape` subclasses `LossTape` and is passed both as the
 loss `callback` and as the optimiser's `on_iteration` hook. `on_iteration(i, c)`
 fires every outer iteration and stamps the outer index + current velocity field;
 the inherited `log(...)` fires only at `log_every` and carries the exact loss the
-solver reports. This needs **zero changes to any optimiser** and behaves
-identically for LBFGSB and joint.
+solver reports. This needs **zero changes to the optimiser**.
 
 Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`:
 
 | field | meaning |
 |---|---|
-| `run_id`, `solver` | run identity + solver name (`lbfgsb`/`joint`) |
+| `run_id`, `solver` | run identity + solver name (`joint`) |
 | `band_index`, `band_frequencies_hz` | which continuation stage, and its Hz |
 | `solver_iter` | the **logical outer iteration** index `i` (per band) |
 | `global_iter` | cumulative logged-record index across all bands |
@@ -190,14 +175,15 @@ Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`:
 
 ### Iteration count vs. closure/function-evaluation count
 
-- `solver_iter` is the accepted **outer** iteration of the block-coordinate loop
-  (one `u`-block + one `c`-block per `i`). This is what the record is keyed on.
+- `solver_iter` is the **outer** iteration of the joint solver (one L-BFGS
+  `.step` of up to `optimiser.joint.inner_max_iter` iterations over `u` and `c`
+  together per `i`). This is what the record is keyed on.
 - `n_evaluations` is the cumulative number of `InverseLoss.evaluate` calls, i.e.
   L-BFGS **closures / function evaluations** (the line search calls the closure
   several times per accepted step). It is logged only for diagnostics and is
   **not** an iteration count.
-- Per-band totals — `n_outer_iter`, `n_u_closure`, `n_c_closure`, `n_closure` —
-  are recorded once in `band_summary.json` under `optimiser_result`.
+- Per-band totals — `n_outer_iter`, `n_closure`, `n_evaluations` — are recorded
+  once in `band_summary.json` under `optimiser_result`.
 
 Note: `loss_total` (the solver's returned loss for the step) and
 `pde_term + data_term` are evaluated at slightly different points within an
@@ -241,59 +227,6 @@ The existing metrics are preserved unchanged; `ssim_head_roi` is an addition.
 
 ---
 
-## LBFGSB wavefield solver, c-gradient smoothing & schedulers
-
-The block-coordinate `lbfgsb` optimiser exposes three knobs under
-`optimiser.lbfgsb`:
-
-```yaml
-optimiser:
-  lbfgsb:
-    u_solve: optim              # optim (L-BFGS u-block) | exact (u* = u0 - H^-1 g)
-    c_grad_smooth_sigma: 0.0    # c-gradient Gaussian smoothing width, cells (0 = off)
-    pde_weight_schedule:            {factor: 10.0, every_n: 5, direction: increase}
-    c_grad_smooth_sigma_schedule:   {factor: 2.0,  every_n: 5, direction: decrease}
-```
-
-- **`u_solve: exact`** replaces the u-block L-BFGS with the exact minimiser of the
-  frozen-`c` quadratic wavefield subproblem, `u* = u0 - H⁻¹ g(u0)`, via a direct
-  sparse factorisation of the full Hessian `H = α AᴴA + β Pᴴ|D|²P`
-  (`odil_wave.optimisation.UBlockHessian`, which folds in the data
-  `normalize_data` scaling so `H` matches the actual loss). No L-BFGS runs for the
-  u block. It is a CPU/SuperLU path (works at any device/dtype; f64 recommended)
-  and requires `u_precond` unset.
-- **`c_grad_smooth_sigma`** is the sole c-gradient preconditioner (the former
-  `c_precond` / `c_precond_type` / `c_precond_stab` are gone): `> 0` Gaussian-
-  smooths the c-gradient (reflect-padded) each c-closure; `0` disables it. It can
-  be overridden per band via `continuation.bands[i].c_grad_smooth_sigma`.
-- **Schedulers** multiplicatively rescale their knob every `every_n` outers;
-  inactive (no-op) when `factor` or `every_n` is `0`. Only `pde_weight` (the loss
-  `weights['pde']`) and `c_grad_smooth_sigma` are schedulable.
-
-## Block diagnostics
-
-`diagnostics.enabled: true` (lbfgsb runs with a ground-truth model) captures
-per-outer block-coordinate diagnostics from inside `LBFGSB.minimise` — a no-op
-when disabled — and writes `<run_dir>/diagnostics/band_XX/` with `scalars.csv`,
-`summary.png`, `c_evolution.png` and (when `per_outer_field_maps`) the per-outer
-`outer_XX.png` `-H⁻¹ g` field maps:
-
-```yaml
-diagnostics:
-  enabled: false
-  per_outer_field_maps: true   # the expensive part: re-solves the u-block on
-                               # clones + factorises the sparse Hessian each outer
-  u_depths: null               # null -> auto (1, 5, 10, ..., u_steps)
-  verify_hessian: false        # print the sparse-H vs autograd-Hvp relative error
-```
-
-Everything is measured on clones, so the reported trajectory is never disturbed;
-term gradients are isolated through the library loss itself
-(`InverseLoss.evaluate(weights_override=...)`). See
-`odil_wave.experiment.DiagnosticsCollector`.
-
----
-
 ## Add a new optimiser-specific config section
 
 1. Add a frozen dataclass in `config.py` (e.g. `class MyOptCfg`) with every
@@ -310,8 +243,8 @@ term gradients are isolated through the library loss itself
 
 2. Register the name/alias in `_OPTIMISER_ALIASES` (`canonical_optimiser_name`).
 
-3. Add a branch in `runner._build_optimiser` mapping `cfg.optimiser.myopt.*`
-   (plus the shared block-coordinate fields) to your optimiser's constructor.
+3. Dispatch on the canonical name in `runner._build_optimiser`, mapping
+   `cfg.optimiser.myopt.*` to your optimiser's constructor.
    The recorder, artifact layout, and CLI need no changes — they are
    solver-agnostic.
 

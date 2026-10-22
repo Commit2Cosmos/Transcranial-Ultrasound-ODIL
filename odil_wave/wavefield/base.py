@@ -34,10 +34,6 @@ class Wavefield:
     Amplitude shape is ``(n_frequencies, nx, ny)`` complex for a single shot.
     Multi-shot batches used by losses/optimisers are
     ``(n_shots, n_frequencies, nx, ny)``.
-
-    ``init_ut`` is the initial condition ``u_t(x, y, t=0)`` and is retained
-    only for the leapfrog time-domain reference generator used in FFT
-    sanity tests; it is unused by the frequency ODIL path.
     """
 
     grid: Grid
@@ -45,8 +41,6 @@ class Wavefield:
     _amplitude: torch.Tensor = field(init=False)
     init_amplitude: torch.Tensor | np.ndarray | None = None
     velocity_model: VelocityModel | None = None
-    _init_ut: torch.Tensor = field(init=False)
-    init_velocity: torch.Tensor | np.ndarray | None = None
     device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)
     cdtype: torch.dtype = field(init=False)
@@ -55,8 +49,7 @@ class Wavefield:
         """Validate grid/frequency_selection compatibility and allocate tensors.
 
         Copies ``device``/``dtype`` from ``grid``, then initialises the
-        complex amplitude tensor from ``init_amplitude`` (or zeros) and the
-        real initial-velocity tensor from ``init_velocity`` (or zeros).
+        complex amplitude tensor from ``init_amplitude`` (or zeros).
         """
         if self.frequency_selection.grid is not self.grid:
             # Allow equal grids constructed separately if metadata matches
@@ -86,24 +79,6 @@ class Wavefield:
 
         if self.velocity_model is None:
             self.velocity_model = VelocityModel(self.grid)
-
-        self._init_ut = (
-            torch.zeros(size=(Nx, Ny), dtype=self.dtype, device=self.device)
-            if self.init_velocity is None
-            else torch.as_tensor(
-                self.init_velocity, dtype=self.dtype, device=self.device
-            )
-        )
-
-    @property
-    def init_ut(self) -> torch.Tensor:
-        """Initial (dimensional) time-derivative field ``u_t(x, y, t=0)``."""
-        return self._init_ut
-
-    @property
-    def init_ut_nd(self) -> torch.Tensor:
-        """Initial time-derivative field non-dimensionalised by ``grid.t0``."""
-        return self._init_ut * self.grid.t0
 
     @property
     def n_frequencies(self) -> int:
