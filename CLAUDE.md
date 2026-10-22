@@ -13,23 +13,22 @@
 
 For a new task:
 1. Inspect the task and relevant repository context.
-2. Create docs/plans/<task-id>.md using the plan template.
-3. Prepare a draft PR containing only the plan.
-4. Do not modify implementation, tests, dependencies, or configuration.
-5. Stop and wait for explicit implementation approval.
+2. Create docs/plans/<task-id>.md using the plan template on a new task branch.
+3. Do not modify implementation, tests, dependencies, or configuration.
+4. Stop and wait for explicit implementation approval.
 
 During plan review:
 - Incorporate requested corrections into the same plan and branch.
 - Do not interpret comments or positive feedback as implementation approval.
 
 After explicit approval:
-- Implement on the existing task branch and PR.
+- Implement on the existing task branch.
 - Follow the approved plan.
 - Stop for approval if a material change to scope, approach, or acceptance
   criteria is required.
 - Write docs/reports/<task-id>.md using the report template.
 - Update the feature register and decision records.
-- Never merge the PR.
+- Commit, but never push.
 
 ## Project knowledge
 

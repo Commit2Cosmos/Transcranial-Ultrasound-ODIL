@@ -5,7 +5,6 @@ functions or every implementation detail.
 
 Statuses:
 - Proposed: under consideration.
-- Experimental: implemented, but not established as supported.
 - Supported: maintained and intended for use.
 - Removed: previously implemented and subsequently removed.
 - Rejected: considered but not adopted.

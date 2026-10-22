@@ -2,7 +2,6 @@
 
 Status: Proposed
 Features: <IDs or not applicable>
-Source: <PR/issue; pending if not yet available>
 Supersedes: —
 Superseded by: —
 

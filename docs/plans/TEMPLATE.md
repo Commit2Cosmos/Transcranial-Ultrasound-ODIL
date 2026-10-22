@@ -1,6 +1,6 @@
 # Plan: <task-id> — <title>
 
-Task: <issue or task description>
+Task: <task description>
 Status: Draft
 
 ## Objective
