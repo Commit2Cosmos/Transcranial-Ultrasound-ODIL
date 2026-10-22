@@ -1,7 +1,8 @@
 # Plan: <task-id> — <title>
 
 Task: <task description>
-Status: Draft
+Branch: <n>/<short-description>
+Status: Draft | Approved <date>
 
 ## Objective
 Intended outcome and explicit requirements.
