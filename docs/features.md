@@ -12,7 +12,8 @@ Statuses:
 Verification evidence types:
 - unit: module-level pytest tests of the component.
 - integration: pytest tests that run several components together, including
-  a tiny end-to-end inversion.
+  tiny inversions through `run_inverse`.
+- e2e: pytest tests that run the `main.py` CLI through a full tiny inversion.
 - config-rejection: tests asserting that a removed setting no longer resolves.
 - CI: `.github/workflows/tests.yml` runs `python -m pytest tests/ -q`.
 - none found: no test or report exercises the capability directly.
@@ -28,16 +29,16 @@ maintainer confirmation; the reason is under Notes.
 |----|------------|--------|-----------|--------------|-----------|
 | F-001 | 2D space/time grid with PML sponge and non-dimensionalisation; FFT frequency-bin selection | Supported | `odil_wave/grid/grid.py`, `odil_wave/grid/frequency_selection.py`; README "Library structure" | unit: `tests/test_grid.py` | none recorded |
 | F-002 | Source wavelets (tone burst with gaussian/rectangular envelope, Ricker) and their spectra | Supported | `odil_wave/source/source_signal.py` | unit: `tests/test_source.py` (tone burst only); Ricker used only as a fixture in `tests/test_operator.py` | none recorded |
-| F-003 | Ring transmission acquisition geometry: elliptical receiver ring, evenly spaced source subset, gaussian/point source footprint, receiver sampling, trace normalisation | Supported | `odil_wave/geometry/acquisition_geometry.py` | unit: `tests/test_geometry.py`; per-receiver normalisation in `tests/test_loss.py` | none recorded |
-| F-004 | Built-in velocity phantoms (homogeneous, overdensity, shepp_logan, shepp_logan_skull) with head and skull masks | Supported | `odil_wave/models/velocity_models.py` | unit: `tests/test_models.py` | none recorded |
+| F-003 | Ring transmission acquisition geometry: elliptical receiver ring (centred on the interior by default), evenly spaced source subset, gaussian/point source footprint, receiver sampling, trace normalisation | Supported | `odil_wave/geometry/acquisition_geometry.py` | unit: `tests/test_geometry.py` (incl. default centre and fixture-in-interior guard); per-receiver normalisation in `tests/test_loss.py` | none recorded |
+| F-004 | Built-in velocity phantoms (homogeneous, overdensity, shepp_logan, shepp_logan_skull) with head and skull masks; overdensity centred on the interior by default | Supported | `odil_wave/models/velocity_models.py` | unit: `tests/test_models.py` | none recorded |
 | F-005 | Frequency-domain discrete wave operator: FD Laplacians of order 2–10, PML sponge, Neumann mirror boundary conditions | Supported (review) | `odil_wave/operator/spatial.py`, `odil_wave/operator/conditions.py`, `odil_wave/operator/utils.py`, `odil_wave/operator/base.py` | unit: `tests/test_operator.py` (all five orders) | none recorded |
 | F-006 | Helmholtz forward solver, and synthetic observations from a Helmholtz solve on the truth model (inverse-crime baseline) | Supported | `odil_wave/operator/helmholtz.py`, `odil_wave/experiment/problem.py`; README "Important points" | unit: `tests/test_operator.py`; integration: `tests/test_experiments.py` (observed data satisfy the inverse operator on the truth) | [D-005](decisions/D-005-helmholtz-observation-baseline.md) |
 | F-007 | ODIL discrete loss (PDE residual, data misfit, regulariser terms) with Tikhonov and TV regularisers, loss logging | Supported | `odil_wave/loss/`, `odil_wave/wavefield/base.py` | unit: `tests/test_loss.py`, `tests/test_wavefield.py`; integration: `tests/test_integration.py` (gradient flows forward to loss) | none recorded |
-| F-008 | Joint full-space ODIL inversion over `u` and `c` with a single L-BFGS and a sigmoid-bounded slowness latent (`JointFreqODIL`) | Supported | `odil_wave/optimisation/joint_odil.py`, `odil_wave/optimisation/base.py`; README "Optimiser" | integration: `tests/test_integration.py` (tiny run improves the model); no unit tests found | [D-003](decisions/D-003-joint-formulation-only.md) |
-| F-009 | Low-to-high multi-frequency continuation bands with Helmholtz warm start | Supported | `odil_wave/experiment/runner.py`, `odil_wave/experiment/problem.py`; README "Frequency continuation" | unit: `tests/test_experiments.py` (warm-start toggle); integration: `tests/test_integration.py` (single band only) | none recorded |
+| F-008 | Joint full-space ODIL inversion over `u` and `c` with a single L-BFGS and a sigmoid-bounded slowness latent (`JointFreqODIL`) | Supported | `odil_wave/optimisation/joint_odil.py`, `odil_wave/optimisation/base.py`; README "Optimiser" | unit: `tests/test_joint_odil.py` (latent round trip and bounds, objective gradient vs finite differences, objective ≈ 0 at the truth); integration: `tests/test_integration.py` (tiny run improves the model); e2e: `tests/test_e2e.py` (float32 on CPU and MPS) | [D-003](decisions/D-003-joint-formulation-only.md) |
+| F-009 | Low-to-high multi-frequency continuation bands with Helmholtz warm start | Supported | `odil_wave/experiment/runner.py`, `odil_wave/experiment/problem.py`; README "Frequency continuation" | unit: `tests/test_experiments.py` (warm-start toggle); integration: `tests/test_integration.py` (2-band run: per-band artifacts, band 2 starts from band 1's model); e2e: `tests/test_e2e.py` (2-band CLI run) | none recorded |
 | F-010 | Reconstruction metrics: masked SSIM and SSIM map, MSE, MAE | Supported | `odil_wave/metrics/metrics.py`; `odil_wave/experiment/README.md` "Masked head-ROI SSIM" | unit: `tests/test_metrics.py` | none recorded |
 | F-011 | Config-driven reproducible run layer: schema, defaults, dotted overrides, validation, run artifacts, environment/git metadata, failure capture, per-band callbacks | Supported | `odil_wave/experiment/config.py`, `odil_wave/experiment/runner.py`, `odil_wave/experiment/recorder.py`, `odil_wave/experiment/envinfo.py`, `configs/default_inverse.yaml`; `odil_wave/experiment/README.md` | unit: `tests/test_experiments.py`; integration: `tests/test_integration.py` (artifacts written) | none recorded |
-| F-012 | CLI entry point with `--config`, `--override`, `--dry-run` | Supported | `main.py`; README "Running an inversion" | unit: `tests/test_main.py` | none recorded |
+| F-012 | CLI entry point with `--config`, `--override`, `--dry-run` | Supported | `main.py`; README "Running an inversion" | unit: `tests/test_main.py`; e2e: `tests/test_e2e.py` (full tiny run, float32, CPU and MPS) | none recorded |
 | F-013 | Run analysis from saved artifacts: history and recovery plots, band animation, live band view | Supported (review) | `odil_wave/experiment/plots.py`; `odil_wave/experiment/README.md` "Plotting & analysis" | none found | none recorded |
 | F-014 | Example and main notebooks | Supported (review) | `notebooks/odil_wave_inverse_example.ipynb`, `notebooks/main_odil.ipynb`; README "Example notebook" | none found (not executed in tests or CI) | none recorded |
 | F-015 | Block-coordinate dual L-BFGS optimiser (`LBFGSB`, `StepScheduler`, u-block Hessian, Helmholtz u-transform, frequency-continuation helper) | Removed | removed in `7c130ad` (PR #2): `odil_wave/optimisation/u_block_hessian.py`, `odil_wave/optimisation/helmholtz_utransform.py`, `odil_wave/optimisation/frequency_continuation.py`, `LBFGSB` from `odil_wave/optimisation/base.py`, `tests/test_optimisation.py` | config-rejection: `tests/test_experiments.py` (`lbfgsb`, `u_steps`, `clamp`) | [D-003](decisions/D-003-joint-formulation-only.md) |
@@ -61,10 +62,18 @@ Observed facts are stated plainly; proposals and uncertainty are labelled.
 - F-006: Helmholtz-only observations are a deliberate starting
   simplification, expected to change once good results are obtained (D-005).
   Since F-016 was removed, no non-inverse-crime observation path exists.
+- F-003, F-004: the ring centre and the overdensity centre defaulted to
+  `(0, 0)` until task 5-optimiser-e2e-tests; they now default to
+  `Grid.interior_center`. Config-driven runs always passed an explicit
+  centre and are unaffected.
 - F-008: the optimiser unit tests (`tests/test_optimisation.py`) were
-  removed in `7c130ad` together with F-015; the joint optimiser is now
-  covered only by the tiny integration run.
-- F-009: no test runs more than one band.
+  removed in `7c130ad` together with F-015. Unit tests for the joint
+  optimiser were re-added in task 5-optimiser-e2e-tests, which also removed
+  the never-called `residual_jvp_analytic` and its helpers.
+- F-008, F-009, F-012: the MPS end-to-end case is skipped where MPS is
+  unavailable, including CI; it is verified only on Apple-silicon machines.
+  The Helmholtz solves run on the CPU (scipy) even when the optimiser runs
+  on MPS.
 - F-011: no test covers `odil_wave/experiment/envinfo.py` metadata or
   `failure.json` capture; config handling and artifact writing are tested.
 - F-013 (review): no test imports `odil_wave/experiment/plots.py`. Supported
