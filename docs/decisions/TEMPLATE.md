@@ -15,7 +15,7 @@ What precisely will be adopted, retained, changed, removed, or rejected?
 ## Alternatives
 Which credible alternatives were considered?
 
-## Rationale and evidence
+## Rationale
 Why this choice?
 Link relevant code, tests, reports, and discussion.
 Separate observations from assumptions and judgement.

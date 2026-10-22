@@ -3,4 +3,4 @@ docs/features.md: Current capability inventory, including removed/rejected capab
 docs/decisions/ : Durable reasons behind consequential choices
 docs/plans/	: Task-specific proposals for your approval
 docs/reports/ : What was actually implemented, tested, and observed
-pull_request_template.md: Review checklist connecting all the above
+.github/pull_request_template.md: Review checklist connecting all the above
