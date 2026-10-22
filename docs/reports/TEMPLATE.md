@@ -1,8 +1,8 @@
 # Report: <task-id> — <title>
 
 Task:
-PR:
-Approved plan revision:
+Branch:
+Plan approved: <date>
 
 ## Outcome
 Completed, partially completed, blocked, or negative finding.
@@ -11,7 +11,7 @@ Completed, partially completed, blocked, or negative finding.
 What actually changed.
 
 ## Deviations from the plan
-What changed, why, and where approval was recorded.
+What changed, why, and when renewed approval was given.
 
 ## Verification
 | Check/command | Configuration | Result | Evidence |

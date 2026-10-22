@@ -1,14 +1,10 @@
 ## Task
-Issue or task description:
-
-## Stage
-- [ ] Plan review
-- [ ] Implementation review
-- [ ] Documentation/workflow only
+Task ID:
+Task description:
 
 ## Plan and approval
 Plan:
-Approval comment and approved revision:
+Approval date (given in the local session):
 
 ## Summary
 What this PR currently changes:
