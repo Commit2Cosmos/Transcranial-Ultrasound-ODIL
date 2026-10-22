@@ -1,0 +1,44 @@
+name: plan-guard
+
+# Required check for agent task PRs: before a valid approve-plan/routine
+# authorization, only docs/plans/<N>.md may change; after it, the plan must be
+# unchanged since the authorized commit. It blocks merging (when required by
+# branch protection); it does not prevent pushes. See docs/agent-workflow.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  plan-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Check out trusted controller (default branch)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Check out PR history (data only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: task
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Evaluate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
+            await t.planGuard({ github, context, core, repoDir: 'task' });

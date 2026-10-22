@@ -4,7 +4,22 @@ on:
   push:
   pull_request:
 
+# Read-only token: authorization markers are trusted only from
+# github-actions[bot] in workflows that explicitly request write access.
+permissions:
+  contents: read
+
 jobs:
+  controller:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test workflow controller
+        run: node --test .github/scripts/
+
+
   test:
     runs-on: ubuntu-latest
 

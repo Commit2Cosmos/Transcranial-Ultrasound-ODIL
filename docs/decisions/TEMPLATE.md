@@ -1,8 +1,9 @@
 # D-<number>: <Decision title>
 
 Status: Proposed
-Features: <IDs or not applicable>
+Features: <F-IDs or not applicable>
 Source: <PR/issue; pending if not yet available>
+Decided by: <maintainer statement link; pending>
 Supersedes: —
 Superseded by: —
 

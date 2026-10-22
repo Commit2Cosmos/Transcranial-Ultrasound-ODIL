@@ -4,11 +4,12 @@ Issue or task description:
 ## Stage
 - [ ] Plan review
 - [ ] Implementation review
-- [ ] Documentation/workflow only
+- [ ] Routine (lighter process)
+- [ ] Documentation/knowledge only
 
-## Plan and approval
+## Plan and authorization
 Plan:
-Approval comment and approved revision:
+Authorization comment (`@claude approve-plan` / `@claude routine`) and full SHA:
 
 ## Summary
 What this PR currently changes:
@@ -24,7 +25,7 @@ Decision records:
 If no knowledge update is needed, why:
 
 ## Review checklist
-- [ ] Changes match the approved scope, or deviations were approved.
+- [ ] Changes match the authorized scope, or deviations were re-approved.
 - [ ] Relevant verification results are recorded.
 - [ ] Tests and acceptance criteria were not weakened to obtain a pass.
 - [ ] Capability and decision documentation matches the changes.

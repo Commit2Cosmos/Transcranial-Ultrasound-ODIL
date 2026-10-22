@@ -1,50 +1,230 @@
-name: Claude Code
+name: Claude — task handler
+
+# Single entry point for @claude requests and automatic planning.
+# Protocol: CLAUDE.md ("Agent task protocol"). Operations, security
+# boundaries and smoke tests: docs/agent-workflow.md.
+#
+# Controller logic (.github/scripts/claude-task.js) is always loaded from a
+# default-branch checkout, never from the task checkout.
 
 on:
+  issues:
+    types: [opened]
   issue_comment:
     types: [created]
   pull_request_review_comment:
     types: [created]
-  issues:
-    types: [opened, assigned]
   pull_request_review:
     types: [submitted]
 
+permissions: {}
+
 jobs:
-  claude:
-    if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+  # Authorization, fork rejection, task discovery and approval checks.
+  # No agent runs here; the task checkout is read as git data only.
+  gate:
+    if: >-
+      github.event.sender.type == 'User' &&
+      (
+        github.event_name == 'issues' ||
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: read
       issues: read
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      pull-requests: read
+    outputs:
+      decision: ${{ steps.resolve.outputs.decision }}
+      message: ${{ steps.resolve.outputs.message }}
+      notify: ${{ steps.resolve.outputs.notify }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+      profile: ${{ steps.resolve.outputs.profile }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      activate_comment_id: ${{ steps.resolve.outputs.activate_comment_id }}
+      activate_sha: ${{ steps.resolve.outputs.activate_sha }}
+      trusted_sha: ${{ steps.trusted.outputs.sha }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Check out trusted controller (default branch)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          fetch-depth: 1
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
 
-      - name: Run Claude Code
-        id: claude
-        uses: anthropics/claude-code-action@v1
+      - name: Record trusted revision
+        id: trusted
+        run: echo "sha=$(git -C trusted rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect request
+        id: inspect
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
+            t.setOutputs(core, await t.inspect({ github, context }));
+
+      - name: Check out task history (data only)
+        if: steps.inspect.outputs.decision == 'run' || steps.inspect.outputs.decision == 'pending-git'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.inspect.outputs.checkout_ref }}
+          path: task
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve decision
+        id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
+            t.setOutputs(core, await t.resolve({ github, context, repoDir: 'task' }));
+
+  # Records an approve-plan/routine authorization that the gate validated
+  # against the current PR head. Uses the workflow token (github-actions[bot]);
+  # the Claude job cannot post these markers.
+  activate:
+    needs: gate
+    if: needs.gate.outputs.activate_comment_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out trusted controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Post activation marker
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+          COMMENT_ID: ${{ needs.gate.outputs.activate_comment_id }}
+          SHA: ${{ needs.gate.outputs.activate_sha }}
+        with:
+          script: |
+            const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
+            await t.activate({
+              github, context,
+              prNumber: process.env.PR_NUMBER, commentId: process.env.COMMENT_ID, sha: process.env.SHA,
+            });
+
+  claude:
+    needs: [gate, activate]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.decision == 'run' &&
+      (needs.activate.result == 'success' || needs.activate.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One run at a time per task branch, shared with claude-code-review.yml.
+    # Not a durable queue: see docs/agent-workflow.md.
+    concurrency:
+      group: claude-task-${{ needs.gate.outputs.branch }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+      id-token: write
+    env:
+      # Strip Anthropic credentials from Bash/hook/MCP subprocesses.
+      # GitHub tokens are not stripped (see docs/agent-workflow.md).
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+    steps:
+      - name: Check out trusted controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.trusted_sha }}
+          path: claude-trusted
+          persist-credentials: false
+
+      - name: Move trusted controller out of the workspace
+        run: mv claude-trusted "$RUNNER_TEMP/claude-trusted"
+
+      - name: Check out task
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Re-check inside the concurrency slot; the gate may have run before an
+      # earlier run for the same task finished.
+      - name: Re-resolve decision
+        id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          GATE_PROFILE: ${{ needs.gate.outputs.profile }}
+          TRUSTED_SHA: ${{ needs.gate.outputs.trusted_sha }}
+        with:
+          script: |
+            const dir = `${process.env.RUNNER_TEMP}/claude-trusted`;
+            const t = require(`${dir}/.github/scripts/claude-task.js`);
+            const s = await t.resolve({ github, context, repoDir: process.env.GITHUB_WORKSPACE });
+            if (s.decision !== 'run' || s.profile !== process.env.GATE_PROFILE) {
+              core.setFailed(`Task state changed since the gate: ${s.decision} ${s.profile || ''} ${s.message || s.reason || ''}`);
+              return;
+            }
+            t.setOutputs(core, s, { trustedDir: dir, trustedSha: process.env.TRUSTED_SHA });
+
+      - name: Create task branch
+        if: steps.resolve.outputs.create_branch == 'true'
+        env:
+          BRANCH: ${{ steps.resolve.outputs.branch }}
+        run: git switch -c "$BRANCH"
+
+      # Pinned to the commit audited for this setup (v1 on 2026-10-22,
+      # Claude Code 2.1.308). Re-audit before changing; see docs/agent-workflow.md.
+      - name: Run Claude
+        uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ steps.resolve.outputs.prompt }}
+          claude_args: ${{ steps.resolve.outputs.claude_args }}
+          additional_permissions: ${{ steps.resolve.outputs.additional_permissions }}
 
-          # This is an optional setting that allows Claude to read CI results on PRs
-          additional_permissions: |
-            actions: read
+  # Posts refusals and failure notes, and checks that a planning run that
+  # pushed a branch also opened its draft PR.
+  report:
+    needs: [gate, claude]
+    if: always() && needs.gate.result == 'success' && needs.gate.outputs.notify != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out trusted controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
-
+      - name: Report
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          GATE: ${{ toJSON(needs.gate.outputs) }}
+          CLAUDE_RESULT: ${{ needs.claude.result }}
+        with:
+          script: |
+            const t = require(`${process.env.GITHUB_WORKSPACE}/trusted/.github/scripts/claude-task.js`);
+            await t.report({
+              github, context, core,
+              gate: JSON.parse(process.env.GATE), claudeResult: process.env.CLAUDE_RESULT,
+            });

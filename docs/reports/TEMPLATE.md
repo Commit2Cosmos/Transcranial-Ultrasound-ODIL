@@ -1,8 +1,9 @@
 # Report: <task-id> — <title>
 
-Task:
+Task: #<issue number>
 PR:
-Approved plan revision:
+Authorization: <approve-plan or routine, comment link, full SHA>
+Reported head: <full SHA of the last commit covered by this report>
 
 ## Outcome
 Completed, partially completed, blocked, or negative finding.
