@@ -13,19 +13,13 @@ Intended outcome and explicit requirements.
 Relevant existing behaviour, code locations, tests, and prior decisions.
 
 ## Scope and non-goals
-What will change, and what will not.
+What will change.
 
-## Proposed approach
-Design, important alternatives, and expected file/API changes.
-
-## Implementation steps
-Ordered, reviewable steps.
+## Proposed approach and Implementation steps
+Design, important alternatives, and expected file/API changes as ordered, reviewable steps.
 
 ## Acceptance criteria
 Observable conditions for completion.
-
-## Verification
-Checks and commands, prerequisite gates, and expensive/optional experiments.
 
 ## Knowledge updates
 Expected feature-register and decision-record changes, or why none are needed.

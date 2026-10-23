@@ -15,10 +15,6 @@ What actually changed.
 ## Deviations from the plan
 What changed, why, and when renewed approval was given.
 
-## Verification
-| Check/command | Configuration | Result | Evidence |
-|---------------|---------------|--------|----------|
-
 ## Interpretation and limitations
 What the results establish, what they do not establish, and remaining risks.
 
