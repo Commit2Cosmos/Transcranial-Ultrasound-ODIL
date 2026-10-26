@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Architecture review for odil_wave</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "basis" } });
+</script>
+<style>
+  .seam { border-style: dashed; }
+  .deep { background: linear-gradient(135deg, #0f172a, #1e293b); color: #f8fafc; }
+  .lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; }
+  .ghost { opacity: .45; }
+  .leak-line { border-color: #dc2626; }
+  pre.mermaid { background: transparent; }
+  .diagram { min-height: 300px; }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 font-sans">
+<main class="max-w-6xl mx-auto px-4 sm:px-6 py-12 space-y-14">
+
+<header class="space-y-4">
+  <p class="lbl text-slate-500">Architecture review · 2026-10-26</p>
+  <h1 class="font-serif text-4xl">odil_wave: deepening opportunities</h1>
+  <p class="text-sm text-slate-600 max-w-3xl">Scope: recent hot spots (<span class="font-mono">optimisation/joint_odil.py</span>, <span class="font-mono">experiment/*</span>, <span class="font-mono">loss/*</span>, <span class="font-mono">operator/*</span>). These earlier decisions still stand and are not reopened here: joint formulation only, no leapfrog solver, observations from a Helmholtz solve on the truth model (inverse crime).</p>
+  <div class="flex flex-wrap gap-5 text-xs text-slate-600 pt-2">
+    <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 border-2 border-slate-400 bg-white"></span>module</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-8 border-t-2 border-dashed border-slate-500"></span>seam</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-8 border-t-2 leak-line"></span>leakage / bug</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 deep rounded-sm"></span>deep module</span>
+    <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 border-2 border-slate-300 bg-white ghost"></span>dead / absorbed</span>
+  </div>
+</header>
+
+<section id="candidates" class="space-y-12">
+
+<!-- ============ 1 ============ -->
+<article id="c1" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">1 · Make the band objective one deep module</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">Strong</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>optimisation/joint_odil.py · JointFreqODIL.__init__, residuals, objective</li>
+    <li>loss/inverse.py · InverseLoss (evaluate, _residuals, _obs_traces)</li>
+    <li>loss/base.py · DiscreteLoss · loss/forward.py</li>
+    <li>loss/utils.py · LossConfig (speed_offset)</li>
+    <li>experiment/config.py · LossCfg.weights, ObservationCfg.normalize_data</li>
+    <li>experiment/runner.py · run_frequency_band, _build_regulariser</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">Before: two objectives, one dead</p>
+      <pre class="mermaid">
+flowchart LR
+  Y["YAML<br/>loss.weights data:100<br/>normalize_data: per_receiver"] --> IL["InverseLoss<br/>evaluate() · per-receiver scale"]
+  J["YAML<br/>optimiser.joint.data_weight"] --> JO["JointFreqODIL<br/>objective() · RMS scales"]
+  JO -- "reads _obs_traces(), sources,<br/>config.wave_eq, config.geometry" --> IL
+  IL -. "evaluate() never called<br/>in production" .-> X(("unused"))
+  JO --> LBFGS["L-BFGS"]
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  classDef dead fill:#f8fafc,stroke:#cbd5e1,color:#94a3b8;
+  class Y leak
+  class IL,X dead
+  linkStyle 2 stroke:#dc2626,stroke-width:2px
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram flex flex-col">
+      <p class="lbl text-slate-500 mb-3">After: one objective, one config block</p>
+      <div class="flex-1 flex flex-col items-center justify-center gap-3">
+        <div class="border-2 border-slate-400 rounded px-3 py-1 text-xs">objective config (weights · scales · regulariser)</div>
+        <div class="w-px h-4 bg-slate-400"></div>
+        <div class="deep rounded-lg w-full max-w-sm p-4 space-y-2">
+          <p class="lbl text-slate-300">Band objective</p>
+          <div class="border-t border-dashed border-slate-500 pt-2 text-xs font-mono">residuals(u, c_full) · value(u, c_full) → (L, terms)</div>
+          <div class="grid grid-cols-2 gap-1 text-[11px] text-slate-400 pt-1">
+            <span>receiver sampling</span><span>source × t0²</span>
+            <span>fixed u/pde/data scales</span><span>pde/data/reg weights</span>
+            <span>regulariser</span><span>term breakdown</span>
+          </div>
+        </div>
+        <div class="w-px h-4 bg-slate-400"></div>
+        <div class="border-2 border-slate-400 rounded px-3 py-1 text-xs">JointFreqODIL: latent + L-BFGS loop only</div>
+      </div>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> <span class="font-mono text-sm">JointFreqODIL</span> uses <span class="font-mono text-sm">InverseLoss</span> only as a bag of fields and computes its own objective. As a result, <span class="font-mono text-sm">observation.normalize_data</span> and <span class="font-mono text-sm">loss.weights</span> (default <span class="font-mono text-sm">data: 100</span>) are silently ignored in every real run.</p>
+  <p><b>Solution.</b> Make one objective module own residuals, receiver sampling, scaling, weights and the term breakdown. The optimiser keeps only the parametrisation and the L-BFGS loop.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Locality: one definition of the minimised loss.</li>
+    <li>Config knobs match the code that actually runs.</li>
+    <li>Removes dead code: <span class="font-mono">InverseLoss.evaluate</span>, <span class="font-mono">ForwardLoss</span>, <span class="font-mono">speed_offset</span>.</li>
+    <li>Truth-vanishing and gradient tests cross one interface.</li>
+    <li>New test: the logged terms sum to L.</li>
+  </ul>
+  <div class="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-900">Live bug: the default YAML's <span class="font-mono">loss.weights.data: 100</span> and <span class="font-mono">normalize_data: per_receiver</span> have no effect on the optimisation. <span class="font-mono">validate_config</span> also warns about <span class="font-mono">loss.weights['reg']</span>, which does nothing.</div>
+</article>
+
+<!-- ============ 2 ============ -->
+<article id="c2" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">2 · One iteration report across the optimiser–recorder seam</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">Strong</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">local-substitutable (tmp_path)</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>optimisation/joint_odil.py · minimise (496–603)</li>
+    <li>experiment/recorder.py · RecordingTape.on_iteration / log / bind_loss, emit_row</li>
+    <li>loss/utils.py · LossTape.log, log_c, result</li>
+    <li>experiment/runner.py · run_frequency_band (reads tape.history[-1])</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">Before: the optimiser writes into tape internals</p>
+      <pre class="mermaid">
+sequenceDiagram
+  participant O as JointFreqODIL
+  participant L as InverseLoss
+  participant T as RecordingTape
+  participant R as runner
+  O->>T: on_iteration(i, c)  (must come first)
+  O->>L: write _last_residuals
+  O->>T: callback.log(...)
+  T->>L: read config.weights (data=100 ✗)
+  T->>L: read evaluations (always 0 ✗)
+  O->>T: history.setdefault × 6
+  O->>T: log_c · result = {...}
+  R->>T: result, history[...][-1]
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">After: one report, one hook</p>
+      <pre class="mermaid">
+sequenceDiagram
+  participant O as JointFreqODIL
+  participant S as Recorder (sink)
+  participant R as runner
+  O->>S: report(iter, L, terms, weights, n_eval, grads, c_full)
+  Note over S: owns history, metrics.jsonl, c snapshots
+  O-->>R: final report
+      </pre>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> The optimiser reaches through the loss into the tape. The recorder then rebuilds metrics from the wrong source, so <span class="font-mono text-sm">data_term</span> is recorded with weight 100 instead of 1, and <span class="font-mono text-sm">n_evaluations</span> is always 0.</p>
+  <p><b>Solution.</b> The optimiser emits a single iteration report to a single hook. The recorder owns all history and file output. <span class="font-mono text-sm">LossTape</span> stops serving as the callback.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Seam carries data, not object graphs.</li>
+    <li>Removes the hidden call-ordering constraint.</li>
+    <li>Fake sink tests the metrics columns.</li>
+    <li>Removes the parallel diag_rows record.</li>
+  </ul>
+  <div class="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">Depends on #1: the report's term breakdown comes from the deepened objective.</div>
+</article>
+
+<!-- ============ 3 ============ -->
+<article id="c3" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">3 · Assemble each continuation band behind a band module</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">Strong</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>experiment/runner.py · run_frequency_band (282–328), _build_optimiser</li>
+    <li>experiment/problem.py · make_band, _observed, warm_start, BandContext</li>
+    <li>loss/inverse.py · dual-mode constructor (wavefields | traces)</li>
+    <li>joint_odil.py · _stack_u_init · minimise(**overrides)</li>
+    <li>experiment/plots.py · _default_geometry → problem._geometry</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-3">Before: runner hand-wires 8 steps</p>
+      <div class="space-y-1 text-xs">
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">make_band → FrequencySelection, _geometry, _observed</div>
+        <div class="h-8 border-l-4 border-red-500 bg-red-50 px-3 flex items-center">PML-split branch → traces <i class="ml-1">or</i> wavefields</div>
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">warm_start → HelmholtzSolver (space_order, pml_weight #2)</div>
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">Wavefield → WaveEquation (space_order, pml_weight #3)</div>
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">LossConfig → InverseLoss (branch again)</div>
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">band_tape → bind_loss</div>
+        <div class="h-8 border-l-4 border-slate-300 bg-white px-3 flex items-center ghost">_build_optimiser: forwards 20 kwargs</div>
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center">minimise(**overrides → setattr)</div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram flex flex-col">
+      <p class="lbl text-slate-500 mb-3">After: one thick band module</p>
+      <div class="flex-1 flex flex-col gap-2 justify-center">
+        <div class="h-8 border-l-4 border-slate-400 bg-slate-50 px-3 flex items-center text-xs">runner: chain bands · write artifacts</div>
+        <div class="border-t-2 border-dashed border-slate-500 my-1"></div>
+        <div class="deep rounded-lg p-4 space-y-2">
+          <p class="lbl text-slate-300">Band (problem.band(freqs))</p>
+          <p class="font-mono text-xs">band.invert(c_start, sink) → VelocityModel</p>
+          <div class="grid grid-cols-2 gap-1 text-[11px] text-slate-400 pt-1">
+            <span>frequency selection</span><span>acquisition geometry</span>
+            <span>observation traces (always)</span><span>PML split hidden</span>
+            <span>warm start</span><span>operator · objective · solver</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> Running one band means knowing eight construction steps, two observation shapes, and three places that must agree on <span class="font-mono text-sm">space_order</span>/<span class="font-mono text-sm">pml_weight</span>. To test a band today you need a full file-writing <span class="font-mono text-sm">run_inverse</span> plus a monkeypatch spy.</p>
+  <p><b>Solution.</b> A band module built from the problem and a list of frequencies hides all assembly. It always carries receiver traces, and it builds the solver from <span class="font-mono text-sm">JointODILCfg</span> directly.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Leverage: runner, notebook and tests share one entry point.</li>
+    <li>Removes <span class="font-mono">_build_optimiser</span>, <span class="font-mono">_trace_mode</span> and <span class="font-mono">_stack_observations</span>.</li>
+    <li>Test "band moves c toward truth" without touching the filesystem.</li>
+    <li>Removes hand-built Problem fixtures.</li>
+  </ul>
+</article>
+
+<!-- ============ 4 ============ -->
+<article id="c4" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">4 · One discrete Helmholtz operator, two adapters</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>operator/utils.py · WaveEquation.residual</li>
+    <li>operator/helmholtz.py · _laplacian_kernel, assemble_H_sparse, _sources, HelmholtzFactorCache</li>
+    <li>operator/spatial.py · SpatialOperator + 5 Laplacian*Order</li>
+    <li>operator/conditions.py · NeumannMirrorBC2nd/4th (bc unused)</li>
+    <li>operator/base.py · DenseOperator</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-3">Before: same knowledge, written twice</p>
+      <div class="grid grid-cols-[1fr_auto_1fr] gap-x-2 gap-y-1 text-[11px] items-center">
+        <div class="lbl text-slate-500 text-center">WaveEquation (torch)</div><div></div><div class="lbl text-slate-500 text-center">HelmholtzSolver (scipy)</div>
+        <div class="border border-slate-300 rounded px-2 py-1">c/c0 non-dim</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">c/c0 non-dim</div>
+        <div class="border border-slate-300 rounded px-2 py-1">λ_t, λ_tt symbols</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">λ_t, λ_tt symbols</div>
+        <div class="border border-slate-300 rounded px-2 py-1">sponge σ_sum, σ_prod</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">sponge σ_sum, σ_prod</div>
+        <div class="border border-slate-300 rounded px-2 py-1">conv stencil</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">hand-copied CSR stencil</div>
+        <div class="border border-slate-300 rounded px-2 py-1">F.pad reflect</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">_reflect_index</div>
+        <div class="border border-slate-300 rounded px-2 py-1">sources × t0² (loss)</div><div class="text-red-600">⇄</div><div class="border border-slate-300 rounded px-2 py-1">sources × t0² (_sources)</div>
+        <div class="col-span-3 pt-2 text-slate-500">Kept in sync only by cross-check tests. Also: NeumannMirrorBC chosen but ignored; DenseOperator has 5 adapters that differ only in kernel.</div>
+      </div>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram flex flex-col">
+      <p class="lbl text-slate-500 mb-3">After: one stencil table, two real adapters</p>
+      <div class="flex-1 flex flex-col items-center justify-center gap-2">
+        <div class="deep rounded-lg w-full max-w-sm p-4 space-y-1">
+          <p class="lbl text-slate-300">Band Helmholtz operator</p>
+          <p class="font-mono text-xs">residual(u, c) · solve(c) · sources · sample(u)</p>
+          <p class="text-[11px] text-slate-400">one source of truth: symbols, sponge, stencil, reflection, t0² scaling</p>
+        </div>
+        <div class="flex gap-10 w-full max-w-sm justify-center">
+          <div class="w-px h-6 border-l-2 border-dashed border-slate-500"></div>
+          <div class="w-px h-6 border-l-2 border-dashed border-slate-500"></div>
+        </div>
+        <div class="flex gap-3">
+          <div class="border-2 border-slate-400 rounded px-3 py-1 text-xs">matrix-free (torch, autograd)</div>
+          <div class="border-2 border-slate-400 rounded px-3 py-1 text-xs">assembled CSR (scipy, splu)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> The inverse-crime baseline depends on the torch residual and the scipy solve being the same discrete operator. That knowledge is written out twice, by hand.</p>
+  <p><b>Solution.</b> One operator module, built per band, owns the discretisation. The matrix-free and assembled forms become its two adapters, generated from one stencil table.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Two adapters make this a real seam.</li>
+    <li>Interface test: residual(solve(c), c) ≈ 0.</li>
+    <li>Removes dead BCs, the ABC and the 5 classes.</li>
+    <li>Kernel-matching tests become redundant.</li>
+  </ul>
+  <div class="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">Consistent with the Helmholtz-observation decision (D-005), and makes it safer. Once observations come from an independent forward model, the assembled adapter remains useful for the warm start.</div>
+</article>
+
+<!-- ============ 5 ============ -->
+<article id="c5" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">5 · One recovery scorer</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>experiment/runner.py · _final_recovery_metrics</li>
+    <li>experiment/recorder.py · _ssim_head_roi, emit_row</li>
+    <li>loss/utils.py · LossTape.show_velocity_recovery</li>
+    <li>tests/test_integration.py · _rel_c_error · test_e2e imports private fn</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">Before: 4 definitions of rel_c_error</p>
+      <pre class="mermaid">
+flowchart TB
+  T[truth c] --> A["runner<br/>_final_recovery_metrics<br/>interior · ssim kwargs #1"]
+  T --> B["recorder<br/>emit_row + _ssim_head_roi<br/>interior · ssim kwargs #2"]
+  T --> C["LossTape.show_velocity_recovery<br/>full grid ✗"]
+  T --> D["tests _rel_c_error"]
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  class C leak
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">After</p>
+      <pre class="mermaid">
+flowchart TB
+  S["Recovery scorer<br/>(truth, grid, metrics cfg)<br/>score(c_full) → rel_c_error, ssim_head_roi, c stats"]
+  S --> A[runner]
+  S --> B[recorder]
+  S --> C[plots]
+  S --> D[tests]
+  classDef deep fill:#0f172a,color:#f8fafc,stroke:#0f172a;
+  class S deep
+      </pre>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> Relative velocity error and head-ROI SSIM are computed in four places. They use different domains (interior vs full grid) and handle non-finite values differently.</p>
+  <p><b>Solution.</b> A scorer built once from the truth model returns every recovery metric for a <span class="font-mono text-sm">c_full</span>.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Locality: one metric definition.</li>
+    <li>Unit-test on synthetic fields.</li>
+    <li>e2e test stops importing a private fn.</li>
+  </ul>
+</article>
+
+<!-- ============ 6 ============ -->
+<article id="c6" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-2xl">6 · Model parametrisation owns latent ↔ interior ↔ full c</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">Worth exploring</span>
+    <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700">in-process</span>
+  </div>
+  <ul class="font-mono text-sm text-slate-700 grid sm:grid-cols-2 gap-x-6">
+    <li>joint_odil.py · bounds, init_params, c_full_of_z, _model_stats, output model</li>
+    <li>models/velocity_models.py · pml_c, from_field, build_full_c</li>
+    <li>experiment/plots.py · _resolve_grid_pml (uses truth pml_c)</li>
+  </ul>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-lg border border-slate-200 p-4 diagram">
+      <p class="lbl text-slate-500 mb-2">Before: pml_c and bounds handled in the glue code</p>
+      <pre class="mermaid">
+flowchart LR
+  S[start model] -- "c[interior_slice]" --> Z["SlownessLatent<br/>z_of_c (silent logit_clip)"]
+  Z --> CF["vm_in.build_full_c"]
+  CF --> OUT["from_field(pml_c = vm_in.pml_c)"]
+  OUT --> NPY[(c_final.npy)]
+  NPY --> P["plots reload<br/>pml_c = truth.pml_c ✗"]
+  P --> WS["notebook: continue from PREV_RUN"]
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#991b1b;
+  class P,WS leak
+      </pre>
+    </div>
+    <div class="rounded-lg border border-slate-200 p-4 diagram flex flex-col">
+      <p class="lbl text-slate-500 mb-3">After</p>
+      <div class="flex-1 flex flex-col items-center justify-center gap-3">
+        <div class="deep rounded-lg w-full max-w-sm p-4 space-y-2">
+          <p class="lbl text-slate-300">Model parametrisation</p>
+          <p class="font-mono text-xs">initial_latent() · c_full(z) · to_model(z) · stats(z)</p>
+          <div class="grid grid-cols-2 gap-1 text-[11px] text-slate-400">
+            <span>c bounds → m bounds</span><span>SlownessLatent (already deep)</span>
+            <span>interior / PML embedding</span><span>pml_c carried through</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p><b>Problem.</b> The latent itself is deep, but the code around it repeats the m bounds, re-derives the sigmoid for stats, and loses track of <span class="font-mono text-sm">pml_c</span> when models are saved and reloaded.</p>
+  <p><b>Solution.</b> A parametrisation built from (start model, c bounds, z_scale) owns the round trip from latent to full-grid model, including the frozen PML ring.</p>
+  <ul class="list-disc pl-5 text-sm space-y-0.5">
+    <li>Round-trip test: to_model(initial_latent()).</li>
+    <li>Makes pml_c provenance explicit.</li>
+    <li>Optimiser loses the bounds bookkeeping.</li>
+  </ul>
+</article>
+
+<!-- ============ speculative ============ -->
+<article class="rounded-xl border border-slate-200 bg-white p-6 space-y-3 shadow-sm">
+  <div class="flex flex-wrap items-center gap-3">
+    <h2 class="font-serif text-xl">Smaller seams</h2>
+    <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-200 text-slate-700">Speculative</span>
+  </div>
+  <ul class="list-disc pl-5 text-sm space-y-1">
+    <li><b>Run directory module</b> (local-substitutable). <span class="font-mono">runner</span>/<span class="font-mono">recorder</span> write <span class="font-mono">bands/band_XX_label/…</span>, and <span class="font-mono">plots</span> reads it back by parsing directory names. One module could own both writing and reading the layout.</li>
+    <li><b><span class="font-mono">Optimiser</span> ABC</b> (<span class="font-mono">optimisation/base.py</span>) has one adapter, so the seam is hypothetical. It could be deleted.</li>
+  </ul>
+</article>
+
+</section>
+
+<section id="top-recommendation" class="rounded-xl deep p-8 space-y-3">
+  <p class="lbl text-slate-400">Top recommendation</p>
+  <h2 class="font-serif text-3xl"><a href="#c1" class="underline decoration-emerald-400 underline-offset-4">1 · Make the band objective one deep module</a></h2>
+  <p class="text-slate-300 max-w-3xl">Start here because it fixes live bugs, not just structure: two config knobs in the default run do nothing, and the recorded term breakdown is wrong. Candidate #2 depends on it, and #3 gets simpler once the objective is a single module to build.</p>
+</section>
+
+</main>
+</body>
+</html>
