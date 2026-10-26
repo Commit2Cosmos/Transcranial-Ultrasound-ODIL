@@ -101,7 +101,7 @@ def test_objective_vanishes_at_truth(truth_problem):
 
 
 def _directional_check(opt, block):
-    """Relative error between autograd and central-difference directional derivatives."""
+    """Relative error of autograd vs central-difference directional derivatives."""
     u_re, u_im, z = opt.init_params()
     gen = torch.Generator().manual_seed(0)
 

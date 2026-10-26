@@ -16,7 +16,7 @@ def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
 
 
 def _interior(arr: np.ndarray, grid: Grid) -> np.ndarray:
-    """Crop a full-grid array down to the interior, excluding the absorbing boundary region.
+    """Crop a full-grid array to the interior, excluding the absorbing boundary.
 
     Accepts either an already interior-shaped array (returned unchanged) or a
     full-grid array (cropped via ``grid.interior_slice``); when

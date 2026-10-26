@@ -129,7 +129,7 @@ class HelmholtzFactorCache:
 
 
 def _reflect_index(idx: int, n: int) -> int:
-    """Map an index to ``[0, n)`` with the same rule as ``F.pad(..., mode='reflect')``."""
+    """Map an index to ``[0, n)`` like ``F.pad(..., mode='reflect')``."""
     if n <= 0:
         raise ValueError("n must be positive")
     if n == 1:
@@ -330,7 +330,7 @@ class HelmholtzSolver:
         return H.tocsr()
 
     def solve(self, verbose: bool = True) -> List[Wavefield]:
-        """Solve H(c) u = f for every shot and frequency, returning one Wavefield per shot.
+        """Solve H(c) u = f for every shot and frequency; one Wavefield per shot.
 
         Assembles and factorises H once per frequency, then solves all shots'
         sources in one batched call at that frequency.
