@@ -453,6 +453,9 @@ def _list_elt_dataclass(tp: Any) -> Optional[type]:
     return None
 
 
+# Objective-weight keys accepted in ``loss.weights``.
+_WEIGHT_KEYS = ("pde", "data", "reg")
+
 # Removed keys -> hint naming their replacement, appended to the unknown-key error.
 _MOVED_KEYS = {
     (
@@ -815,11 +818,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     for key in ("pde", "data"):
         if key not in weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
-    unknown = set(weights) - {"pde", "data", "reg"}
+    unknown = set(weights) - set(_WEIGHT_KEYS)
     if unknown:
         raise ConfigError(
             f"loss.weights has unknown key(s) {sorted(unknown)}; "
-            "valid keys: ['data', 'pde', 'reg']"
+            f"valid keys: {list(_WEIGHT_KEYS)}"
         )
     for key, val in weights.items():
         if float(val) < 0:
@@ -836,7 +839,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
                 "the only accepted param is 'eps'."
             )
-        if float(cfg.loss.weights.get("reg", 0.0)) <= 0.0:
+        if float(weights.get("reg", 0.0)) <= 0.0:
             warnings.append(
                 f"loss.regulariser.name={reg.name!r} is set but loss.weights['reg'] "
                 "is <= 0, so the regulariser has no effect."

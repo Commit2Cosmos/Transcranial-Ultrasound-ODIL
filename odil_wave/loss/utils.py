@@ -24,6 +24,8 @@ class LossConfig:
     `weights` multiplies the (already mean-reduced) per-block losses:
     `pde_weight * mean(r_pde**2) + data_weight * mean(r_data**2) + w_reg * R(c_int)`.
     Missing ``pde`` / ``data`` default to 1.0, missing ``reg`` to 0.0.
+    (This is the unscaled :class:`InverseLoss` form; ``JointFreqODIL`` applies
+    the same weights to per-(shot, freq) scaled relative terms.)
 
     The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
     the interior of c is the optimisation variable. Pad with

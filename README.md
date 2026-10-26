@@ -111,8 +111,8 @@ defaults in `odil_wave/experiment/config.py`.
   no block alternation. `u` is scaled by a fixed per-(shot, frequency) reference;
   `c` is reparameterised through a sigmoid so its bounds hold structurally. It
   minimises `Phi = pde * pde_term + data * data_term + reg * R(c)` with the
-  weights from `loss.weights`, where each term is the per-(shot, frequency)
-  scaled relative residual. Solver knobs live under `optimiser.joint`
+  weights from `loss.weights`, where each term is the mean (over real scalar
+  entries) of the per-(shot, frequency) scaled relative residual. Solver knobs live under `optimiser.joint`
   (`inner_max_iter`, `z_scale`, …).
 
 ### Frequency continuation (`bands`)
