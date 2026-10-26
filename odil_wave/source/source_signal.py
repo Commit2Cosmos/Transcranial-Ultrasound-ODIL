@@ -202,7 +202,7 @@ class SourceSignal:
 
 
 def _as_frequency_array(frequencies):
-    """Coerce a FrequencySelection / tensor / array / sequence to a 1D np array of |Hz|."""
+    """Coerce a FrequencySelection / tensor / array / sequence to 1D |Hz|."""
     if frequencies is None:
         return None
     freqs = getattr(frequencies, "frequencies", frequencies)

@@ -26,10 +26,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "black>=24.0",
-    "ruff>=0.17",
+    # pinned to the .pre-commit-config.yaml revs so local runs match CI
+    "black==24.8.0",
+    "ruff==0.17.2",
     "pre-commit>=3.0",
     "ipykernel",
+    "nbconvert",
     "torchinfo",
 ]
 
@@ -43,10 +45,15 @@ include = ["odil_wave*"]
 
 [tool.ruff]
 line-length = 88
+# match pre-commit's ruff hook, which skips notebooks
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 88
 
 [tool.pytest.ini_options]
 markers = [

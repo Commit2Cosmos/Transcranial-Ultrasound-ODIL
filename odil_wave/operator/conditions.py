@@ -39,7 +39,7 @@ class NeumannMirrorBC2nd(Conditions):
         uyp: torch.Tensor,
         utm: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Patch the four spatial ghost neighbour tensors with mirrored boundary values from utm."""
+        """Patch the four spatial ghost neighbours with mirrored boundary values."""
         uxm = self._patch_first(uxm, utm[:, 1, :], axis=1)
         uxp = self._patch_last(uxp, utm[:, -2, :], axis=1)
         uym = self._patch_first(uym, utm[:, :, 1], axis=2)
@@ -86,7 +86,7 @@ class NeumannMirrorBC4th(Conditions):
         uyp2: torch.Tensor,
         utm: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        """Patch the eight spatial ghost-neighbour tensors with mirrored boundary values from utm."""
+        """Patch the eight spatial ghost neighbours with mirrored boundary values."""
         uxm = torch.cat([utm[:, 1:2, :], uxm[:, 1:, :]], dim=1)
         uxp = torch.cat([uxp[:, :-1, :], utm[:, -2:-1, :]], dim=1)
         uxm2 = self._replace_x_front(uxm2, utm[:, 2, :], utm[:, 1, :])

@@ -109,7 +109,7 @@ class FrequencySelection:
         return complex_dtype(self.grid.dtype)
 
     def symbols_broadcast(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """``lambda_t``, ``lambda_tt`` shaped ``(1, nf, 1, 1)`` for shot-batched fields."""
+        """``lambda_t``, ``lambda_tt`` shaped ``(1, nf, 1, 1)`` for shot batches."""
         nf = self.n_frequencies
         lt = self.lambda_t.to(dtype=self.cdtype).view(1, nf, 1, 1)
         ltt = self.lambda_tt.to(dtype=self.cdtype).view(1, nf, 1, 1)

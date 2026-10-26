@@ -40,7 +40,7 @@ def _pick(magnitude: float, table) -> Tuple[float, str]:
 
 
 def time_scale(t_max: float) -> Tuple[float, str]:
-    """Multiplier and unit label for a time axis whose largest value is ``t_max`` seconds."""
+    """Multiplier and unit label for a time axis peaking at ``t_max`` seconds."""
     return _pick(t_max, _TIME_PREFIXES)
 
 
