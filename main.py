@@ -21,15 +21,13 @@ import argparse
 import sys
 from typing import Any, Dict, List, Optional
 
-import yaml
-
 
 def _summarise(cfg) -> str:
     lines: List[str] = []
     lines.append(f"run.run_id      : {cfg.run.run_id}")
     lines.append(f"output dir      : {cfg.run_dir()}")
     lines.append(
-        f"optimiser       : joint  "
+        "optimiser       : joint  "
         f"(n_iter={cfg.optimiser.n_iter}, log_every={cfg.optimiser.log_every})"
     )
     lines.append(
@@ -101,16 +99,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     # config resolution is torch-free; import lazily so --help stays instant.
+    import yaml
+
     from odil_wave.experiment.config import (
         ConfigError,
-        RunConfig,
+        default_config_dict,
         load_config_file,
         resolve_config,
         validate_config,
     )
 
     if args.print_defaults:
-        print(yaml.safe_dump(RunConfig().to_dict(), sort_keys=False), end="")
+        print(yaml.safe_dump(default_config_dict(), sort_keys=False), end="")
         return 0
 
     user_dict: Optional[Dict[str, Any]] = None

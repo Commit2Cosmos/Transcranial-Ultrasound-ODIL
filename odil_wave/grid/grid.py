@@ -44,7 +44,7 @@ class Grid:
     pml_width: int  # extra cells per side wrapping the interior
     pml_power: int  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float  # target theoretical reflection coefficient
-    t_max: float  # specify based on forward wavefield observations
+    t_max: float  # time window [s]; sets dt and the FFT bins
     init_nt: Optional[int]
     cfl_safety: float
     device: torch.device

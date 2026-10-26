@@ -236,7 +236,7 @@ def _build_optimiser(
         lbfgs_lr=opt.lbfgs_lr,
         pde_weight=float(w["pde"]),
         data_weight=float(w["data"]),
-        reg_weight=float(w.get("reg", 0.0)),
+        reg_weight=float(w["reg"]),
         log_every=opt.log_every,
         verbose=cfg.runtime.verbose,
     )
@@ -449,7 +449,7 @@ def _build_regulariser(cfg: RunConfig):
     reg term. The scalar weight itself is applied by
     :class:`~odil_wave.optimisation.JointFreqODIL` in its objective.
     """
-    if float(cfg.loss.weights.get("reg", 0.0)) <= 0.0:
+    if float(cfg.loss.weights["reg"]) <= 0.0:
         return None
     reg = cfg.loss.regulariser
     return Regulariser(kind=reg.name, eps=reg.eps)

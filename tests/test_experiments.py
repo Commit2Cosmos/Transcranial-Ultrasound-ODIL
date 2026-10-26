@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -376,6 +377,14 @@ def test_bad_loss_weights_rejected(weights):
     """Negative weights, data <= 0 and unknown weight keys raise ConfigError."""
     with pytest.raises(ConfigError):
         validate_config(resolve_config({"loss": {"weights": weights}}))
+
+
+@pytest.mark.parametrize("missing", ["pde", "data", "reg"])
+def test_every_loss_weight_is_required(missing):
+    """loss.weights must name pde, data and reg (no implicit reg = 0)."""
+    weights = {k: 1.0 for k in ("pde", "data", "reg") if k != missing}
+    with pytest.raises(ConfigError, match=missing):
+        validate_config(resolve_config({}, [f"loss.weights={json.dumps(weights)}"]))
 
 
 def test_pde_weight_zero_is_allowed():

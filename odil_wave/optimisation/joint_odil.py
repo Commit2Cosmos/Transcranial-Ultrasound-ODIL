@@ -118,8 +118,8 @@ class SlownessLatent:
 
     ``m(z) = m_min + (m_max - m_min) * sigmoid(z_scale * z)`` with velocity
     bounds converted as ``m_min = 1/c_max**2``, ``m_max = 1/c_min**2``.
-    ``z_scale`` is a fixed model-coordinate scale (default 1). The inverse (logit) is used once for initialisation, clipped away
-    from 0/1.
+    ``z_scale`` is a fixed model-coordinate scale (default 1). The inverse
+    (logit) is used once for initialisation, clipped away from 0/1.
     """
 
     m_min: float
@@ -157,9 +157,10 @@ class JointFreqODIL(Optimiser):
     Every parameter the run config sets (the ``optimiser`` block, the
     ``loss.weights`` and ``runtime.verbose``) is a required keyword (ADR 0001);
     the numerical-method details (``eps_*``, ``z_scale``, ``logit_clip``) keep
-    library defaults. See the module docstring for the formulation. ``loss`` must be an :class:`InverseLoss`
-    (the operator, geometry, sources and observations are read from it, so the
-    PDE / receiver operators are identical to truth-data generation).
+    library defaults. See the module docstring for the formulation. ``loss``
+    must be an :class:`InverseLoss` (the operator, geometry, sources and
+    observations are read from it, so the PDE / receiver operators are
+    identical to truth-data generation).
     """
 
     def __init__(

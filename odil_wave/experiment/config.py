@@ -287,9 +287,9 @@ class LossCfg:
 
     Params:
     * ``weights``: the only place the joint objective weights are set, applied
-      as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``
-      / ``data`` (required) and ``reg`` (optional, missing -> 0); each >= 0 and
-      ``data`` > 0. ``reg`` > 0 activates the regulariser.
+      as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``,
+      ``data`` and ``reg`` (all required); each >= 0 and ``data`` > 0.
+      ``reg`` > 0 activates the regulariser.
     * ``normalize_data``: ``"none"`` | ``"per_receiver"``; applied in the data
       term. ``per_receiver`` divides synthetic and observed traces by each
       receiver's peak observed magnitude.
@@ -578,9 +578,13 @@ def apply_overrides(
     return out
 
 
-# Accepted values of the enum-like string fields.
+# Accepted values of the enum-like fields. config.py stays torch-free, so these
+# mirror the library: WaveEquation's stencil orders, the Regulariser kinds and
+# the VelocityModel profiles / profile kwargs.
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
 _NORMALIZE_DATA = ("none", "per_receiver")
+_WARM_STARTS = ("helmholtz", "none")
+_LINE_SEARCHES = ("strong_wolfe", "none")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
@@ -683,7 +687,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     for key in ("n_iter", "log_every", "inner_max_iter", "history_size"):
         if getattr(opt, key) < 1:
             raise ConfigError(f"optimiser.{key} must be >= 1")
-    if str(opt.line_search_fn).lower() not in ("strong_wolfe", "none"):
+    if str(opt.line_search_fn).lower() not in _LINE_SEARCHES:
         raise ConfigError("optimiser.line_search_fn must be 'strong_wolfe' or 'none'")
 
     if not cfg.continuation.bands:
@@ -695,7 +699,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
-    if cfg.continuation.warm_start not in ("helmholtz", "none"):
+    if cfg.continuation.warm_start not in _WARM_STARTS:
         raise ConfigError(
             f"continuation.warm_start must be 'helmholtz' or 'none', "
             f"got {cfg.continuation.warm_start!r}"
@@ -729,7 +733,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
 
     loss = cfg.loss
     weights = loss.weights
-    for key in ("pde", "data"):
+    for key in _WEIGHT_KEYS:
         if key not in weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
     unknown = set(weights) - set(_WEIGHT_KEYS)

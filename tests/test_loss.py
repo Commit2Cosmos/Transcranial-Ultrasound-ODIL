@@ -4,8 +4,8 @@ InverseLoss and the Regulariser.
 These affirm:
 * ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
   (zero on a constant field) and rejects unknown kinds.
-* ``LossConfig`` fills a missing ``reg`` weight with 0 and derives the packed
-  wavefield DOF offset.
+* ``LossConfig`` keeps the given weights and derives the packed wavefield DOF
+  offset.
 * ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
   c-history cadence, and rebuilds from saved records.
 * ``ForwardLoss`` / ``InverseLoss`` are (near) zero at the true wavefield+model,
@@ -63,15 +63,15 @@ def test_regulariser_unknown_kind_raises():
 # --------------------------------------------------------------------------- #
 # LossConfig
 # --------------------------------------------------------------------------- #
-def test_loss_config_fills_reg_weight_and_offset(wave_stack):
-    """A missing reg weight means 0.0; speed_offset packs u DOFs."""
+def test_loss_config_weights_and_offset(wave_stack):
+    """LossConfig keeps the given weights as-is; speed_offset packs u DOFs."""
     cfg = LossConfig(
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 2.0, "data": 3.0},
         regulariser=None,
     )
-    assert cfg.weights == {"pde": 2.0, "data": 3.0, "reg": 0.0}
+    assert cfg.weights == {"pde": 2.0, "data": 3.0}
     g = wave_stack.grid
     nf = wave_stack.freq.n_frequencies
     expected = wave_stack.geometry.n_sources * nf * g.nx * g.ny * 2
