@@ -1,2 +1,3 @@
 - Check for unused logic
 - Check speedups on gpu
+- Normalise per trace or per source
