@@ -4,7 +4,7 @@ InverseLoss and the Regulariser.
 These affirm:
 * ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
   (zero on a constant field) and rejects unknown kinds.
-* ``LossConfig`` merges default weights and derives the packed wavefield DOF
+* ``LossConfig`` keeps the given weights and derives the packed wavefield DOF
   offset.
 * ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
   c-history cadence, and rebuilds from saved records.
@@ -49,7 +49,7 @@ def test_regulariser_tikhonov_ramp():
     # c increasing by 1 per row: dx_c = 1 everywhere in the (n-1)x(n-1) stencil.
     n = 4
     c = torch.arange(n, dtype=torch.float64).view(n, 1).expand(n, n).contiguous()
-    reg = Regulariser(kind="tikhonov")
+    reg = Regulariser(kind="tikhonov", eps=1e-8)
     # dx_c == 1 over (n-1)*(n-1) cells, dy_c == 0 -> penalty == (n-1)^2.
     assert float(reg(c)) == pytest.approx((n - 1) ** 2)
 
@@ -57,20 +57,21 @@ def test_regulariser_tikhonov_ramp():
 def test_regulariser_unknown_kind_raises():
     """An unknown regulariser kind is rejected."""
     with pytest.raises(ValueError):
-        Regulariser(kind="l1")
+        Regulariser(kind="l1", eps=1e-8)
 
 
 # --------------------------------------------------------------------------- #
 # LossConfig
 # --------------------------------------------------------------------------- #
-def test_loss_config_merges_weights_and_offset(wave_stack):
-    """Missing pde/data weights default to 1.0, reg to 0.0; speed_offset packs u DOFs."""
+def test_loss_config_weights_and_offset(wave_stack):
+    """LossConfig keeps the given weights as-is; speed_offset packs u DOFs."""
     cfg = LossConfig(
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
-        weights={"pde": 2.0},
+        weights={"pde": 2.0, "data": 3.0},
+        regulariser=None,
     )
-    assert cfg.weights == {"pde": 2.0, "data": 1.0, "reg": 0.0}
+    assert cfg.weights == {"pde": 2.0, "data": 3.0}
     g = wave_stack.grid
     nf = wave_stack.freq.n_frequencies
     expected = wave_stack.geometry.n_sources * nf * g.nx * g.ny * 2
@@ -138,6 +139,7 @@ def test_forward_loss_zero_at_solution(wave_stack):
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 1.0, "data": 1.0},
+        regulariser=None,
     )
     loss = ForwardLoss(cfg)
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
@@ -152,11 +154,13 @@ def test_forward_loss_scales_with_pde_weight(wave_stack):
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 1.0},
+        regulariser=None,
     )
     dbl = LossConfig(
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 2.0},
+        regulariser=None,
     )
     # perturb the field so the residual is non-zero.
     amp = wave_stack.amp * 1.1
@@ -173,13 +177,16 @@ def _inverse_config(wave_stack, weights=None):
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights=weights or {"pde": 1.0, "data": 1.0},
+        regulariser=None,
     )
 
 
 def test_inverse_loss_zero_at_truth(wave_stack):
     """PDE + data misfit is ~0 at the true wavefield and model."""
     loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
+        observed_wavefield=wave_stack.sols,
+        config=_inverse_config(wave_stack),
+        normalize_data="none",
     )
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
     assert float(L) < 1e-18
@@ -191,12 +198,13 @@ def test_inverse_loss_requires_exactly_one_observation(wave_stack):
     """Exactly one of observed_wavefield / observed_traces must be supplied."""
     cfg = _inverse_config(wave_stack)
     with pytest.raises(ValueError):
-        InverseLoss(config=cfg)  # neither
+        InverseLoss(config=cfg, normalize_data="none")  # neither
     with pytest.raises(ValueError):
         InverseLoss(
             observed_wavefield=wave_stack.sols,
             observed_traces=wave_stack.obs_traces,
             config=cfg,
+            normalize_data="none",
         )  # both
 
 
@@ -204,13 +212,17 @@ def test_inverse_loss_rejects_non_3d_traces(wave_stack):
     """Trace observations must be (n_shots, nf, n_receivers)."""
     cfg = _inverse_config(wave_stack)
     with pytest.raises(ValueError):
-        InverseLoss(observed_traces=wave_stack.obs_traces[0], config=cfg)
+        InverseLoss(
+            observed_traces=wave_stack.obs_traces[0], config=cfg, normalize_data="none"
+        )
 
 
 def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
     """Trace-observation mode is also ~0 at the true wavefield/model."""
     loss = InverseLoss(
-        observed_traces=wave_stack.obs_traces, config=_inverse_config(wave_stack)
+        observed_traces=wave_stack.obs_traces,
+        config=_inverse_config(wave_stack),
+        normalize_data="none",
     )
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
     assert float(L) < 1e-18
@@ -219,7 +231,9 @@ def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
 def test_inverse_loss_data_misfit_positive_when_wrong(wave_stack):
     """A wrong wavefield produces a positive data misfit."""
     cfg = _inverse_config(wave_stack, weights={"pde": 0.0, "data": 1.0})
-    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
+    loss = InverseLoss(
+        observed_wavefield=wave_stack.sols, config=cfg, normalize_data="none"
+    )
     L = loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c)
     assert float(L) > 0
 
@@ -229,6 +243,7 @@ def test_inverse_loss_weights_override(wave_stack):
     loss = InverseLoss(
         observed_wavefield=wave_stack.sols,
         config=_inverse_config(wave_stack, {"pde": 1.0, "data": 1.0}),
+        normalize_data="none",
     )
     amp = wave_stack.amp * 0.5
     full = float(loss.evaluate(amp, wave_stack.model.c))
@@ -260,9 +275,11 @@ def test_inverse_loss_regulariser_term(wave_stack):
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 1.0, "data": 1.0, "reg": 1.0},
-        regulariser=Regulariser("tikhonov"),
+        regulariser=Regulariser(kind="tikhonov", eps=1e-8),
     )
-    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
+    loss = InverseLoss(
+        observed_wavefield=wave_stack.sols, config=cfg, normalize_data="none"
+    )
     g = wave_stack.grid
     c_int = wave_stack.model.c[g.interior_slice].clone()
     c_int[0, 0] += 100.0  # introduce a gradient

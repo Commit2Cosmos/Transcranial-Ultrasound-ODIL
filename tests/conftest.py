@@ -1,5 +1,4 @@
-"""Shared fixtures for the odil_wave test-suite.
-"""
+"""Shared fixtures for the odil_wave test-suite."""
 
 from types import SimpleNamespace
 
@@ -18,6 +17,7 @@ from odil_wave import (
     WaveEquation,
     Wavefield,
 )
+from odil_wave.experiment import deep_merge
 
 matplotlib.use("Agg")
 
@@ -40,56 +40,88 @@ def make_grid(**overrides) -> Grid:
         interior_extent=EXTENT,
         c_min=C_MIN,
         c_max=C_MAX,
+        pml_width=PML,
+        pml_power=3,
+        pml_R0=1e-6,
         t_max=T_MAX,
         init_nt=INIT_NT,
-        pml_width=PML,
+        cfl_safety=0.9,
+        device=torch.device("cpu"),
         dtype=DTYPE,
     )
     kw.update(overrides)
     return Grid(**kw)
 
 
-def tiny_run_config(tmp_path, run_id: str = "tiny") -> dict:
-    """User config for a tiny single-band joint inversion under ``tmp_path``."""
-    return {
-        "run": {"output_root": str(tmp_path), "run_id": run_id},
-        "runtime": {"dtype": "float64"},
-        "grid": {
-            "interior_shape": [20, 20],
-            "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
-            "c_min": 1400.0,
-            "c_max": 1750.0,
-            "t_max": 6e-5,
-            "init_nt": 200,
-            "pml_width": 6,
-        },
-        "source": {"kind": "tone_burst", "f0": 40e3, "n_cycles": 2.0},
-        "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
-        "physics": {"space_order": 2},
-        "truth": {
-            "profile": "overdensity",
-            "base": 1500.0,
-            "contrast": 150.0,
-            "extra": {"radius": 0.012},
-        },
-        "init": {"profile": "homogeneous", "base": 1500.0},
-        "observation": {
-            "normalize_data": "none",
-            "pml_width": None,
-        },
-        "continuation": {
-            "warm_start": "helmholtz",
-            "bands": [{"frequencies_hz": [40e3]}],
-        },
-        "loss": {"weights": {"pde": 1.0, "data": 10.0, "reg": 0.0}},
-        "optimiser": {
-            "name": "joint",
-            "n_iter": 10,
-            "log_every": 1,
-            "joint": {"inner_max_iter": 20, "z_scale": 10.0},
-        },
-        "metrics": {"ssim": {"mask": "none"}},
-    }
+def make_source(grid, **overrides) -> SourceSignal:
+    """Tone-burst wavelet at F0 on ``grid``; keyword overrides win."""
+    kw = dict(
+        kind="tone_burst",
+        f0=F0,
+        amplitude=1.0,
+        n_cycles=N_CYCLES,
+        envelope="gaussian",
+        dimensionless=True,
+        offset=OFFSET,
+    )
+    kw.update(overrides)
+    return SourceSignal(grid, **kw)
+
+
+def make_geometry(grid, source, freq, **overrides) -> AcquisitionGeometry:
+    """8-receiver / 2-source point-injection ring; keyword overrides win."""
+    kw = dict(
+        n_receivers=8,
+        n_sources=2,
+        sigma_s=None,
+        a_frac=0.55,
+        b_frac=0.70,
+        ring_center=None,
+        source_spatial="point",
+    )
+    kw.update(overrides)
+    return AcquisitionGeometry(grid, source, freq, **kw)
+
+
+def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
+    """A velocity model on ``grid`` (1500 m/s background); overrides win."""
+    kw = dict(base=1500.0, contrast=0.0, pml_c=None)
+    kw.update(overrides)
+    return VelocityModel(grid, profile=profile, **kw)
+
+
+# Experiment config for a tiny single-band joint inversion: names only the
+# values that differ from the default config (the ``RunConfig`` defaults).
+TINY_EXPERIMENT = {
+    "runtime": {"dtype": "float64"},
+    "grid": {
+        "interior_shape": [20, 20],
+        "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
+        "c_min": 1400.0,
+        "c_max": 1750.0,
+    },
+    "pml": {"width": 6},
+    "time": {"t_max": 6e-5, "init_nt": 200},
+    "source": {"f0": 40e3, "n_cycles": 2.0},
+    "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
+    "truth": {"profile": "overdensity", "contrast": 150.0, "extra": {"radius": 0.012}},
+    "init": {"profile": "homogeneous"},
+    "continuation": {"bands": [{"frequencies_hz": [40e3]}]},
+    "loss": {"weights": {"data": 10.0}, "normalize_data": "none"},
+    "optimiser": {"n_iter": 10, "log_every": 1},
+    "metrics": {"ssim": {"mask": "none"}},
+}
+
+
+@pytest.fixture
+def tiny_experiment(tmp_path) -> dict:
+    """The tiny experiment config, writing its run under ``tmp_path``.
+
+    Tests needing a variant ``deep_merge`` their changes onto it.
+    """
+    return deep_merge(
+        TINY_EXPERIMENT, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
+    )
 
 
 @pytest.fixture
@@ -107,28 +139,19 @@ def freq_selection(grid) -> FrequencySelection:
 @pytest.fixture
 def source(grid) -> SourceSignal:
     """Tone-burst wavelet at F0."""
-    return SourceSignal(
-        grid, kind="tone_burst", f0=F0, n_cycles=N_CYCLES, offset=OFFSET
-    )
+    return make_source(grid)
 
 
 @pytest.fixture
 def geometry(grid, source, freq_selection) -> AcquisitionGeometry:
     """8-receiver / 2-source point-injection ring."""
-    return AcquisitionGeometry(
-        grid,
-        source,
-        freq_selection,
-        n_receivers=8,
-        n_sources=2,
-        source_spatial="point",
-    )
+    return make_geometry(grid, source, freq_selection)
 
 
 @pytest.fixture
 def homogeneous_model(grid) -> VelocityModel:
     """Uniform 1500 m/s medium on the tiny grid."""
-    return VelocityModel(grid, profile="homogeneous", base=1500.0)
+    return make_model(grid)
 
 
 @pytest.fixture(scope="module")
@@ -136,17 +159,15 @@ def wave_stack() -> SimpleNamespace:
     """A fully-solved frequency-domain forward problem, shared per test module."""
     g = make_grid()
     fs = FrequencySelection.from_frequencies(g, [F0])
-    src = SourceSignal(g, kind="tone_burst", f0=F0, n_cycles=N_CYCLES, offset=OFFSET)
-    geom = AcquisitionGeometry(
-        g, src, fs, n_receivers=8, n_sources=2, source_spatial="point"
-    )
-    model = VelocityModel(g, profile="homogeneous", base=1500.0)
+    src = make_source(g)
+    geom = make_geometry(g, src, fs)
+    model = make_model(g)
     wf = Wavefield(g, fs, velocity_model=model)
-    solver = HelmholtzSolver(wf, geom, space_order=2)
+    solver = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0)
     sols = solver.solve(verbose=False)
 
     amp = torch.stack([s.amplitude for s in sols])
-    wave_eq = WaveEquation(wf, space_order=2)
+    wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
     sources = (
         torch.stack(
             [geom.source_field(i).to(dtype=wf.cdtype) for i in range(geom.n_sources)]

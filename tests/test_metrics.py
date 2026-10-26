@@ -18,7 +18,6 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
-from odil_wave.grid import Grid  # noqa: E402
 from odil_wave.metrics.metrics import (  # noqa: E402
     _interior,
     _interior_mask,
@@ -27,6 +26,8 @@ from odil_wave.metrics.metrics import (  # noqa: E402
 from odil_wave.metrics import mae, mse, ssim, ssim_map  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
+
+from conftest import make_grid  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +44,9 @@ def _close_figures():
 @pytest.fixture(scope="module")
 def small_grid():
     """6x6 interior, pml_width=2 -> (10, 10) full grid."""
-    return Grid(
+    return make_grid(
+        interior_extent=((-1.0, 1.0), (-1.0, 1.0)),
+        dtype=torch.float32,
         interior_shape=(6, 6),
         c_min=1000.0,
         c_max=2000.0,
@@ -56,7 +59,9 @@ def small_grid():
 @pytest.fixture(scope="module")
 def ssim_grid():
     """9x9 interior, pml_width=2 -> (13, 13) full grid (>= default win_size=7)."""
-    return Grid(
+    return make_grid(
+        interior_extent=((-1.0, 1.0), (-1.0, 1.0)),
+        dtype=torch.float32,
         interior_shape=(9, 9),
         c_min=1000.0,
         c_max=2000.0,
@@ -123,7 +128,9 @@ def test_interior_leaves_an_already_interior_shaped_array_unchanged(small_grid):
 
 
 def test_interior_is_identity_when_pml_width_is_zero():
-    grid = Grid(
+    grid = make_grid(
+        interior_extent=((-1.0, 1.0), (-1.0, 1.0)),
+        dtype=torch.float32,
         interior_shape=(5, 5),
         c_min=1000.0,
         c_max=2000.0,

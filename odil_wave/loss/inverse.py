@@ -31,8 +31,8 @@ class InverseLoss(DiscreteLoss):
         *,
         config: LossConfig,
         observed_traces=None,
+        normalize_data: str,
         callback: LossTape | None = None,
-        normalize_data: str | None = None,
     ):
         """Initialise the inverse loss from wavefield or trace observations.
 
@@ -45,12 +45,13 @@ class InverseLoss(DiscreteLoss):
             Loss configuration (keyword-only).
         observed_traces : optional
             Complex receiver traces ``(n_shots, nf, n_receivers)``.
+        normalize_data : {"none", "per_receiver"}
+            Data-normalisation mode (keyword-only, set by the run config's
+            ``loss.normalize_data``): ``"none"`` leaves the data residual
+            unscaled; ``"per_receiver"`` divides synthetic and observed traces
+            by each receiver's peak-abs observed magnitude.
         callback : LossTape, optional
             Diagnostics tape.
-        normalize_data : str, optional
-            Data-normalisation mode: ``None`` / ``"none"`` leaves the data
-            residual unscaled; ``"per_receiver"`` divides synthetic and
-            observed traces by each receiver's peak-abs magnitude.
 
         Notes
         -----
@@ -125,11 +126,11 @@ class InverseLoss(DiscreteLoss):
         Returns
         -------
         torch.Tensor or None
-            ``None`` when :attr:`normalize_data` is ``None`` / ``"none"``.
+            ``None`` when :attr:`normalize_data` is ``"none"``.
             For ``"per_receiver"`` a positive scale of shape
             ``(n_shots, 1, n_receivers)``.
         """
-        if self.normalize_data is None or self.normalize_data == "none":
+        if self.normalize_data == "none":
             return None
         if self.normalize_data == "per_receiver":
             obs_tr = self._obs_traces()
@@ -137,7 +138,7 @@ class InverseLoss(DiscreteLoss):
             return scale.clamp(min=1e-12).detach()
         raise ValueError(
             f"Invalid normalize_data {self.normalize_data!r}; "
-            "expected one of None, 'none', 'per_receiver'."
+            "expected 'none' or 'per_receiver'."
         )
 
     def set_normalization(self, enabled: bool) -> None:

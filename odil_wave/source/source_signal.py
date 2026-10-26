@@ -16,22 +16,39 @@ class SourceSignal:
     def __init__(
         self,
         grid: Grid,
-        kind: str = "ricker",
-        f0: float = 4.0,
-        t0: Optional[float] = None,
-        amplitude: float = 1.0,
+        *,
+        kind: str,
+        f0: float,
+        amplitude: float,
         # tone_burst-only parameters
-        n_cycles: float = 3.0,
-        envelope: str = "gaussian",
+        n_cycles: float,
+        envelope: str,
+        dimensionless: bool,
+        t0: Optional[float] = None,
         offset: int = 0,
-        dimensionless: bool = True,
     ):
         """Build a source pulse on `grid`.
 
+        Every parameter set by the run config's ``source`` block is a required
+        keyword (ADR 0001); ``t0`` and ``offset`` keep library defaults.
+
         Parameters
         ----------
+        kind
+            ``"tone_burst"`` | ``"ricker"``.
+        f0
+            Centre frequency in Hz.
         amplitude
-            Peak of the waveform `s(t)`.
+            Peak of the waveform `s(t)` (before the ``dimensionless`` scaling).
+        n_cycles, envelope
+            tone_burst only: cycle count and ``"gaussian"`` | ``"rectangular"``
+            envelope.
+        dimensionless
+            If true the physical amplitude is ``amplitude * 2 * f0**2``.
+        t0
+            Ricker time centre in s; ``None`` -> ``1 / f0``.
+        offset
+            tone_burst sample offset delaying the wavelet.
         """
         self.grid = grid
         self.kind = kind

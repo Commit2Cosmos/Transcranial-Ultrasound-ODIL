@@ -2,10 +2,15 @@
 
 Dependency-light (standard library + PyYAML only, no ``torch`` / ``odil_wave``
 imports) so a config can be resolved and validated without importing the
-numerical stack. Every field has an explicit default; a user config may omit
-any field and the fully-resolved config written to ``config_resolved.yaml``
-records every effective value. The dataclasses are frozen (immutable once
-resolved).
+numerical stack.
+
+The dataclass defaults below are the **default config**, the only one: there is
+no default YAML file (ADR 0001). An experiment config names only the values it
+changes; :func:`resolve_config` applies it (and any CLI overrides) to these
+defaults, and the resolved config written to ``config_resolved.yaml`` records
+every value. ``python main.py --print-defaults`` prints the default config.
+The docstrings here are the single place each field is documented. The
+dataclasses are frozen (immutable once resolved).
 """
 
 from __future__ import annotations
@@ -43,8 +48,9 @@ class RunMetaCfg:
 
     Params:
     * ``run_id``: run directory name; blank -> auto-minted from the resolved
-      config at :func:`resolve_config` time (see :func:`_make_run_id`). Set to
-      pin a name.
+      config at :func:`resolve_config` time as
+      ``<DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>`` (see
+      :func:`_make_run_id`). Set to pin a name.
     * ``output_root``: output directory; run dir = ``<output_root>/<run_id>``.
     * ``seed``: int RNG seed for reproducibility.
     * ``tags``: list[str] free-form labels recorded in the config.
@@ -60,7 +66,7 @@ class RunMetaCfg:
 
 @dataclass(frozen=True)
 class RuntimeCfg:
-    """Device / dtype / threading.
+    """Device / dtype / threading / logging.
 
     Params:
     * ``device``: ``"cpu"`` | ``"cuda"`` | ``"mps"``.
@@ -68,46 +74,85 @@ class RuntimeCfg:
       ``f64``/``double``); float64 is more reproducible for the inverse solve.
     * ``torch_num_threads``: ``None`` -> torch default, else int >= 1.
     * ``deterministic``: force deterministic torch kernels.
+    * ``verbose``: print Helmholtz-solve and per-iteration optimiser progress.
     """
 
     device: str = "cpu"
     dtype: str = "float32"
     torch_num_threads: Optional[int] = None
     deterministic: bool = False
+    verbose: bool = False
 
 
 @dataclass(frozen=True)
 class GridCfg:
-    """Spatial + time discretisation (odil_wave.Grid).
+    """Spatial discretisation of the interior (odil_wave.Grid).
 
     Params:
-    * ``interior_shape``: ``[ny, nx]`` interior cells (PML added outside).
-    * ``c_min`` / ``c_max``: m/s velocity bounds (``c_min`` < ``c_max``).
-    * ``interior_extent``: metres, ``[[y0, y1], [x0, x1]]`` physical domain.
-    * ``t_max``: s; time window (sets ``dt`` and the FFT frequency bins).
-    * ``init_nt``: ``None`` -> CFL-derived, else int >= 1 time steps.
-    * ``pml_width``: cells; absorbing-border thickness (inverse grid).
-    * ``pml_power``: PML grading polynomial order (typ. 2-4).
-    * ``pml_R0``: target PML reflection coefficient (small, e.g. 1e-4 .. 1e-8).
-    * ``cfl_safety``: (0, 1]; CFL fraction used to pick dt.
-    * ``L0`` / ``c0``: ``None`` -> auto, else > 0 length / velocity
-      non-dimensionalisation scales.
+    * ``interior_shape``: ``[nx, ny]`` interior grid **nodes** along x then y
+      (spacing ``dx = (x1 - x0) / (nx - 1)``); the PML adds ``pml.width``
+      nodes on every side.
+    * ``interior_extent``: metres, ``[[x0, x1], [y0, y1]]`` physical extent of
+      the interior, x first (same axis order as ``interior_shape``).
+    * ``c_min`` / ``c_max``: m/s velocity bounds (``c_min`` < ``c_max``). They
+      also bound the inverted model: the joint solver's squared-slowness latent
+      maps onto ``[1/c_max**2, 1/c_min**2]``. ``c_max`` sets the CFL time step
+      when ``time.init_nt`` is null.
+    * ``space_order``: spatial FD stencil order ``2`` | ``4`` | ``6`` | ``8``
+      | ``10`` (higher = less numerical dispersion, costlier).
     """
 
     interior_shape: List[int] = field(default_factory=lambda: [125, 125])
-    c_min: float = 1300.0
-    c_max: float = 3100.0
     interior_extent: List[List[float]] = field(
         default_factory=lambda: [[0.0, 0.25], [0.0, 0.25]]
     )
+    c_min: float = 1300.0
+    c_max: float = 3100.0
+    space_order: int = 2
+
+
+@dataclass(frozen=True)
+class PmlCfg:
+    """Absorbing layer (PML sponge) around the interior.
+
+    Params:
+    * ``width``: int >= 0 nodes per side; PML thickness of the inversion grid.
+    * ``power``: PML grading polynomial order (typ. 2-4).
+    * ``R0``: target PML reflection coefficient (small, e.g. 1e-4 .. 1e-8).
+    * ``damping_scale``: >= 0 factor multiplying the operator's PML damping
+      terms (``sigma`` in the frequency-domain residual); ``1`` is the designed
+      absorption, ``0`` disables absorption (reflecting borders).
+    * ``observation_width``: ``None`` -> same as ``width``: observations are
+      generated on the inversion grid with the inversion operator (the inverse
+      crime; the true model fits the data exactly). An int >= 0 different from
+      ``width`` opts into a deliberate modelling error: observations are
+      synthesised on a separate grid with that PML width and reduced to
+      receiver traces.
+    """
+
+    width: int = 40
+    power: int = 3
+    R0: float = 1e-6
+    damping_scale: float = 1.0
+    observation_width: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class TimeCfg:
+    """Time axis; it fixes the FFT bins the band frequencies snap to.
+
+    Params:
+    * ``t_max``: s; time window (with ``init_nt`` sets ``dt`` and the FFT
+      frequency resolution ``1 / t_max``).
+    * ``init_nt``: ``None`` -> CFL-derived from ``grid.c_max``, else int >= 2
+      time samples.
+    * ``cfl_safety``: (0, 1]; CFL fraction used to pick ``dt`` when
+      ``init_nt`` is null.
+    """
+
     t_max: float = 500e-6
     init_nt: Optional[int] = 1300
-    pml_width: int = 40
-    pml_power: int = 3
-    pml_R0: float = 1e-6
     cfl_safety: float = 0.9
-    L0: Optional[float] = None
-    c0: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -120,10 +165,9 @@ class SourceCfg:
     * ``amplitude``: source amplitude scale.
     * ``n_cycles``: tone_burst only; number of cycles in the burst.
     * ``envelope``: tone_burst only; ``"gaussian"`` | ``"rectangular"``.
-    * ``offset``: int sample offset delaying the wavelet.
-    * ``t0``: ``None`` -> auto (1/f0 for ricker), else float wavelet time
-      centre [s].
-    * ``dimensionless``: emit in non-dimensional units.
+    * ``dimensionless``: true -> the physical waveform amplitude is
+      ``amplitude * 2 * f0**2`` (lands the wavefield near O(1)); false -> it is
+      ``amplitude``.
     """
 
     kind: str = "tone_burst"
@@ -131,8 +175,6 @@ class SourceCfg:
     amplitude: float = 1.0
     n_cycles: float = 3.0
     envelope: str = "gaussian"
-    offset: int = 0
-    t0: Optional[float] = None
     dimensionless: bool = True
 
 
@@ -141,18 +183,22 @@ class AcquisitionCfg:
     """Ring source/receiver layout (odil_wave.AcquisitionGeometry).
 
     Params:
-    * ``n_receivers`` / ``n_sources``: int >= 1 points on the ring.
+    * ``n_receivers``: int >= 1 receivers evenly spaced on the ring.
+    * ``n_sources``: int >= 1 requested sources, subsampled from the receiver
+      positions (the active count may be smaller; the step is floored at 1).
     * ``a_frac`` / ``b_frac``: (0, 1]; ring semi-axes as a fraction of the
-      half-extent in x / y.
+      interior half-extent in x / y.
     * ``ring_center``: ``"grid_center"`` (centre of the interior extent) |
       ``[x, y]`` in metres.
-    * ``sigma_s``: ``None`` -> auto, else > 0 Gaussian source width in cells
-      (used when ``source_spatial == "gaussian"``).
+    * ``sigma_s``: ``None`` -> derived from the grid spacing and ``f0``, else
+      > 0 metres; width of the Gaussian source profile
+      ``exp(-r**2 / sigma_s**2)``, i.e. a Gaussian with standard deviation
+      ``sigma_s / sqrt(2)`` (used when ``source_spatial == "gaussian"``).
     * ``source_spatial``: ``"gaussian"`` | ``"point"``.
     """
 
     n_receivers: int = 64
-    n_sources: int = 8
+    n_sources: int = 64
     a_frac: float = 0.9
     b_frac: float = 0.9
     ring_center: Union[str, List[float]] = "grid_center"
@@ -161,36 +207,24 @@ class AcquisitionCfg:
 
 
 @dataclass(frozen=True)
-class PhysicsCfg:
-    """Discrete operator settings shared by forward + inverse.
-
-    Params:
-    * ``space_order``: spatial FD stencil order ``2`` | ``4`` | ``6`` | ``8``
-      (higher = more accurate, costlier).
-    * ``pml_weight``: >= 0; PML-residual weight in the PDE loss.
-    """
-
-    space_order: int = 2
-    pml_weight: float = 1.0
-
-
-@dataclass(frozen=True)
 class ModelCfg:
     """A VelocityModel spec (truth or initial model).
 
     Params:
     * ``profile``: ``"homogeneous"`` | ``"overdensity"`` | ``"shepp_logan"`` |
-      ``"shepp_logan_skull"`` | ``"skull"``.
-    * ``scale``: phantom contrast scale.
-    * ``base``: m/s background velocity.
-    * ``contrast``: profile contrast fraction.
-    * ``pml_c``: ``None`` -> derived; constant velocity the PML ring is
-      padded with.
+      ``"shepp_logan_skull"``.
+    * ``scale``: shepp_logan / shepp_logan_skull; fraction of the interior the
+      phantom occupies.
+    * ``base``: m/s background velocity (homogeneous / overdensity).
+    * ``contrast``: overdensity only; m/s added to ``base`` inside the anomaly.
+    * ``pml_c``: ``None`` -> derived (background for the Shepp-Logan
+      profiles, else the field minimum); constant velocity of the PML ring.
     * ``skull_alpha``: [0, 1]; shepp_logan_skull only (skull contrast fraction).
     * ``skull_sigma``: >= 0 grid cells; shepp_logan_skull only, Gaussian soft
       edge (try 1-3).
-    * ``extra``: extra profile kwargs (``threshold``, ``c_water``, ``c_skull``,
-      ``center``, ``radius``, ``skull_smooth`` alias, ...).
+    * ``extra``: other profile kwargs: ``radius`` / ``center`` (overdensity),
+      ``threshold`` / ``c_water`` / ``c_skull`` / ``soft_intercept`` /
+      ``soft_slope`` / ``interior_value`` (Shepp-Logan profiles).
     """
 
     profile: str = "shepp_logan"
@@ -204,27 +238,6 @@ class ModelCfg:
 
 
 @dataclass(frozen=True)
-class ObservationCfg:
-    """How the observed ("true") data is synthesised and normalised.
-
-    Observed data are always a frequency-domain Helmholtz solve on the truth
-    model (the same operator as the inversion, i.e. the inverse crime).
-
-    Params:
-    * ``normalize_data``: ``None`` | ``"none"`` | ``"per_receiver"``.
-    * ``verbose``: bool.
-    * ``pml_width``: ``None`` -> ``grid.pml_width``, else int >= 0
-      forward-only PML thickness. When set and different from the inverse PML,
-      data are generated on a separate forward grid (the PML_FWD / PML_INV
-      split) and reduced to receiver traces.
-    """
-
-    normalize_data: str = "per_receiver"
-    verbose: bool = False
-    pml_width: Optional[int] = None
-
-
-@dataclass(frozen=True)
 class BandCfg:
     """One continuation stage (single-frequency if ``len(frequencies_hz) == 1``).
 
@@ -235,7 +248,7 @@ class BandCfg:
       iteration budget.
     """
 
-    frequencies_hz: List[float] = field(default_factory=lambda: [40e3])
+    frequencies_hz: List[float] = field(default_factory=lambda: [60e3])
     n_iter: Optional[int] = None
 
 
@@ -256,99 +269,67 @@ class ContinuationCfg:
 
 @dataclass(frozen=True)
 class RegulariserCfg:
-    """Regulariser selection.
+    """Regulariser on the interior velocity; active iff ``loss.weights.reg > 0``.
 
     Params:
-    * ``name``: ``None`` (no regulariser) | ``"tikhonov"`` | ``"tv_iso"`` |
-      ``"tv_aniso"`` (aliases ``l2``/``smooth``, ``tv``/``iso``, ``aniso``).
-    * ``params``: only ``"eps"`` accepted, e.g. ``{"eps": 1e-6}`` (used by the
-      TV regularisers).
+    * ``name``: ``"tv_iso"`` | ``"tikhonov"`` | ``"tv_aniso"``.
+    * ``eps``: > 0 smoothing floor inside the isotropic-TV square root (used
+      by ``tv_iso`` only).
     """
 
-    name: Optional[str] = None
-    params: Dict[str, Any] = field(default_factory=dict)
+    name: str = "tv_iso"
+    eps: float = 1e-8
 
 
 @dataclass(frozen=True)
 class LossCfg:
-    """Objective weights + regularisation.
+    """Objective weights, data normalisation and regularisation.
 
     Params:
     * ``weights``: the only place the joint objective weights are set, applied
-      as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``
-      / ``data`` (required) and ``reg`` (optional, missing -> 0); each >= 0 and
-      ``data`` > 0. ``reg`` > 0 activates the named regulariser.
+      as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``,
+      ``data`` and ``reg`` (all required); each >= 0 and ``data`` > 0.
+      ``reg`` > 0 activates the regulariser.
+    * ``normalize_data``: ``"none"`` | ``"per_receiver"``; applied in the data
+      term. ``per_receiver`` divides synthetic and observed traces by each
+      receiver's peak observed magnitude.
     * ``regulariser``: :class:`RegulariserCfg`.
     """
 
     weights: Dict[str, float] = field(
         default_factory=lambda: {"pde": 1.0, "data": 1.0, "reg": 0.0}
     )
+    normalize_data: str = "per_receiver"
     regulariser: RegulariserCfg = field(default_factory=RegulariserCfg)
 
 
 @dataclass(frozen=True)
-class JointODILCfg:
-    """Params specific to the pure joint full-space solver (``JointFreqODIL``).
+class OptimiserCfg:
+    """Joint full-space L-BFGS solver (``JointFreqODIL``) settings.
 
-    A single joint L-BFGS over the complex wavefield block and a
-    squared-slowness model latent bounded by a sigmoid.
-
-    The objective weights are not set here: they come from ``loss.weights``.
+    A single L-BFGS over the complex wavefield block and a squared-slowness
+    model latent bounded by a sigmoid onto ``[grid.c_min, grid.c_max]``. The
+    objective weights are not set here: they come from ``loss.weights``.
 
     Params:
-    * ``c_min`` / ``c_max``: ``None`` -> ``grid.c_min`` / ``grid.c_max``; set the
-      squared-slowness bounds (``c_min`` < ``c_max``).
+    * ``n_iter``: int >= 1 outer iterations (per band unless ``band.n_iter``).
+    * ``log_every``: int >= 1 metric-logging cadence in outers.
     * ``inner_max_iter``: int >= 1 L-BFGS iterations per logged outer step; keep
       >= ~5 for a genuine continuous solve (inner=1 stalls the line search).
     * ``history_size``: int >= 1 L-BFGS history length.
     * ``line_search_fn``: ``"strong_wolfe"`` | ``"none"``.
     * ``lbfgs_lr``: L-BFGS learning rate.
-    * ``tolerance_grad`` / ``tolerance_change``: stopping tolerances.
-    * ``eps_u`` / ``eps_data`` / ``eps_pde``: fixed-scale floors.
-    * ``u_scale_factor`` / ``pde_scale_factor`` / ``data_scale_factor``: > 0
-      conditioning-sweep perturbations (identity by default; change only the
-      optimisation geometry, not the physical residual).
-    * ``z_scale``: > 0 model-latent scale.
-    * ``logit_clip``: in (0, 0.5); sigmoid latent clip.
-    * ``verbose``: bool.
+    * ``tolerance_grad`` / ``tolerance_change``: L-BFGS stopping tolerances.
     """
 
-    c_min: Optional[float] = None
-    c_max: Optional[float] = None
+    n_iter: int = 20
+    log_every: int = 5
     inner_max_iter: int = 20
     history_size: int = 20
     line_search_fn: str = "strong_wolfe"
     lbfgs_lr: float = 1.0
     tolerance_grad: float = 1e-12
     tolerance_change: float = 1e-14
-    eps_u: float = 1e-30
-    eps_data: float = 1e-30
-    eps_pde: float = 1e-30
-    u_scale_factor: float = 1.0
-    pde_scale_factor: float = 1.0
-    data_scale_factor: float = 1.0
-    z_scale: float = 1.0
-    logit_clip: float = 1e-6
-    verbose: bool = False
-
-
-@dataclass(frozen=True)
-class OptimiserCfg:
-    """Optimiser selection + outer-loop settings.
-
-    Params:
-    * ``name``: ``"joint"`` (aliases resolved via
-      :func:`canonical_optimiser_name`).
-    * ``log_every``: int >= 1 metric-logging cadence in outers.
-    * ``n_iter``: int >= 1 outer iterations (per band unless ``band.n_iter``).
-    * ``joint``: :class:`JointODILCfg` solver settings.
-    """
-
-    name: str = "joint"
-    log_every: int = 5
-    n_iter: int = 20
-    joint: JointODILCfg = field(default_factory=JointODILCfg)
 
 
 @dataclass(frozen=True)
@@ -377,28 +358,26 @@ class MetricsCfg:
 
     Params:
     * ``ssim``: :class:`SSIMCfg`.
-    * ``log_c_stats``: log per-iteration velocity statistics.
     """
 
     ssim: SSIMCfg = field(default_factory=SSIMCfg)
-    log_c_stats: bool = True
 
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Top-level fully-resolved experiment configuration."""
+    """Top-level config; its defaults are the default config."""
 
     run: RunMetaCfg = field(default_factory=RunMetaCfg)
     runtime: RuntimeCfg = field(default_factory=RuntimeCfg)
     grid: GridCfg = field(default_factory=GridCfg)
+    pml: PmlCfg = field(default_factory=PmlCfg)
+    time: TimeCfg = field(default_factory=TimeCfg)
     source: SourceCfg = field(default_factory=SourceCfg)
     acquisition: AcquisitionCfg = field(default_factory=AcquisitionCfg)
-    physics: PhysicsCfg = field(default_factory=PhysicsCfg)
     truth: ModelCfg = field(default_factory=ModelCfg)
     init: ModelCfg = field(
         default_factory=lambda: ModelCfg(profile="shepp_logan_skull")
     )
-    observation: ObservationCfg = field(default_factory=ObservationCfg)
     continuation: ContinuationCfg = field(default_factory=ContinuationCfg)
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
@@ -456,18 +435,6 @@ def _list_elt_dataclass(tp: Any) -> Optional[type]:
 # Objective-weight keys accepted in ``loss.weights``.
 _WEIGHT_KEYS = ("pde", "data", "reg")
 
-# Removed keys -> hint naming their replacement, appended to the unknown-key error.
-_MOVED_KEYS = {
-    (
-        "JointODILCfg",
-        "data_weight",
-    ): "optimiser.joint.data_weight moved to loss.weights.data",
-    (
-        "JointODILCfg",
-        "reg_weight",
-    ): "optimiser.joint.reg_weight moved to loss.weights.reg",
-}
-
 
 def _build(cls: type, data: Dict[str, Any]) -> Any:
     """Recursively construct dataclass ``cls`` from the plain dict ``data``.
@@ -486,14 +453,9 @@ def _build(cls: type, data: Dict[str, Any]) -> Any:
     field_names = {f.name for f in fields(cls)}
     unknown = set(data) - field_names
     if unknown:
-        hints = [
-            _MOVED_KEYS[(cls.__name__, k)]
-            for k in sorted(unknown)
-            if (cls.__name__, k) in _MOVED_KEYS
-        ]
         raise ConfigError(
             f"unknown key(s) for {cls.__name__}: {sorted(unknown)}; "
-            f"valid keys: {sorted(field_names)}" + "".join(f"; {h}" for h in hints)
+            f"valid keys: {sorted(field_names)}"
         )
     kwargs: Dict[str, Any] = {}
     for f in fields(cls):
@@ -616,52 +578,26 @@ def apply_overrides(
     return out
 
 
-_OPTIMISER_ALIASES = {
-    "joint": "joint",
-    "pure_joint": "joint",
-    "pure-joint": "joint",
-    "joint_odil": "joint",
-    "joint-odil": "joint",
-    "jointfreqodil": "joint",
-}
-
-
-def canonical_optimiser_name(name: str) -> str:
-    """Normalise an optimiser ``name`` (or alias) to ``joint``."""
-    key = str(name).strip().lower()
-    if key not in _OPTIMISER_ALIASES:
-        raise ConfigError(
-            f"unknown optimiser {name!r}; expected one of "
-            f"{sorted(set(_OPTIMISER_ALIASES.values()))} (or an alias)."
-        )
-    return _OPTIMISER_ALIASES[key]
-
-
-_REGULARISER_ALIASES = {
-    "tikhonov": "tikhonov",
-    "l2": "tikhonov",
-    "smoothness": "tikhonov",
-    "smooth": "tikhonov",
-    "tv": "tv_iso",
-    "tv_iso": "tv_iso",
-    "tv_isotropic": "tv_iso",
-    "iso": "tv_iso",
-    "tv_aniso": "tv_aniso",
-    "tv_anisotropic": "tv_aniso",
-    "aniso": "tv_aniso",
-}
-
-
-def canonical_regulariser_name(name: str) -> str:
-    """Normalise a regulariser ``name`` (or alias) to
-    ``tikhonov`` / ``tv_iso`` / ``tv_aniso``."""
-    key = str(name).strip().lower()
-    if key not in _REGULARISER_ALIASES:
-        raise ConfigError(
-            f"unknown regulariser {name!r}; expected one of "
-            f"{sorted(set(_REGULARISER_ALIASES.values()))} (or an alias)."
-        )
-    return _REGULARISER_ALIASES[key]
+# Accepted values of the enum-like fields. config.py stays torch-free, so these
+# mirror the library: WaveEquation's stencil orders, the Regulariser kinds and
+# the VelocityModel profiles / profile kwargs.
+_SPACE_ORDERS = (2, 4, 6, 8, 10)
+_NORMALIZE_DATA = ("none", "per_receiver")
+_WARM_STARTS = ("helmholtz", "none")
+_LINE_SEARCHES = ("strong_wolfe", "none")
+_REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
+_PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
+# Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
+_EXTRA_KEYS = (
+    "radius",
+    "center",
+    "threshold",
+    "c_water",
+    "c_skull",
+    "soft_intercept",
+    "soft_slope",
+    "interior_value",
+)
 
 
 def default_config_dict() -> Dict[str, Any]:
@@ -673,13 +609,10 @@ def resolve_config(
     user_config: Optional[Dict[str, Any]] = None,
     overrides: Optional[List[str]] = None,
 ) -> RunConfig:
-    """Resolve a (possibly partial) user config into a complete :class:`RunConfig`."""
+    """Resolve an experiment config ``user_config`` and dotted ``overrides`` onto
+    the default config into a complete :class:`RunConfig`."""
     merged = deep_merge(default_config_dict(), user_config or {})
     merged = apply_overrides(merged, overrides)
-
-    # Normalise optimiser name in the dict so it is validated and recorded.
-    opt = merged.setdefault("optimiser", {})
-    opt["name"] = canonical_optimiser_name(opt.get("name", "joint"))
 
     # Mint a run_id if none was supplied.
     run = merged.setdefault("run", {})
@@ -694,9 +627,9 @@ def _make_run_id(merged: Dict[str, Any]) -> str:
 
     Format::
 
-        <DDMMYY_HHMMSS>_<problem>_<grid>_<optimiser>_<f0>_<bands>
+        <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>
 
-    e.g. ``280726_133521_shepp-logan_125x125_joint_80_40-50-60-70`` — where
+    e.g. ``280726_133521_shepp-logan_125x125_80_40-50-60-70`` — where
     ``problem`` is the truth profile, ``grid`` the interior shape, ``f0`` and
     ``bands`` are frequencies in kHz (bands joined by ``-``; multiple
     frequencies within one continuation stage joined by ``+``).
@@ -708,13 +641,10 @@ def _make_run_id(merged: Dict[str, Any]) -> str:
     shape = (merged.get("grid", {}) or {}).get("interior_shape", []) or []
     grid_size = "x".join(str(int(n)) for n in shape) or "grid"
 
-    opt = merged.get("optimiser", {}) or {}
-    optimiser = canonical_optimiser_name(opt.get("name", "joint"))
-
     f0 = _khz_token((merged.get("source", {}) or {}).get("f0"))
     bands = _bands_token((merged.get("continuation", {}) or {}).get("bands", []) or [])
 
-    parts = [ts, problem, grid_size, optimiser, f0, bands]
+    parts = [ts, problem, grid_size, f0, bands]
     return "_".join(p for p in parts if p)
 
 
@@ -753,31 +683,12 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     """
     warnings: List[str] = []
 
-    name = canonical_optimiser_name(cfg.optimiser.name)
-    if cfg.optimiser.log_every < 1:
-        raise ConfigError("optimiser.log_every must be >= 1")
-    if cfg.optimiser.n_iter < 1:
-        raise ConfigError("optimiser.n_iter must be >= 1")
-
-    if name == "joint":
-        jo = cfg.optimiser.joint
-        if jo.inner_max_iter < 1:
-            raise ConfigError("optimiser.joint.inner_max_iter must be >= 1")
-        if jo.history_size < 1:
-            raise ConfigError("optimiser.joint.history_size must be >= 1")
-        if jo.z_scale <= 0:
-            raise ConfigError("optimiser.joint.z_scale must be > 0")
-        if not (0.0 < jo.logit_clip < 0.5):
-            raise ConfigError("optimiser.joint.logit_clip must be in (0, 0.5)")
-        for fkey in ("u_scale_factor", "pde_scale_factor", "data_scale_factor"):
-            if getattr(jo, fkey) <= 0:
-                raise ConfigError(f"optimiser.joint.{fkey} must be > 0")
-        if jo.c_min is not None and jo.c_max is not None and jo.c_min >= jo.c_max:
-            raise ConfigError("optimiser.joint.c_min must be < c_max")
-        if str(jo.line_search_fn).lower() not in ("strong_wolfe", "none"):
-            raise ConfigError(
-                "optimiser.joint.line_search_fn must be 'strong_wolfe' or 'none'"
-            )
+    opt = cfg.optimiser
+    for key in ("n_iter", "log_every", "inner_max_iter", "history_size"):
+        if getattr(opt, key) < 1:
+            raise ConfigError(f"optimiser.{key} must be >= 1")
+    if str(opt.line_search_fn).lower() not in _LINE_SEARCHES:
+        raise ConfigError("optimiser.line_search_fn must be 'strong_wolfe' or 'none'")
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -788,22 +699,28 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
-
-    if cfg.observation.pml_width is not None and int(cfg.observation.pml_width) < 0:
-        raise ConfigError(
-            f"observation.pml_width must be >= 0 when set, "
-            f"got {cfg.observation.pml_width}"
-        )
-    if cfg.observation.normalize_data not in (None, "none", "per_receiver"):
-        raise ConfigError(
-            f"observation.normalize_data must be null, 'none' or 'per_receiver', "
-            f"got {cfg.observation.normalize_data!r}"
-        )
-    if cfg.continuation.warm_start not in ("helmholtz", "none"):
+    if cfg.continuation.warm_start not in _WARM_STARTS:
         raise ConfigError(
             f"continuation.warm_start must be 'helmholtz' or 'none', "
             f"got {cfg.continuation.warm_start!r}"
         )
+
+    if cfg.grid.space_order not in _SPACE_ORDERS:
+        raise ConfigError(
+            f"grid.space_order must be one of {list(_SPACE_ORDERS)}, "
+            f"got {cfg.grid.space_order!r}"
+        )
+    pml = cfg.pml
+    if int(pml.width) < 0:
+        raise ConfigError(f"pml.width must be >= 0, got {pml.width}")
+    if float(pml.damping_scale) < 0:
+        raise ConfigError(f"pml.damping_scale must be >= 0, got {pml.damping_scale}")
+    if pml.observation_width is not None and int(pml.observation_width) < 0:
+        raise ConfigError(
+            f"pml.observation_width must be >= 0 when set, "
+            f"got {pml.observation_width}"
+        )
+
     if cfg.runtime.dtype.lower() not in (
         "float32",
         "float",
@@ -814,8 +731,9 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     ):
         raise ConfigError(f"runtime.dtype {cfg.runtime.dtype!r} is not supported")
 
-    weights = cfg.loss.weights
-    for key in ("pde", "data"):
+    loss = cfg.loss
+    weights = loss.weights
+    for key in _WEIGHT_KEYS:
         if key not in weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
     unknown = set(weights) - set(_WEIGHT_KEYS)
@@ -829,21 +747,16 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"loss.weights.{key} must be >= 0, got {val}")
     if float(weights["data"]) <= 0:
         raise ConfigError(f"loss.weights.data must be > 0, got {weights['data']}")
-
-    reg = cfg.loss.regulariser
-    if reg is not None and reg.name is not None:
-        canonical_regulariser_name(reg.name)  # raises ConfigError on a bad name
-        unknown = set(reg.params or {}) - {"eps"}
-        if unknown:
-            raise ConfigError(
-                f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
-                "the only accepted param is 'eps'."
-            )
-        if float(weights.get("reg", 0.0)) <= 0.0:
-            warnings.append(
-                f"loss.regulariser.name={reg.name!r} is set but loss.weights['reg'] "
-                "is <= 0, so the regulariser has no effect."
-            )
+    if loss.normalize_data not in _NORMALIZE_DATA:
+        raise ConfigError(
+            f"loss.normalize_data must be one of {list(_NORMALIZE_DATA)}, "
+            f"got {loss.normalize_data!r}"
+        )
+    if loss.regulariser.name not in _REGULARISERS:
+        raise ConfigError(
+            f"loss.regulariser.name must be one of {list(_REGULARISERS)}, "
+            f"got {loss.regulariser.name!r}"
+        )
 
     ws = cfg.metrics.ssim.win_size
     if ws < 3 or ws % 2 == 0:
@@ -870,30 +783,26 @@ def validate_config(cfg: "RunConfig") -> List[str]:
 
 
 def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> None:
-    """Validate skull-smoothing / profile knobs on a truth or init ``model``."""
+    """Validate the profile, skull knobs and ``extra`` kwargs of a truth or init
+    ``model``."""
+    if model.profile not in _PROFILES:
+        raise ConfigError(
+            f"{label}.profile must be one of {list(_PROFILES)}, got {model.profile!r}"
+        )
     if model.skull_alpha < 0.0 or model.skull_alpha > 1.0:
         raise ConfigError(
             f"{label}.skull_alpha must be in [0, 1]; got {model.skull_alpha}"
         )
     if model.skull_sigma < 0.0:
         raise ConfigError(f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}")
-    extra = model.extra or {}
-    if "skull_smooth" in extra:
-        try:
-            smooth = float(extra["skull_smooth"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"{label}.extra.skull_smooth must be a number; "
-                f"got {extra['skull_smooth']!r}"
-            ) from exc
-        if smooth < 0.0:
-            raise ConfigError(f"{label}.extra.skull_smooth must be >= 0; got {smooth}")
+    unknown = set(model.extra or {}) - set(_EXTRA_KEYS)
+    if unknown:
+        raise ConfigError(
+            f"unknown key(s) for {label}.extra: {sorted(unknown)}; "
+            f"valid keys: {sorted(_EXTRA_KEYS)}"
+        )
     if model.profile != "shepp_logan_skull" and (
-        model.skull_alpha != 1.0
-        or model.skull_sigma != 0.0
-        or "skull_smooth" in extra
-        or "skull_alpha" in extra
-        or "skull_sigma" in extra
+        model.skull_alpha != 1.0 or model.skull_sigma != 0.0
     ):
         warnings.append(
             f"{label}.profile={model.profile!r} ignores skull_alpha / "

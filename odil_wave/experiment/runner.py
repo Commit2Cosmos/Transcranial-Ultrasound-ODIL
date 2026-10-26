@@ -26,16 +26,12 @@ from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from . import envinfo
-from .config import (
-    BandCfg,
-    ConfigError,
-    RunConfig,
-    canonical_optimiser_name,
-    canonical_regulariser_name,
-    validate_config,
-)
+from .config import BandCfg, RunConfig, validate_config
 from .problem import Problem, build_problem, grid_summary
 from .recorder import RunRecorder
+
+# Name of the (only) solver, recorded in run metadata and loss-tape names.
+SOLVER_NAME = "joint"
 
 
 # --------------------------------------------------------------------------- #
@@ -219,42 +215,31 @@ def _build_optimiser(
     """
     cfg = problem.cfg
     opt = cfg.optimiser
-    canonical_optimiser_name(opt.name)  # raises ConfigError on a bad name
 
     # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
     # closed-form, WRI or multigrid. The objective weights come only from
     # loss.weights and are fixed for the run (never adapted).
     from odil_wave.optimisation import JointFreqODIL
 
-    jo = opt.joint
     w = cfg.loss.weights
-    ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
-    joint_kw = dict(
+    ls = None if str(opt.line_search_fn).lower() == "none" else opt.line_search_fn
+    return JointFreqODIL(
+        wf_inv,
+        loss,
         u_init=u_init,
         n_iter=n_iter,
-        inner_max_iter=jo.inner_max_iter,
-        history_size=jo.history_size,
+        inner_max_iter=opt.inner_max_iter,
+        history_size=opt.history_size,
         line_search_fn=ls,
-        tolerance_grad=jo.tolerance_grad,
-        tolerance_change=jo.tolerance_change,
-        lbfgs_lr=jo.lbfgs_lr,
+        tolerance_grad=opt.tolerance_grad,
+        tolerance_change=opt.tolerance_change,
+        lbfgs_lr=opt.lbfgs_lr,
         pde_weight=float(w["pde"]),
         data_weight=float(w["data"]),
-        reg_weight=float(w.get("reg", 0.0)),
-        c_min=jo.c_min,
-        c_max=jo.c_max,
-        eps_u=jo.eps_u,
-        eps_data=jo.eps_data,
-        eps_pde=jo.eps_pde,
-        u_scale_factor=jo.u_scale_factor,
-        pde_scale_factor=jo.pde_scale_factor,
-        data_scale_factor=jo.data_scale_factor,
-        z_scale=jo.z_scale,
-        logit_clip=jo.logit_clip,
+        reg_weight=float(w["reg"]),
         log_every=opt.log_every,
-        verbose=jo.verbose,
+        verbose=cfg.runtime.verbose,
     )
-    return JointFreqODIL(wf_inv, loss, **joint_kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -292,7 +277,7 @@ def run_frequency_band(
     wave_eq = WaveEquation(
         wf_inv,
         space_order=problem.space_order,
-        pml_weight=problem.pml_weight,
+        damping_scale=problem.damping_scale,
     )
     loss_config = LossConfig(
         wave_eq=wave_eq,
@@ -303,7 +288,7 @@ def run_frequency_band(
     tape = recorder.band_tape(
         band_index=band_index,
         frequencies_hz=freqs,
-        name=f"{cfg.optimiser.name}_{label}",
+        name=f"{SOLVER_NAME}_{label}",
         log_every=cfg.optimiser.log_every,
     )
     # PML split: observations synthesised on a separate forward grid are
@@ -313,14 +298,14 @@ def run_frequency_band(
             observed_traces=band_ctx.observed_traces,
             config=loss_config,
             callback=tape,
-            normalize_data=cfg.observation.normalize_data,
+            normalize_data=cfg.loss.normalize_data,
         )
     else:
         loss = InverseLoss(
             observed_wavefield=band_ctx.observed_wfs,
             config=loss_config,
             callback=tape,
-            normalize_data=cfg.observation.normalize_data,
+            normalize_data=cfg.loss.normalize_data,
         )
     tape.bind_loss(loss)
 
@@ -457,29 +442,17 @@ def _atomic_npy(path: Path, arr: np.ndarray) -> None:
 def _build_regulariser(cfg: RunConfig):
     """Build the configured :class:`~odil_wave.loss.Regulariser`, or ``None``.
 
-    ``cfg.loss.regulariser.name`` selects the penalty kind (``tikhonov`` /
-    ``tv_iso`` / ``tv_aniso``; aliases resolved by
-    :func:`~odil_wave.experiment.config.canonical_regulariser_name`) and
-    ``params`` forwards keyword arguments to the constructor (only ``eps``, the
-    ``tv_iso`` smoothing floor). Returns ``None`` when no regulariser is
-    configured, so :class:`~odil_wave.loss.LossConfig` omits the reg term.
-
-    The scalar weight is *not* set here: it is ``loss.weights['reg']``, applied
-    by :class:`~odil_wave.optimisation.JointFreqODIL` in its objective (the
-    regulariser is inactive when that weight is 0).
+    The regulariser is active iff ``loss.weights['reg'] > 0``; then
+    ``loss.regulariser.name`` selects the penalty kind (``tv_iso`` /
+    ``tikhonov`` / ``tv_aniso``) and ``eps`` the ``tv_iso`` smoothing floor.
+    Returns ``None`` otherwise, so :class:`~odil_wave.loss.LossConfig` omits the
+    reg term. The scalar weight itself is applied by
+    :class:`~odil_wave.optimisation.JointFreqODIL` in its objective.
     """
-    reg = cfg.loss.regulariser
-    if reg is None or reg.name is None:
+    if float(cfg.loss.weights["reg"]) <= 0.0:
         return None
-    kind = canonical_regulariser_name(reg.name)
-    params = dict(reg.params or {})
-    unknown = set(params) - {"eps"}
-    if unknown:
-        raise ConfigError(
-            f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
-            "the only accepted param is 'eps'."
-        )
-    return Regulariser(kind=kind, **params)
+    reg = cfg.loss.regulariser
+    return Regulariser(kind=reg.name, eps=reg.eps)
 
 
 def _dump_band_config(
@@ -520,8 +493,9 @@ def _dump_band_config(
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
         "n_shots": int(band_ctx.geom.n_sources),
         "warm_start": cfg.continuation.warm_start,
-        "normalize_data": cfg.observation.normalize_data,
-        "physics": _asdict(cfg.physics),
+        "normalize_data": cfg.loss.normalize_data,
+        "space_order": cfg.grid.space_order,
+        "pml": _asdict(cfg.pml),
         "loss_weights": dict(cfg.loss.weights),
         "optimiser": _asdict(cfg.optimiser),
     }
@@ -571,7 +545,7 @@ def run_inverse(
     device = envinfo.resolve_device(config.runtime.device)
     meta = envinfo.collect_metadata(
         run_id=config.run.run_id,
-        optimiser=config.optimiser.name,
+        optimiser=SOLVER_NAME,
         device_requested=config.runtime.device,
         device_resolved=str(device),
         dtype=config.runtime.dtype,
@@ -599,7 +573,7 @@ def run_inverse(
 
         recorder = RunRecorder(
             run_id=config.run.run_id,
-            solver_name=config.optimiser.name,
+            solver_name=SOLVER_NAME,
             out_dir=run_dir,
             grid=problem.grid,
             truth_velocity=problem.truth_velocity,
@@ -649,7 +623,7 @@ def run_inverse(
         result.status = "completed"
         run_summary = {
             "run_id": config.run.run_id,
-            "optimiser": config.optimiser.name,
+            "optimiser": SOLVER_NAME,
             "status": result.status,
             "wall_s": time.perf_counter() - t_run0,
             "n_bands": len(result.band_results),

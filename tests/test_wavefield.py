@@ -23,10 +23,12 @@ import torch  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
 
-from odil_wave.grid import FrequencySelection, Grid  # noqa: E402
+from odil_wave.grid import FrequencySelection  # noqa: E402
 from odil_wave.models import VelocityModel  # noqa: E402
 from odil_wave.wavefield import Wavefield  # noqa: E402
 from odil_wave.wavefield.base import _normalize_amplitude  # noqa: E402
+
+from conftest import make_grid, make_model  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -46,9 +48,11 @@ def _make_grid(**overrides):
         pml_width=2,
         t_max=1e-5,
         init_nt=32,
+        interior_extent=((-1.0, 1.0), (-1.0, 1.0)),
+        dtype=torch.float32,
     )
     kwargs.update(overrides)
-    return Grid(**kwargs)
+    return make_grid(**kwargs)
 
 
 def _make_freq(grid, freqs=(8e4,)):
@@ -136,7 +140,7 @@ def test_wavefield_default_velocity_model_is_homogeneous():
 
 def test_wavefield_explicit_velocity_model_is_stored_by_identity():
     grid = _make_grid()
-    vm = VelocityModel(grid, profile="homogeneous", base=1234.0)
+    vm = make_model(grid, base=1234.0)
     wf = Wavefield(grid=grid, frequency_selection=_make_freq(grid), velocity_model=vm)
     assert wf.velocity_model is vm
 

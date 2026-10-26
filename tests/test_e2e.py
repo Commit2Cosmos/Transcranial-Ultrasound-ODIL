@@ -11,10 +11,8 @@ import pytest
 import torch
 import yaml
 
-from odil_wave.experiment import build_problem, resolve_config
+from odil_wave.experiment import build_problem, deep_merge, resolve_config
 from odil_wave.experiment.runner import _final_recovery_metrics
-
-from conftest import tiny_run_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -39,13 +37,17 @@ MPS_AVAILABLE = getattr(torch.backends, "mps", None) is not None and (
         ),
     ],
 )
-def test_cli_tiny_two_band_run_float32(tmp_path, device):
+def test_cli_tiny_two_band_run_float32(tmp_path, tiny_experiment, device):
     """A float32 2-band run through the CLI completes and improves the model."""
-    user_cfg = tiny_run_config(tmp_path, run_id=f"e2e_{device}")
-    user_cfg["continuation"]["bands"] = [
-        {"frequencies_hz": [30e3]},
-        {"frequencies_hz": [40e3]},
-    ]
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": f"e2e_{device}"},
+            "continuation": {
+                "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
+            },
+        },
+    )
     config_path = tmp_path / "tiny.yaml"
     config_path.write_text(yaml.safe_dump(user_cfg))
     overrides = [f"runtime.device={device}", "runtime.dtype=float32"]

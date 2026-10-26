@@ -35,8 +35,11 @@ Everything importable lives under the `odil_wave` package:
 | `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
 | `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`. |
 
-Top-level `main.py` is the CLI entry point; `configs/default_inverse.yaml` is the
-reference configuration.
+Top-level `main.py` is the CLI entry point. The **default config** is defined in
+code — the `RunConfig` dataclass defaults in `odil_wave/experiment/config.py`,
+whose docstrings document every field — and `configs/` holds **experiment
+configs** that name only the values they change (see
+[ADR 0001](docs/adr/0001-config-defaults-single-owner.md)).
 
 ---
 
@@ -45,19 +48,22 @@ reference configuration.
 From the `odil/` directory:
 
 ```bash
-# Reference single-band Shepp-Logan run
-python main.py --config configs/default_inverse.yaml
+# The default config: single-band (60 kHz) Shepp-Logan run
+python main.py
+
+# Print the full default config as YAML
+python main.py --print-defaults
+
+# An experiment config (only the values that differ from the defaults)
+python main.py --config configs/example_multiband.yaml
 
 # Validate + print a summary, write nothing
-python main.py --config configs/default_inverse.yaml --dry-run
+python main.py --config configs/example_multiband.yaml --dry-run
 
 # Override any dotted config key (repeatable)
-python main.py --config configs/default_inverse.yaml \
+python main.py --config configs/example_multiband.yaml \
     --override optimiser.n_iter=40 \
     --override runtime.device=mps
-
-# Built-in defaults (no config file)
-python main.py
 ```
 
 Config resolution is lazy and torch-free, so `--help` and `--dry-run` are
@@ -68,7 +74,7 @@ instant; the numerical stack is only imported once a real run starts.
 ```python
 from odil_wave.experiment import resolve_config, load_config_file, run_inverse
 
-cfg = resolve_config(load_config_file("configs/default_inverse.yaml"),
+cfg = resolve_config(load_config_file("configs/example_multiband.yaml"),
                      overrides=["optimiser.n_iter=40"])
 result = run_inverse(cfg)          # -> RunResult with per-band metrics
 print(result.metrics_summary)
@@ -87,21 +93,23 @@ Each run writes a self-contained directory under `outputs/<run_id>/`:
 
 ## Main configuration options
 
-Grouped as in `configs/default_inverse.yaml`; omitted keys fall back to the code
-defaults in `odil_wave/experiment/config.py`.
+Omitted keys keep the default config; `python main.py --print-defaults` prints
+it, and the dataclass docstrings in `odil_wave/experiment/config.py` are the
+single place each field is documented (units, allowed values, meaning). Unknown
+or removed keys are rejected.
 
 | Group | Key options | Notes |
 |-------|-------------|-------|
-| `runtime`      | `device` (`cpu`/`cuda`/`mps`), `dtype` (`float32`/`float64`) | f64 reaches far lower loss floors; f32 is faster on MPS/GPU. |
-| `grid`         | `interior_shape`, `interior_extent`, `c_min`/`c_max`, `pml_width`, `t_max`, `init_nt` | Optimization variable lives on the PML-extended grid. |
+| `runtime`      | `device` (`cpu`/`cuda`/`mps`), `dtype` (`float32`/`float64`), `verbose` | f64 reaches far lower loss floors; f32 is faster on MPS/GPU. |
+| `grid`         | `interior_shape` (`[nx, ny]` nodes), `interior_extent` (`[[x0, x1], [y0, y1]]` m), `c_min`/`c_max`, `space_order` (2/4/6/8/10) | Optimization variable lives on the PML-extended grid; higher `space_order` reduces numerical dispersion. |
+| `pml`          | `width`, `power`, `R0`, `damping_scale`, `observation_width` | `observation_width: null` generates the data on the inversion grid (inverse crime); a different width is a deliberate modelling error. |
+| `time`         | `t_max`, `init_nt`, `cfl_safety` | Sets `dt` and the FFT bins the band frequencies snap to. |
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
-| `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center` | Ring transmission geometry (ultrasound-style). |
-| `physics`      | `space_order` (2/4/6/8/10), `pml_weight` | Higher `space_order` reduces numerical dispersion. |
+| `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center`, `sigma_s` | Ring transmission geometry (ultrasound-style). |
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
-| `observation`  | `normalize_data`, `pml_width` | Observed data are a Helmholtz solve on the truth model (inverse crime). Per-receiver normalisation stabilises the data term. |
 | `continuation` | `warm_start` (`helmholtz`/`none`), `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next. |
-| `loss`         | `weights.{pde,data,reg}`, `regulariser` | The only objective weights (defaults 1 / 1 / 0). Set `reg > 0` to activate Tikhonov / TV. |
-| `optimiser`    | `name` (`joint`), `n_iter`, `log_every`, `joint.*` | See below. |
+| `loss`         | `weights.{pde,data,reg}`, `normalize_data`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). Per-receiver normalisation stabilises the data term. |
+| `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
 | `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
 
 ### Optimiser
@@ -112,8 +120,9 @@ defaults in `odil_wave/experiment/config.py`.
   `c` is reparameterised through a sigmoid so its bounds hold structurally. It
   minimises `Phi = pde * pde_term + data * data_term + reg * R(c)` with the
   weights from `loss.weights`, where each term is the mean (over real scalar
-  entries) of the per-(shot, frequency) scaled relative residual. Solver knobs live under `optimiser.joint`
-  (`inner_max_iter`, `z_scale`, …).
+  entries) of the per-(shot, frequency) scaled relative residual. The L-BFGS
+  settings (`inner_max_iter`, `history_size`, …) live under `optimiser`; the
+  latent velocity bounds are `grid.c_min` / `grid.c_max`.
 
 ### Frequency continuation (`bands`)
 
@@ -127,9 +136,11 @@ there is no per-band source rotation or scheduling.
 
 ## Important points
 
-- **Inverse crime.** Observed data are a Helmholtz solve on the truth model
-  with the same frequency-domain operator the inversion uses, so the inversion
-  regenerates its own data exactly (a deliberate inverse-crime baseline).
+- **Inverse crime.** By default (`pml.observation_width: null`) observed data
+  are a Helmholtz solve on the truth model with the same grid and
+  frequency-domain operator the inversion uses, so the true model fits the data
+  exactly (a deliberate inverse-crime baseline). Setting a different
+  `pml.observation_width` synthesises the data with that PML width instead.
 - **Non-dimensional physics.** The grid rescales length/velocity/time so the
   discrete residual is dimensionless; physical `dx, dt, …` are retained only for
   plotting/indexing.
@@ -162,8 +173,9 @@ physics operators (`test_operator.py`), the `Wavefield` container
 (`test_grid.py`), source wavelets (`test_source.py`), velocity model profiles
 (`test_models.py`), acquisition geometry and receiver sampling
 (`test_geometry.py`), the loss/regulariser/loss-tape assembly (`test_loss.py`),
-the experiment config/problem-building layer (`test_experiments.py`), and
-end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
+the experiment config/problem-building layer (`test_experiments.py`), the
+one-owner-per-parameter rule for library constructors
+(`test_parameter_ownership.py`), and end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
 
 ## Install
 

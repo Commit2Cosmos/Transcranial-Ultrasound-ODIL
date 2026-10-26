@@ -1,0 +1,18 @@
+# Experiment config: a low-to-high frequency continuation sweep with
+# isotropic-TV regularisation. Like every experiment config it names only the
+# values that differ from the default config; print the default config with
+#   python main.py --print-defaults
+# Field docs live in odil_wave/experiment/config.py.
+
+run:
+  notes: two-stage 40 -> 50+60 kHz sweep with TV regularisation
+
+continuation:
+  bands:
+    - frequencies_hz: [40e3]
+      n_iter: 30
+    - frequencies_hz: [50e3, 60e3]   # two frequencies inverted jointly
+      n_iter: 20
+
+loss:
+  weights: {reg: 1.0e-6}

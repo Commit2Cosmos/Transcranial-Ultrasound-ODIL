@@ -10,7 +10,7 @@ import torch
 from odil_wave.plot_utils import length_scale, time_scale
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Grid:
     """2D space + time discretization with a PML sponge layer wrapping the interior.
 
@@ -35,27 +35,23 @@ class Grid:
     Defaults: ``c0 = c_max`` and ``L0 = max(interior extents)``.
     """
 
-    # TODO: enforce it is passed; no default
-    interior_shape: Tuple[int, int] = (100, 100)
-    interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
-        (-1.0, 1.0),
-        (-1.0, 1.0),
-    )
-    # TODO: enforce it is passed; no default
-    c_min: Optional[float] = None
-    c_max: float = 1.5
-    pml_width: int = 10  # extra cells per side wrapping the interior
-    pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
-    pml_R0: float = 1e-6  # target theoretical reflection coefficient
-    # TODO: enforce it is passed; no default
-    t_max: float = 1.0  # specify based on forward wavefield observations
-    init_nt: Optional[int] = None
-    cfl_safety: float = 0.9
+    # Configured by the run config (grid / pml / time / runtime blocks): no
+    # library defaults, every caller passes them (ADR 0001).
+    interior_shape: Tuple[int, int]  # (nx, ny) interior nodes
+    interior_extent: Tuple[Tuple[float, float], Tuple[float, float]]  # x then y
+    c_min: Optional[float]
+    c_max: float
+    pml_width: int  # extra cells per side wrapping the interior
+    pml_power: int  # sigma(d) = sigma_max * (d / L_pml)^pml_power
+    pml_R0: float  # target theoretical reflection coefficient
+    t_max: float  # time window [s]; sets dt and the FFT bins
+    init_nt: Optional[int]
+    cfl_safety: float
+    device: torch.device
+    dtype: torch.dtype
     # characteristic scales for non-dimensionalisation; None -> sensible defaults
     L0: Optional[float] = None
     c0: Optional[float] = None
-    device: torch.device = torch.device("cpu")
-    dtype: torch.dtype = torch.float32
 
     # derived
     interior_nx: int = field(init=False)
@@ -294,10 +290,7 @@ class Grid:
         cls,
         f_max: float,
         c_min: float,
-        interior_extent: Tuple[Tuple[float, float], Tuple[float, float]] = (
-            (-1.0, 1.0),
-            (-1.0, 1.0),
-        ),
+        interior_extent: Tuple[Tuple[float, float], Tuple[float, float]],
         n_ppw: int = 5,
         **kwargs,
     ) -> "Grid":
@@ -309,12 +302,13 @@ class Grid:
             Maximum source frequency in Hz.
         c_min : float
             Minimum medium velocity in m/s.
-        interior_extent : tuple, optional
-            Physical extent of the interior in each dimension.
+        interior_extent : tuple
+            Physical extent of the interior, x then y.
         n_ppw : int, optional
             Points per wavelength; sets ``dx = c_min / (f_max * n_ppw)``.
         **kwargs
-            Forwarded to the ``Grid`` constructor.
+            Forwarded to the ``Grid`` constructor (every other required
+            field except ``init_nt``).
 
         Returns
         -------
@@ -342,6 +336,7 @@ class Grid:
             interior_shape=(nx, ny),
             interior_extent=interior_extent,
             c_min=c_min,
+            init_nt=None,
             **kwargs,
         )
 

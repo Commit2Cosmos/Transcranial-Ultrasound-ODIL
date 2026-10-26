@@ -5,19 +5,22 @@ import pytest
 import torch
 
 from odil_wave import (
-    AcquisitionGeometry,
     FrequencySelection,
     HelmholtzSolver,
     InverseLoss,
     LossConfig,
-    SourceSignal,
-    VelocityModel,
     WaveEquation,
     Wavefield,
 )
-from odil_wave.experiment import build_problem, resolve_config, run_inverse, runner
+from odil_wave.experiment import (
+    build_problem,
+    deep_merge,
+    resolve_config,
+    run_inverse,
+    runner,
+)
 
-from conftest import make_grid, tiny_run_config
+from conftest import make_geometry, make_grid, make_model, make_source
 
 
 def _rel_c_error(model, truth, grid) -> float:
@@ -31,33 +34,36 @@ def test_forward_to_loss_gradient_flows():
     """A Helmholtz forward solve feeds a differentiable inverse loss in ``c``."""
     grid = make_grid(interior_shape=(16, 16))
     fs = FrequencySelection.from_frequencies(grid, [40e3])
-    src = SourceSignal(grid, kind="tone_burst", f0=40e3, n_cycles=2.0, offset=5)
-    geom = AcquisitionGeometry(
-        grid, src, fs, n_receivers=8, n_sources=2, source_spatial="point"
-    )
+    src = make_source(grid)
+    geom = make_geometry(grid, src, fs)
 
     # Truth data from an overdensity medium.
-    truth = VelocityModel(
-        grid, profile="overdensity", base=1500.0, contrast=120.0, radius=0.012
-    )
+    truth = make_model(grid, "overdensity", contrast=120.0, radius=0.012)
     wf_truth = Wavefield(grid, fs, velocity_model=truth)
-    sols = HelmholtzSolver(wf_truth, geom, space_order=2).solve(verbose=False)
+    sols = HelmholtzSolver(wf_truth, geom, space_order=2, damping_scale=1.0).solve(
+        verbose=False
+    )
 
     # A homogeneous starting model, warm-started at its own Helmholtz field.
-    init = VelocityModel(grid, profile="homogeneous", base=1500.0)
+    init = make_model(grid)
     wf = Wavefield(grid, fs, velocity_model=init)
     u0 = torch.stack(
         [
             w.amplitude
-            for w in HelmholtzSolver(wf, geom, space_order=2).solve(verbose=False)
+            for w in HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
+                verbose=False
+            )
         ]
     )
 
-    wave_eq = WaveEquation(wf, space_order=2)
+    wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
     cfg = LossConfig(
-        wave_eq=wave_eq, geometry=geom, weights={"pde": 1.0, "data": 100.0}
+        wave_eq=wave_eq,
+        geometry=geom,
+        weights={"pde": 1.0, "data": 100.0},
+        regulariser=None,
     )
-    loss = InverseLoss(observed_wavefield=sols, config=cfg)
+    loss = InverseLoss(observed_wavefield=sols, config=cfg, normalize_data="none")
 
     c = init.c.clone().requires_grad_(True)
     L = loss.evaluate(u0, c)
@@ -68,10 +74,9 @@ def test_forward_to_loss_gradient_flows():
     assert float(c.grad.abs().max()) > 0
 
 
-def test_run_inverse_tiny_problem_recovers(tmp_path):
+def test_run_inverse_tiny_problem_recovers(tiny_experiment):
     """A full tiny run_inverse completes, writes artifacts, and improves the model."""
-    user_cfg = tiny_run_config(tmp_path)
-    cfg = resolve_config(user_cfg)
+    cfg = resolve_config(tiny_experiment)
 
     # Baseline error of the (homogeneous) starting model against the truth.
     problem = build_problem(cfg)
@@ -104,14 +109,18 @@ def test_run_inverse_tiny_problem_recovers(tmp_path):
     assert losses[-1] <= losses[0]
 
 
-def test_run_inverse_two_bands_chain_models(tmp_path, monkeypatch):
+def test_run_inverse_two_bands_chain_models(tiny_experiment, monkeypatch):
     """Each band writes its artifacts and band 2 starts from band 1's model."""
-    user_cfg = tiny_run_config(tmp_path, run_id="two_bands")
-    user_cfg["continuation"]["bands"] = [
-        {"frequencies_hz": [30e3]},
-        {"frequencies_hz": [40e3]},
-    ]
-    user_cfg["optimiser"]["n_iter"] = 3
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "two_bands"},
+            "continuation": {
+                "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
+            },
+            "optimiser": {"n_iter": 3},
+        },
+    )
     cfg = resolve_config(user_cfg)
     init_c = build_problem(cfg).init_velocity.c
 
@@ -155,13 +164,17 @@ def test_run_inverse_two_bands_chain_models(tmp_path, monkeypatch):
     )
 
 
-def _built_optimiser(tmp_path, monkeypatch, run_id, loss_cfg):
+def _built_optimiser(experiment, monkeypatch, run_id, loss_cfg):
     """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
     the runner built (captured from ``runner._build_optimiser``)."""
-    user_cfg = tiny_run_config(tmp_path, run_id=run_id)
-    user_cfg["loss"] = loss_cfg
-    user_cfg["optimiser"]["n_iter"] = 1
-    user_cfg["optimiser"]["joint"]["inner_max_iter"] = 2
+    user_cfg = deep_merge(
+        experiment,
+        {
+            "run": {"run_id": run_id},
+            "loss": loss_cfg,
+            "optimiser": {"n_iter": 1, "inner_max_iter": 2},
+        },
+    )
     built = []
     original = runner._build_optimiser
 
@@ -183,27 +196,29 @@ def _objective_off_truth(opt):
     return L, opt._last["pde_loss"], opt._last["data_loss"]
 
 
-def test_loss_weights_scale_the_joint_objective(tmp_path, monkeypatch):
+def test_loss_weights_scale_the_joint_objective(tiny_experiment, monkeypatch):
     """loss.weights.pde / .data set through the run config scale the objective."""
     base = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
-    L1, p, d = _objective_off_truth(_built_optimiser(tmp_path, monkeypatch, "w1", base))
+    L1, p, d = _objective_off_truth(
+        _built_optimiser(tiny_experiment, monkeypatch, "w1", base)
+    )
     assert p > 0 and d > 0
 
     pde3 = {"weights": {"pde": 3.0, "data": 1.0, "reg": 0.0}}
     L_pde, *_ = _objective_off_truth(
-        _built_optimiser(tmp_path, monkeypatch, "w2", pde3)
+        _built_optimiser(tiny_experiment, monkeypatch, "w2", pde3)
     )
     np.testing.assert_allclose(L_pde, L1 + 2.0 * p, rtol=1e-10)
 
     data5 = {"weights": {"pde": 1.0, "data": 5.0, "reg": 0.0}}
     L_dat, *_ = _objective_off_truth(
-        _built_optimiser(tmp_path, monkeypatch, "w3", data5)
+        _built_optimiser(tiny_experiment, monkeypatch, "w3", data5)
     )
     np.testing.assert_allclose(L_dat, L1 + 4.0 * d, rtol=1e-10)
 
 
-def test_loss_weights_reg_activates_regulariser(tmp_path, monkeypatch):
-    """A named regulariser contributes only when loss.weights.reg > 0."""
+def test_loss_weights_reg_activates_regulariser(tiny_experiment, monkeypatch):
+    """The regulariser contributes only when loss.weights.reg > 0."""
 
     def loss_cfg(reg):
         return {
@@ -213,13 +228,13 @@ def test_loss_weights_reg_activates_regulariser(tmp_path, monkeypatch):
 
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
     L_plain, *_ = _objective_off_truth(
-        _built_optimiser(tmp_path, monkeypatch, "r0", plain)
+        _built_optimiser(tiny_experiment, monkeypatch, "r0", plain)
     )
     L_off, *_ = _objective_off_truth(
-        _built_optimiser(tmp_path, monkeypatch, "r1", loss_cfg(0.0))
+        _built_optimiser(tiny_experiment, monkeypatch, "r1", loss_cfg(0.0))
     )
     L_on, *_ = _objective_off_truth(
-        _built_optimiser(tmp_path, monkeypatch, "r2", loss_cfg(1e-3))
+        _built_optimiser(tiny_experiment, monkeypatch, "r2", loss_cfg(1e-3))
     )
     assert L_off == L_plain
     assert L_on > L_plain
@@ -229,11 +244,16 @@ def test_loss_weights_reg_activates_regulariser(tmp_path, monkeypatch):
     "weights",
     [{"pde": 1.0, "data": 1.0, "reg": 0.0}, {"pde": 2.0, "data": 10.0, "reg": 0.0}],
 )
-def test_logged_terms_sum_to_objective(tmp_path, weights):
+def test_logged_terms_sum_to_objective(tiny_experiment, weights):
     """Logged pde_term + data_term (+ reg_term = 0) equal the logged objective."""
-    user_cfg = tiny_run_config(tmp_path, run_id="terms")
-    user_cfg["loss"] = {"weights": weights}
-    user_cfg["optimiser"]["n_iter"] = 3
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "terms"},
+            "loss": {"weights": weights},
+            "optimiser": {"n_iter": 3},
+        },
+    )
     result = run_inverse(resolve_config(user_cfg))
 
     rows = [

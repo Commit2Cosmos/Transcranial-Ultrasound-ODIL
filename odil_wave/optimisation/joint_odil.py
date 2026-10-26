@@ -12,7 +12,9 @@ Formulation
 * Model latent ``z_m`` on interior cells, bounded squared slowness
 
       m(z_m) = m_min + (m_max - m_min) * sigmoid(z_scale * z_m),
-      m_min = 1 / c_max**2 ,   m_max = 1 / c_min**2 ,   c = 1 / sqrt(m).
+      m_min = 1 / c_max**2 ,   m_max = 1 / c_min**2 ,   c = 1 / sqrt(m),
+
+  with ``c_min`` / ``c_max`` the grid's velocity bounds.
 
   ``c_full = velocity_model.build_full_c(c)`` freezes PML cells at ``pml_c`` so
   only interior cells are optimised. Bounds are enforced *structurally* by the
@@ -116,9 +118,8 @@ class SlownessLatent:
 
     ``m(z) = m_min + (m_max - m_min) * sigmoid(z_scale * z)`` with velocity
     bounds converted as ``m_min = 1/c_max**2``, ``m_max = 1/c_min**2``.
-    ``z_scale`` is a fixed model-coordinate scale (default 1; used by the scaling
-    sweep). The inverse (logit) is used once for initialisation, clipped away
-    from 0/1.
+    ``z_scale`` is a fixed model-coordinate scale (default 1). The inverse
+    (logit) is used once for initialisation, clipped away from 0/1.
     """
 
     m_min: float
@@ -153,10 +154,13 @@ class SlownessLatent:
 class JointFreqODIL(Optimiser):
     """Pure joint full-space frequency-domain ODIL solver.
 
-    Parameters mirror the ``optimiser.joint`` config block; see the module
-    docstring for the formulation. ``loss`` must be an :class:`InverseLoss`
-    (the operator, geometry, sources and observations are read from it, so the
-    PDE / receiver operators are identical to truth-data generation).
+    Every parameter the run config sets (the ``optimiser`` block, the
+    ``loss.weights`` and ``runtime.verbose``) is a required keyword (ADR 0001);
+    the numerical-method details (``eps_*``, ``z_scale``, ``logit_clip``) keep
+    library defaults. See the module docstring for the formulation. ``loss``
+    must be an :class:`InverseLoss` (the operator, geometry, sources and
+    observations are read from it, so the PDE / receiver operators are
+    identical to truth-data generation).
     """
 
     def __init__(
@@ -164,31 +168,26 @@ class JointFreqODIL(Optimiser):
         wavefield: Wavefield,
         loss: InverseLoss,
         *,
+        n_iter: int,
+        inner_max_iter: int,
+        history_size: int,
+        line_search_fn: Optional[str],
+        tolerance_grad: float,
+        tolerance_change: float,
+        lbfgs_lr: float,
+        pde_weight: float,
+        data_weight: float,
+        reg_weight: float,
+        log_every: int,
+        verbose: bool,
         u_init=None,
-        n_iter: int = 50,
-        inner_max_iter: int = 20,
-        history_size: int = 20,
-        line_search_fn: Optional[str] = "strong_wolfe",
-        tolerance_grad: float = 1e-12,
-        tolerance_change: float = 1e-14,
-        lbfgs_lr: float = 1.0,
-        data_weight: float = 1.0,
-        pde_weight: float = 1.0,
-        reg_weight: float = 0.0,
-        c_min: Optional[float] = None,
-        c_max: Optional[float] = None,
-        # Fixed-scale controls + scaling-sweep perturbation factors.
+        # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
         eps_pde: float = 1e-30,
-        u_scale_factor: float = 1.0,
-        pde_scale_factor: float = 1.0,
-        data_scale_factor: float = 1.0,
         z_scale: float = 1.0,
         logit_clip: float = 1e-6,
         eps_grad: float = 1e-30,
-        log_every: int = 1,
-        verbose: bool = False,
     ) -> None:
         super().__init__(wavefield, loss)
         if not isinstance(loss, InverseLoss):
@@ -215,19 +214,19 @@ class JointFreqODIL(Optimiser):
         self.tolerance_change = float(tolerance_change)
         self.lbfgs_lr = float(lbfgs_lr)
         self.data_weight = float(data_weight)
-        # Run-level PDE-penalty weight pde_weight (default 1.0 -> bit-identical to the
-        # established objective). A *predeclared, run-level* schedule may set this
-        # per continuation stage (Question A); it is never adapted from the
-        # instantaneous losses. lambda_data (== data_weight) stays fixed.
+        # Run-level PDE-penalty weight; never adapted from the instantaneous
+        # losses. lambda_data (== data_weight) stays fixed.
         self.pde_weight = float(pde_weight)
         self.reg_weight = float(reg_weight)
         self.eps_grad = float(eps_grad)
         self.log_every = max(1, int(log_every))
         self.verbose = bool(verbose)
 
-        # Velocity bounds -> squared-slowness bounds (reversed ordering).
-        cmin = float(grid.c_min if c_min is None else c_min)
-        cmax = float(grid.c_max if c_max is None else c_max)
+        # Grid velocity bounds -> squared-slowness bounds (reversed ordering).
+        if grid.c_min is None:
+            raise ValueError("JointFreqODIL requires a grid with c_min set")
+        cmin = float(grid.c_min)
+        cmax = float(grid.c_max)
         if not (0.0 < cmin < cmax):
             raise ValueError(f"require 0 < c_min < c_max; got {cmin}, {cmax}")
         self.c_min, self.c_max = cmin, cmax
@@ -258,17 +257,13 @@ class JointFreqODIL(Optimiser):
         self.u_seed = u_seed
         u_int = u_seed[:, :, self._interior_slice[0], self._interior_slice[1]]
         u_ref = rms_abs(u_int, dim=(2, 3)).clamp_min(eps_u)  # (n_shots, nf)
-        self.u_ref = (u_ref * float(u_scale_factor)).view(self.n_shots, self.nf, 1, 1)
+        self.u_ref = u_ref.view(self.n_shots, self.nf, 1, 1)
 
         q_int = self.sources[:, :, self._interior_slice[0], self._interior_slice[1]]
         pde_scale = rms_abs(q_int, dim=(2, 3)).clamp_min(eps_pde)  # (n_shots, nf)
-        self.pde_scale = (pde_scale * float(pde_scale_factor)).view(
-            self.n_shots, self.nf, 1, 1
-        )
+        self.pde_scale = pde_scale.view(self.n_shots, self.nf, 1, 1)
         data_scale = rms_abs(self._obs_traces, dim=(2,)).clamp_min(eps_data)
-        self.data_scale = (data_scale * float(data_scale_factor)).view(
-            self.n_shots, self.nf, 1
-        )
+        self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
         # Fixed model reference for reporting: c_ref = homogeneous background.
         c0_int = self.vm_in.c[self._interior_slice].detach()
         self.c_ref = float(c0_int.mean().item())

@@ -229,16 +229,20 @@ class HelmholtzSolver:
         self,
         wavefield: Wavefield,
         geometry,
-        space_order: int = 2,
-        pml_weight: float = 1.0,
+        *,
+        space_order: int,
+        damping_scale: float,
     ) -> None:
-        """Bind to a wavefield/geometry and build the matching WaveEquation."""
+        """Bind to a wavefield/geometry and build the matching WaveEquation.
+
+        ``space_order`` and ``damping_scale`` are as in :class:`WaveEquation`.
+        """
         self.wavefield = wavefield
         self.geometry = geometry
         self.space_order = space_order
-        self.pml_weight = float(pml_weight)
+        self.damping_scale = float(damping_scale)
         self.wave_eq = WaveEquation(
-            wavefield, space_order=space_order, pml_weight=pml_weight
+            wavefield, space_order=space_order, damping_scale=damping_scale
         )
         self._L_csr: Optional[sp.csr_matrix] = None
 
@@ -315,7 +319,7 @@ class HelmholtzSolver:
 
         cd = np_complex_dtype(self.wavefield.cdtype)
         # Diagonal: lambda_tt + w * (sigma_sum * lambda_t + sigma_prod)
-        diag = (lam_tt + self.pml_weight * (sig_sum * lam_t + sig_prod)).astype(cd)
+        diag = (lam_tt + self.damping_scale * (sig_sum * lam_t + sig_prod)).astype(cd)
 
         L = self._laplacian_csr()
         # H = diag(a) - diag(c_nd^2) @ L
