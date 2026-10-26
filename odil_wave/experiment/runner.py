@@ -222,10 +222,12 @@ def _build_optimiser(
     canonical_optimiser_name(opt.name)  # raises ConfigError on a bad name
 
     # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
-    # closed-form, WRI or multigrid. data_weight is fixed (never adapted).
+    # closed-form, WRI or multigrid. The objective weights come only from
+    # loss.weights and are fixed for the run (never adapted).
     from odil_wave.optimisation import JointFreqODIL
 
     jo = opt.joint
+    w = cfg.loss.weights
     ls = None if str(jo.line_search_fn).lower() == "none" else jo.line_search_fn
     joint_kw = dict(
         u_init=u_init,
@@ -236,8 +238,9 @@ def _build_optimiser(
         tolerance_grad=jo.tolerance_grad,
         tolerance_change=jo.tolerance_change,
         lbfgs_lr=jo.lbfgs_lr,
-        data_weight=jo.data_weight,
-        reg_weight=jo.reg_weight,
+        pde_weight=float(w["pde"]),
+        data_weight=float(w["data"]),
+        reg_weight=float(w.get("reg", 0.0)),
         c_min=jo.c_min,
         c_max=jo.c_max,
         eps_u=jo.eps_u,
@@ -462,8 +465,8 @@ def _build_regulariser(cfg: RunConfig):
     configured, so :class:`~odil_wave.loss.LossConfig` omits the reg term.
 
     The scalar weight is *not* set here: it is ``loss.weights['reg']``, applied
-    by :class:`~odil_wave.loss.InverseLoss` (and by the closed-form proximal
-    step) at evaluation time.
+    by :class:`~odil_wave.optimisation.JointFreqODIL` in its objective (the
+    regulariser is inactive when that weight is 0).
     """
     reg = cfg.loss.regulariser
     if reg is None or reg.name is None:

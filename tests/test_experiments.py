@@ -235,3 +235,49 @@ def test_warm_start_toggles_with_config():
     assert (
         problem2.warm_start(problem2.init_velocity, problem2.make_band([40e3])) is None
     )
+
+
+# --------------------------------------------------------------------------- #
+# Objective weights (loss.weights is the single source)
+# --------------------------------------------------------------------------- #
+def test_default_loss_weights():
+    """Default objective weights are pde 1, data 1, reg 0."""
+    assert resolve_config({}).loss.weights == {"pde": 1.0, "data": 1.0, "reg": 0.0}
+
+
+@pytest.mark.parametrize("key", ["data_weight", "reg_weight"])
+def test_joint_weight_keys_are_rejected(key):
+    """optimiser.joint.{data,reg}_weight moved to loss.weights and no longer resolve."""
+    with pytest.raises(ConfigError, match="loss.weights"):
+        resolve_config({"optimiser": {"joint": {key: 1.0}}})
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {"pde": -1.0},
+        {"data": -1.0},
+        {"data": 0.0},
+        {"reg": -1e-3},
+        {"regs": 1.0},
+    ],
+)
+def test_bad_loss_weights_rejected(weights):
+    """Negative weights, data <= 0 and unknown weight keys raise ConfigError."""
+    with pytest.raises(ConfigError):
+        validate_config(resolve_config({"loss": {"weights": weights}}))
+
+
+def test_pde_weight_zero_is_allowed():
+    """pde = 0 is a valid (data-only) weighting."""
+    validate_config(resolve_config({"loss": {"weights": {"pde": 0.0}}}))
+
+
+@pytest.mark.parametrize("reg, warns", [(0.0, True), (1e-3, False)])
+def test_inactive_regulariser_warning(reg, warns):
+    """A named regulariser with loss.weights.reg <= 0 warns that it has no effect."""
+    cfg = resolve_config(
+        {"loss": {"weights": {"reg": reg}, "regulariser": {"name": "tikhonov"}}}
+    )
+    warned = any("no effect" in w for w in validate_config(cfg))
+    assert warned is warns

@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import torch
 
 from odil_wave import (
@@ -152,3 +153,99 @@ def test_run_inverse_two_bands_chain_models(tmp_path, monkeypatch):
     np.testing.assert_array_equal(
         np.load(result.final_c_path), np.load(band_dirs[1] / "c_final.npy")
     )
+
+
+def _built_optimiser(tmp_path, monkeypatch, run_id, loss_cfg):
+    """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
+    the runner built (captured from ``runner._build_optimiser``)."""
+    user_cfg = tiny_run_config(tmp_path, run_id=run_id)
+    user_cfg["loss"] = loss_cfg
+    user_cfg["optimiser"]["n_iter"] = 1
+    user_cfg["optimiser"]["joint"]["inner_max_iter"] = 2
+    built = []
+    original = runner._build_optimiser
+
+    def spy(*args, **kwargs):
+        built.append(original(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(runner, "_build_optimiser", spy)
+    assert run_inverse(resolve_config(user_cfg)).status == "completed"
+    return built[0]
+
+
+def _objective_off_truth(opt):
+    """Objective at the warm start with the model latent perturbed (so the PDE
+    term is non-zero); returns ``(Phi, unweighted pde_term, unweighted data_term)``."""
+    u_re, u_im, z = opt.init_params()
+    z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(0))
+    L = float(opt.objective(u_re, u_im, z, record=True))
+    return L, opt._last["pde_loss"], opt._last["data_loss"]
+
+
+def test_loss_weights_scale_the_joint_objective(tmp_path, monkeypatch):
+    """loss.weights.pde / .data set through the run config scale the objective."""
+    base = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
+    L1, p, d = _objective_off_truth(_built_optimiser(tmp_path, monkeypatch, "w1", base))
+    assert p > 0 and d > 0
+
+    pde3 = {"weights": {"pde": 3.0, "data": 1.0, "reg": 0.0}}
+    L_pde, *_ = _objective_off_truth(
+        _built_optimiser(tmp_path, monkeypatch, "w2", pde3)
+    )
+    np.testing.assert_allclose(L_pde, L1 + 2.0 * p, rtol=1e-10)
+
+    data5 = {"weights": {"pde": 1.0, "data": 5.0, "reg": 0.0}}
+    L_dat, *_ = _objective_off_truth(
+        _built_optimiser(tmp_path, monkeypatch, "w3", data5)
+    )
+    np.testing.assert_allclose(L_dat, L1 + 4.0 * d, rtol=1e-10)
+
+
+def test_loss_weights_reg_activates_regulariser(tmp_path, monkeypatch):
+    """A named regulariser contributes only when loss.weights.reg > 0."""
+
+    def loss_cfg(reg):
+        return {
+            "weights": {"pde": 1.0, "data": 1.0, "reg": reg},
+            "regulariser": {"name": "tikhonov"},
+        }
+
+    plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
+    L_plain, *_ = _objective_off_truth(
+        _built_optimiser(tmp_path, monkeypatch, "r0", plain)
+    )
+    L_off, *_ = _objective_off_truth(
+        _built_optimiser(tmp_path, monkeypatch, "r1", loss_cfg(0.0))
+    )
+    L_on, *_ = _objective_off_truth(
+        _built_optimiser(tmp_path, monkeypatch, "r2", loss_cfg(1e-3))
+    )
+    assert L_off == L_plain
+    assert L_on > L_plain
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [{"pde": 1.0, "data": 1.0, "reg": 0.0}, {"pde": 2.0, "data": 10.0, "reg": 0.0}],
+)
+def test_logged_terms_sum_to_objective(tmp_path, weights):
+    """Logged pde_term + data_term (+ reg_term = 0) equal the logged objective."""
+    user_cfg = tiny_run_config(tmp_path, run_id="terms")
+    user_cfg["loss"] = {"weights": weights}
+    user_cfg["optimiser"]["n_iter"] = 3
+    result = run_inverse(resolve_config(user_cfg))
+
+    rows = [
+        json.loads(line)
+        for line in (result.run_dir / "metrics.jsonl").read_text().splitlines()
+    ]
+    assert rows
+    for r in rows:
+        assert r["reg_term"] == 0.0
+        np.testing.assert_allclose(
+            r["pde_term"] + r["data_term"], r["loss_total"], rtol=1e-10
+        )
+        np.testing.assert_allclose(
+            r["data_term"], weights["data"] * r["data_loss"], rtol=1e-12
+        )

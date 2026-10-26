@@ -81,12 +81,12 @@ def tiny_run_config(tmp_path, run_id: str = "tiny") -> dict:
             "warm_start": "helmholtz",
             "bands": [{"frequencies_hz": [40e3]}],
         },
-        "loss": {"weights": {"pde": 1.0, "data": 100.0, "reg": 0.0}},
+        "loss": {"weights": {"pde": 1.0, "data": 10.0, "reg": 0.0}},
         "optimiser": {
             "name": "joint",
             "n_iter": 10,
             "log_every": 1,
-            "joint": {"inner_max_iter": 20, "data_weight": 10.0, "z_scale": 10.0},
+            "joint": {"inner_max_iter": 20, "z_scale": 10.0},
         },
         "metrics": {"ssim": {"mask": "none"}},
     }

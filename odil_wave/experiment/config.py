@@ -274,13 +274,15 @@ class LossCfg:
     """Objective weights + regularisation.
 
     Params:
-    * ``weights``: dict with required keys ``pde`` / ``data`` (and optional
-      ``reg``), each >= 0; PDE-residual / data-misfit / regulariser weights.
+    * ``weights``: the only place the joint objective weights are set, applied
+      as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``
+      / ``data`` (required) and ``reg`` (optional, missing -> 0); each >= 0 and
+      ``data`` > 0. ``reg`` > 0 activates the named regulariser.
     * ``regulariser``: :class:`RegulariserCfg`.
     """
 
     weights: Dict[str, float] = field(
-        default_factory=lambda: {"pde": 1.0, "data": 100.0, "reg": 0.0}
+        default_factory=lambda: {"pde": 1.0, "data": 1.0, "reg": 0.0}
     )
     regulariser: RegulariserCfg = field(default_factory=RegulariserCfg)
 
@@ -292,10 +294,9 @@ class JointODILCfg:
     A single joint L-BFGS over the complex wavefield block and a
     squared-slowness model latent bounded by a sigmoid.
 
+    The objective weights are not set here: they come from ``loss.weights``.
+
     Params:
-    * ``data_weight``: > 0 fixed run-level data weight (``pde_weight = 1``;
-      never adapted during optimisation).
-    * ``reg_weight``: >= 0 regulariser weight.
     * ``c_min`` / ``c_max``: ``None`` -> ``grid.c_min`` / ``grid.c_max``; set the
       squared-slowness bounds (``c_min`` < ``c_max``).
     * ``inner_max_iter``: int >= 1 L-BFGS iterations per logged outer step; keep
@@ -313,8 +314,6 @@ class JointODILCfg:
     * ``verbose``: bool.
     """
 
-    data_weight: float = 1.0
-    reg_weight: float = 0.0
     c_min: Optional[float] = None
     c_max: Optional[float] = None
     inner_max_iter: int = 20
@@ -454,6 +453,22 @@ def _list_elt_dataclass(tp: Any) -> Optional[type]:
     return None
 
 
+# Objective-weight keys accepted in ``loss.weights``.
+_WEIGHT_KEYS = ("pde", "data", "reg")
+
+# Removed keys -> hint naming their replacement, appended to the unknown-key error.
+_MOVED_KEYS = {
+    (
+        "JointODILCfg",
+        "data_weight",
+    ): "optimiser.joint.data_weight moved to loss.weights.data",
+    (
+        "JointODILCfg",
+        "reg_weight",
+    ): "optimiser.joint.reg_weight moved to loss.weights.reg",
+}
+
+
 def _build(cls: type, data: Dict[str, Any]) -> Any:
     """Recursively construct dataclass ``cls`` from the plain dict ``data``.
 
@@ -471,9 +486,14 @@ def _build(cls: type, data: Dict[str, Any]) -> Any:
     field_names = {f.name for f in fields(cls)}
     unknown = set(data) - field_names
     if unknown:
+        hints = [
+            _MOVED_KEYS[(cls.__name__, k)]
+            for k in sorted(unknown)
+            if (cls.__name__, k) in _MOVED_KEYS
+        ]
         raise ConfigError(
             f"unknown key(s) for {cls.__name__}: {sorted(unknown)}; "
-            f"valid keys: {sorted(field_names)}"
+            f"valid keys: {sorted(field_names)}" + "".join(f"; {h}" for h in hints)
         )
     kwargs: Dict[str, Any] = {}
     for f in fields(cls):
@@ -741,8 +761,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
 
     if name == "joint":
         jo = cfg.optimiser.joint
-        if jo.data_weight <= 0:
-            raise ConfigError("optimiser.joint.data_weight must be > 0")
         if jo.inner_max_iter < 1:
             raise ConfigError("optimiser.joint.inner_max_iter must be >= 1")
         if jo.history_size < 1:
@@ -796,9 +814,21 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     ):
         raise ConfigError(f"runtime.dtype {cfg.runtime.dtype!r} is not supported")
 
+    weights = cfg.loss.weights
     for key in ("pde", "data"):
-        if key not in cfg.loss.weights:
+        if key not in weights:
             raise ConfigError(f"loss.weights is missing required key {key!r}")
+    unknown = set(weights) - set(_WEIGHT_KEYS)
+    if unknown:
+        raise ConfigError(
+            f"loss.weights has unknown key(s) {sorted(unknown)}; "
+            f"valid keys: {list(_WEIGHT_KEYS)}"
+        )
+    for key, val in weights.items():
+        if float(val) < 0:
+            raise ConfigError(f"loss.weights.{key} must be >= 0, got {val}")
+    if float(weights["data"]) <= 0:
+        raise ConfigError(f"loss.weights.data must be > 0, got {weights['data']}")
 
     reg = cfg.loss.regulariser
     if reg is not None and reg.name is not None:
@@ -809,7 +839,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
                 f"loss.regulariser.params has unknown key(s) {sorted(unknown)}; "
                 "the only accepted param is 'eps'."
             )
-        if float(cfg.loss.weights.get("reg", 0.0)) <= 0.0:
+        if float(weights.get("reg", 0.0)) <= 0.0:
             warnings.append(
                 f"loss.regulariser.name={reg.name!r} is set but loss.weights['reg'] "
                 "is <= 0, so the regulariser has no effect."
