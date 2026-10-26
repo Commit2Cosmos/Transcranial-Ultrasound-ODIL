@@ -109,7 +109,7 @@ class RecordingTape(LossTape):
         self._loss_obj: Any = None
 
     def bind_loss(self, loss: Any) -> None:
-        """Give the tape the InverseLoss so it can read weights / eval counts."""
+        """Give the tape the InverseLoss so it can read eval counts / regulariser."""
         self._loss_obj = loss
 
     # -- optimiser hook (every outer iteration) ---------------------------- #
@@ -330,19 +330,17 @@ class RunRecorder:
             pde_src_ratio if pde_src_ratio is not None else res.get("pde_src_ratio")
         )
 
-        weights = {}
         n_eval = None
         has_regulariser = False
         if tape._loss_obj is not None:
-            weights = dict(getattr(tape._loss_obj.config, "weights", {}) or {})
             n_eval = getattr(tape._loss_obj, "evaluations", None)
             has_regulariser = (
                 getattr(tape._loss_obj.config, "regulariser", None) is not None
             )
-        pde_weight = float(weights.get("pde", 1.0))
-        data_weight = float(weights.get("data", 1.0))
-        pde_term = None if pde_loss is None else pde_weight * pde_loss
-        data_term = None if data_loss is None else data_weight * data_loss
+        # Weighted terms as reported by the optimiser (which applies the
+        # weights), so the log matches what was minimised.
+        pde_term = _f(res.get("pde_term"))
+        data_term = _f(res.get("data_term"))
         # Weighted regularisation contribution: 0 without a regulariser, else
         # null. Not derived as (loss - pde_term - data_term): the solver loss and
         # the residual terms are evaluated at slightly different points, so that

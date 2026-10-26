@@ -64,13 +64,13 @@ def test_regulariser_unknown_kind_raises():
 # LossConfig
 # --------------------------------------------------------------------------- #
 def test_loss_config_merges_weights_and_offset(wave_stack):
-    """Missing weight keys default to 1.0 and speed_offset packs the u DOFs."""
+    """Missing pde/data weights default to 1.0, reg to 0.0; speed_offset packs u DOFs."""
     cfg = LossConfig(
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
         weights={"pde": 2.0},
     )
-    assert cfg.weights == {"pde": 2.0, "data": 1.0, "reg": 1.0}
+    assert cfg.weights == {"pde": 2.0, "data": 1.0, "reg": 0.0}
     g = wave_stack.grid
     nf = wave_stack.freq.n_frequencies
     expected = wave_stack.geometry.n_sources * nf * g.nx * g.ny * 2

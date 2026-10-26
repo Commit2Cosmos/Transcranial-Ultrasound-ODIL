@@ -100,7 +100,7 @@ defaults in `odil_wave/experiment/config.py`.
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
 | `observation`  | `normalize_data`, `pml_width` | Observed data are a Helmholtz solve on the truth model (inverse crime). Per-receiver normalisation stabilises the data term. |
 | `continuation` | `warm_start` (`helmholtz`/`none`), `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next. |
-| `loss`         | `weights.{pde,data,reg}`, `regulariser` | Set `reg > 0` to activate Tikhonov / TV. |
+| `loss`         | `weights.{pde,data,reg}`, `regulariser` | The only objective weights (defaults 1 / 1 / 0). Set `reg > 0` to activate Tikhonov / TV. |
 | `optimiser`    | `name` (`joint`), `n_iter`, `log_every`, `joint.*` | See below. |
 | `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
 
@@ -109,8 +109,11 @@ defaults in `odil_wave/experiment/config.py`.
 - **`joint`** — full-space ODIL (`JointFreqODIL`): a single persistent L-BFGS
   over the wavefield `u` and a bounded squared-slowness latent for `c` together,
   no block alternation. `u` is scaled by a fixed per-(shot, frequency) reference;
-  `c` is reparameterised through a sigmoid so its bounds hold structurally. Knobs
-  live under `optimiser.joint` (`data_weight`, `inner_max_iter`, `z_scale`, …).
+  `c` is reparameterised through a sigmoid so its bounds hold structurally. It
+  minimises `Phi = pde * pde_term + data * data_term + reg * R(c)` with the
+  weights from `loss.weights`, where each term is the per-(shot, frequency)
+  scaled relative residual. Solver knobs live under `optimiser.joint`
+  (`inner_max_iter`, `z_scale`, …).
 
 ### Frequency continuation (`bands`)
 

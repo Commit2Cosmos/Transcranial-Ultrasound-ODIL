@@ -14,7 +14,7 @@ from odil_wave.plot_utils import length_scale
 from .regulariser import Regulariser
 
 
-_DEFAULT_WEIGHTS = {"pde": 1.0, "data": 1.0, "reg": 1.0}
+_DEFAULT_WEIGHTS = {"pde": 1.0, "data": 1.0, "reg": 0.0}
 
 
 @dataclass
@@ -23,7 +23,7 @@ class LossConfig:
 
     `weights` multiplies the (already mean-reduced) per-block losses:
     `pde_weight * mean(r_pde**2) + data_weight * mean(r_data**2) + w_reg * R(c_int)`.
-    Missing keys default to 1.0.
+    Missing ``pde`` / ``data`` default to 1.0, missing ``reg`` to 0.0.
 
     The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
     the interior of c is the optimisation variable. Pad with
@@ -44,7 +44,8 @@ class LossConfig:
 
         Notes
         -----
-        Fills missing ``weights`` keys with 1.0 and computes
+        Fills missing ``weights`` keys (``pde`` / ``data`` -> 1.0, ``reg`` ->
+        0.0) and computes
         ``speed_offset``, the number of real wavefield DOFs preceding the
         velocity parameters in a packed optimisation vector.
         """

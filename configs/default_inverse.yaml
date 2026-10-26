@@ -88,7 +88,9 @@ continuation:
       n_iter: null
 
 loss:
-  weights: {pde: 1.0, data: 100.0, reg: 0.0}   # each >= 0; PDE-residual / data-misfit / regulariser weights
+  # Joint objective weights (the only place they are set):
+  #   Phi = pde * pde_term + data * data_term + reg * R(c)
+  weights: {pde: 1.0, data: 1.0, reg: 0.0}   # each >= 0, data > 0; reg > 0 activates the regulariser
   regulariser: {
     name: null,   # null | tikhonov | tv_iso | tv_aniso  (aliases: l2/smooth, tv/iso, aniso)
     params: {}    # only 'eps' accepted, e.g. {eps: 1.0e-6} (used by the TV regularisers)
@@ -100,8 +102,6 @@ optimiser:
   n_iter: 20             # int >= 1; outer iterations (per band unless band.n_iter is set)
 
   joint:
-    data_weight: 1.0          # > 0; fixed run-level data weight (pde weight = 1)
-    reg_weight: 0.0           # >= 0; regulariser weight
     c_min: null               # null -> grid.c_min | float; squared-slowness lower bound
     c_max: null               # null -> grid.c_max | float; squared-slowness upper bound
     inner_max_iter: 20        # int >= 1; L-BFGS iterations per logged outer step (keep >= ~5)

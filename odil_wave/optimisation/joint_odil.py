@@ -38,8 +38,11 @@ Formulation
           + data_weight * mean|r_data / data_scale|^2
           + w_reg  * R(c_interior)
 
-  with ``pde_weight = 1``, ``data_weight = data_weight``, ``w_reg = reg_weight`` (default
-  0). ``data_weight`` is a fixed run-level hyperparameter (never adapted).
+  with ``pde_weight``, ``data_weight`` and ``w_reg = reg_weight`` fixed run-level
+  hyperparameters (never adapted). The experiment runner fills all three from
+  ``loss.weights.{pde,data,reg}`` (defaults 1 / 1 / 0); the regulariser is
+  applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
+  scaled relative residual above, not the raw ``InverseLoss`` mean.
 
 * One persistent ``torch.optim.LBFGS([u_re, u_im, z_m])`` (strong-Wolfe) — a
   single joint optimiser over the full space, no alternation. It is advanced by
@@ -315,6 +318,7 @@ class JointFreqODIL(Optimiser):
             "c_ref": self.c_ref,
             "m_ref": self.m_ref,
             "z_scale": self.latent.z_scale,
+            "pde_weight": self.pde_weight,
             "data_weight": self.data_weight,
             "reg_weight": self.reg_weight,
             "u_ref_min": float(u_ref.min()),
@@ -526,6 +530,9 @@ class JointFreqODIL(Optimiser):
                         "data_rms": self._last["data_rms_raw"],
                         "pde_loss": self._last["pde_loss"],
                         "data_loss": self._last["data_loss"],
+                        # Weighted terms as minimised (weights applied here).
+                        "pde_term": self._last["pde_term_weighted"],
+                        "data_term": self._last["data_term"],
                         "pde_src_ratio": self._last["pde_src_ratio"],
                     }
                     self.loss.callback.log(

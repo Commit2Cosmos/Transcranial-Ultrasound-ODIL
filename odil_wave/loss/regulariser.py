@@ -1,7 +1,8 @@
 """Spatial-smoothness / TV regularisers on the velocity field c(x, y).
 
 Each regulariser returns the *unweighted* penalty value; the scalar weight
-is supplied by the inverse loss via ``LossConfig.weights["reg"]``.
+comes from ``loss.weights.reg`` (``LossConfig.weights["reg"]``) and is
+applied by the optimiser objective.
 """
 
 from typing import Literal
