@@ -25,6 +25,10 @@ class WaveEquation:
         r = D_tt[u] - c'^2 ∇'^2 u - f'
           + w_sponge [ σ_sum_nd D_t[u] + σ_prod_nd u ]
 
+    with ``w_sponge = damping_scale`` (``1`` = designed PML absorption, ``0``
+    disables it). ``space_order`` (2 | 4 | 6 | 8 | 10) and ``damping_scale`` are
+    set by the run config and required keywords (ADR 0001).
+
     Frequency form (2nd-order centered symbols from FrequencySelection)::
 
         r(ω) = λ_tt u - c'^2 ∇'^2 u - f̂'
@@ -37,8 +41,8 @@ class WaveEquation:
     """
 
     wavefield: Wavefield
-    space_order: int = 2
-    pml_weight: float = 1.0
+    space_order: int = field(kw_only=True)
+    damping_scale: float = field(kw_only=True)
 
     _lap: DenseOperator = field(init=False)
     _bc: Conditions = field(init=False)
@@ -68,7 +72,7 @@ class WaveEquation:
             self._bc = NeumannMirrorBC4th()
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
-        self._sponge = Sponge(self.wavefield, self.pml_weight)
+        self._sponge = Sponge(self.wavefield, self.damping_scale)
 
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor

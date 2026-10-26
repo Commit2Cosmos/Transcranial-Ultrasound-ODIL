@@ -84,13 +84,14 @@ class AcquisitionGeometry:
         grid: Grid,
         source: SourceSignal,
         frequency_selection: FrequencySelection,
-        n_receivers: int = 16,
-        n_sources: Optional[int] = None,
-        sigma_s: Optional[float] = None,
-        a_frac: float = 0.55,
-        b_frac: float = 0.70,
-        ring_center: Optional[Tuple[float, float]] = None,
-        source_spatial: str = "gaussian",
+        *,
+        n_receivers: int,
+        n_sources: Optional[int],
+        sigma_s: Optional[float],
+        a_frac: float,
+        b_frac: float,
+        ring_center: Optional[Tuple[float, float]],
+        source_spatial: str,
     ):
         """Build the receiver/source ring for a given grid.
 
@@ -106,24 +107,26 @@ class AcquisitionGeometry:
         frequency_selection : FrequencySelection
             Frequency bins used by `source_field` for the frequency-domain
             source, and by the complex dtype it produces.
-        n_receivers : int, default 16
+        n_receivers : int
             Number of receivers placed on the ellipse.
-        n_sources : int, optional
+        n_sources : int or None
             Requested subsample count from the receiver ring (see
-            `source_ring_indices`). Defaults to `n_receivers`. The actual
+            `source_ring_indices`); ``None`` -> `n_receivers`. The actual
             active shot count, exposed as `self.n_sources`, may be smaller
             since the subsampling step is floored at 1.
-        sigma_s : float, optional
-            Spatial width of the Gaussian source profile (ignored when
-            `source_spatial="point"`). Defaults to a value derived from the
-            grid spacing and the source's dominant wavelength.
-        a_frac, b_frac : float, default 0.55, 0.70
+        sigma_s : float or None
+            Width in metres of the Gaussian source profile
+            ``exp(-r**2 / sigma_s**2)`` (standard deviation
+            ``sigma_s / sqrt(2)``; ignored when `source_spatial="point"`).
+            ``None`` -> derived from the grid spacing and the source's
+            dominant wavelength.
+        a_frac, b_frac : float
             Semi-axes of the receiver ellipse as a fraction of the half-width
             / half-height of the grid's interior region.
-        ring_center : (float, float), optional
-            Physical-coordinate centre of the receiver ellipse. Defaults to
+        ring_center : (float, float) or None
+            Physical-coordinate centre of the receiver ellipse; ``None`` ->
             the centre of the grid's interior region.
-        source_spatial : {"gaussian", "point"}, default "gaussian"
+        source_spatial : {"gaussian", "point"}
             Spatial injection profile: ``"gaussian"`` is a Gaussian blob of
             width `sigma_s`; ``"point"`` is a unit Kronecker delta at the
             source grid node.

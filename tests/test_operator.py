@@ -18,10 +18,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from odil_wave.geometry import AcquisitionGeometry
-from odil_wave.grid import FrequencySelection, Grid
-from odil_wave.models import VelocityModel
-from odil_wave.source import SourceSignal
+from odil_wave.grid import FrequencySelection
 from odil_wave.wavefield import Wavefield
 
 from odil_wave.operator.base import DenseOperator
@@ -52,6 +49,8 @@ from odil_wave.operator.helmholtz import (
     np_complex_dtype,
 )
 
+from conftest import make_geometry, make_grid, make_model, make_source
+
 
 # --------------------------------------------------------------------------- #
 # Shared tiny fixtures
@@ -65,13 +64,14 @@ def _make_grid(**overrides):
         pml_width=2,
         t_max=2e-5,
         init_nt=64,
+        dtype=torch.float32,
     )
     kwargs.update(overrides)
-    return Grid(**kwargs)
+    return make_grid(**kwargs)
 
 
 def _make_wavefield(grid, f0=8e4, **wf_overrides):
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
+    vm = make_model(grid)
     freq = FrequencySelection.from_frequencies(grid, [f0])
     kwargs = dict(grid=grid, frequency_selection=freq, velocity_model=vm)
     kwargs.update(wf_overrides)
@@ -83,10 +83,10 @@ def tiny_setup():
     """A minimal real forward setup (grid/velocity/source/geometry/wavefield),
     shared read-only across the Helmholtz integration tests."""
     grid = _make_grid()
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
-    source = SourceSignal(grid, kind="ricker", f0=8e4)
+    vm = make_model(grid)
+    source = make_source(grid, kind="ricker", f0=8e4, offset=0)
     freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = AcquisitionGeometry(grid, source, freq, n_receivers=4, n_sources=2)
+    geom = make_geometry(grid, source, freq, n_receivers=4, source_spatial="gaussian")
     wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
     return SimpleNamespace(grid=grid, vm=vm, source=source, freq=freq, geom=geom, wf=wf)
 
@@ -294,10 +294,9 @@ def test_cross_laplacian_kernel_6th_order_matches_known_coefficients():
 )
 def test_laplacian_orders_are_exact_on_a_quadratic_interior(cls, pad):
     n = 2 * pad + 9
-    grid = Grid(
+    grid = _make_grid(
         interior_shape=(n, n),
-        c_min=1000.0,
-        c_max=2000.0,
+        interior_extent=((-1.0, 1.0), (-1.0, 1.0)),
         pml_width=0,
         t_max=1e-5,
         init_nt=16,
@@ -333,7 +332,7 @@ def test_laplacian_2nd_order_kernel_matches_helmholtz_dense_kernel():
 def test_wave_equation_selects_matching_laplacian_and_bc(space_order):
     grid = _make_grid()
     wf = _make_wavefield(grid)
-    we = WaveEquation(wf, space_order=space_order)
+    we = WaveEquation(wf, space_order=space_order, damping_scale=1.0)
     expected_lap = {
         2: Laplacian2ndOrder,
         4: Laplacian4thOrder,
@@ -350,13 +349,13 @@ def test_wave_equation_invalid_space_order_raises():
     grid = _make_grid()
     wf = _make_wavefield(grid)
     with pytest.raises(ValueError):
-        WaveEquation(wf, space_order=3)
+        WaveEquation(wf, space_order=3, damping_scale=1.0)
 
 
 def test_wave_equation_residual_is_zero_for_zero_amplitude_and_source():
     grid = _make_grid()
     wf = _make_wavefield(grid)
-    we = WaveEquation(wf, space_order=2)
+    we = WaveEquation(wf, space_order=2, damping_scale=1.0)
     amp = torch.zeros(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
     source = torch.zeros_like(amp)
     c = wf.velocity_model.c
@@ -367,7 +366,7 @@ def test_wave_equation_residual_is_zero_for_zero_amplitude_and_source():
 def test_wave_equation_residual_matches_manual_assembly():
     grid = _make_grid(pml_width=2)
     wf = _make_wavefield(grid)
-    we = WaveEquation(wf, space_order=2, pml_weight=1.7)
+    we = WaveEquation(wf, space_order=2, damping_scale=1.7)
 
     torch.manual_seed(0)
     amp = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.float64).to(wf.cdtype)
@@ -470,7 +469,9 @@ def test_assemble_laplacian_csr_shape():
 
 
 def test_helmholtz_factor_cache_matvec_rejects_wrong_shape(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
+    )
     cache = solver.factorize(tiny_setup.vm.c.detach())
     bad = torch.zeros(
         2, 3, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
@@ -480,7 +481,9 @@ def test_helmholtz_factor_cache_matvec_rejects_wrong_shape(tiny_setup):
 
 
 def test_helmholtz_factor_cache_solve_rejects_bad_trans(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
+    )
     cache = solver.factorize(tiny_setup.vm.c.detach())
     rhs = torch.zeros(
         1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
@@ -490,7 +493,9 @@ def test_helmholtz_factor_cache_solve_rejects_bad_trans(tiny_setup):
 
 
 def test_helmholtz_factor_cache_solve_inverts_matvec(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
+    )
     cache = solver.factorize(tiny_setup.vm.c.detach())
     torch.manual_seed(1)
     u = torch.randn(
@@ -502,7 +507,9 @@ def test_helmholtz_factor_cache_solve_inverts_matvec(tiny_setup):
 
 
 def test_helmholtz_factor_cache_solve_counters(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
+    )
     cache = solver.factorize(tiny_setup.vm.c.detach())
     rhs = torch.zeros(
         1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
@@ -523,7 +530,7 @@ def test_helmholtz_factor_cache_solve_counters(tiny_setup):
 
 def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_setup):
     solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, pml_weight=1.0
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
     )
     c = tiny_setup.vm.c.detach()
     H = solver.assemble_H_sparse(c, freq_idx=0)
@@ -543,7 +550,9 @@ def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_se
 
 
 def test_helmholtz_solver_solve_smoke(tiny_setup):
-    solver = HelmholtzSolver(tiny_setup.wf, tiny_setup.geom, space_order=2)
+    solver = HelmholtzSolver(
+        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
+    )
     outputs = solver.solve(verbose=False)
     assert len(outputs) == tiny_setup.geom.n_sources
     for wf_out in outputs:

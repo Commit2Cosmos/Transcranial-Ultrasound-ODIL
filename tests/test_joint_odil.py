@@ -6,22 +6,17 @@ import pytest
 import torch
 
 from odil_wave import (
-    AcquisitionGeometry,
     FrequencySelection,
     HelmholtzSolver,
     InverseLoss,
     LossConfig,
-    SourceSignal,
-    VelocityModel,
     WaveEquation,
     Wavefield,
 )
 from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
 
-from conftest import F0, N_CYCLES, OFFSET, make_grid
-
-C_MIN, C_MAX = 1400.0, 1700.0
+from conftest import C_MAX, C_MIN, F0, make_geometry, make_grid, make_model, make_source
 
 
 @pytest.fixture(scope="module")
@@ -29,21 +24,21 @@ def truth_problem() -> SimpleNamespace:
     """Tiny inverse-crime problem: observations are a Helmholtz solve on the truth."""
     g = make_grid()
     fs = FrequencySelection.from_frequencies(g, [F0])
-    src = SourceSignal(g, kind="tone_burst", f0=F0, n_cycles=N_CYCLES, offset=OFFSET)
-    geom = AcquisitionGeometry(
-        g, src, fs, n_receivers=8, n_sources=2, source_spatial="point"
-    )
-    truth = VelocityModel(
-        g, profile="overdensity", base=1500.0, contrast=120.0, radius=0.012
-    )
+    src = make_source(g)
+    geom = make_geometry(g, src, fs)
+    truth = make_model(g, "overdensity", contrast=120.0, radius=0.012)
     wf = Wavefield(g, fs, velocity_model=truth)
-    observed = HelmholtzSolver(wf, geom, space_order=2).solve(verbose=False)
+    observed = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
+        verbose=False
+    )
     return SimpleNamespace(wavefield=wf, geometry=geom, observed=observed)
 
 
 def _make_optimiser(problem, regulariser=None, reg_weight=0.0) -> JointFreqODIL:
-    """Joint optimiser on the truth model, warm-started at the observed fields."""
-    wave_eq = WaveEquation(problem.wavefield, space_order=2)
+    """Joint optimiser on the truth model, warm-started at the observed fields.
+
+    The latent velocity bounds are the grid's (C_MIN, C_MAX)."""
+    wave_eq = WaveEquation(problem.wavefield, space_order=2, damping_scale=1.0)
     loss = InverseLoss(
         observed_wavefield=problem.observed,
         config=LossConfig(
@@ -52,14 +47,24 @@ def _make_optimiser(problem, regulariser=None, reg_weight=0.0) -> JointFreqODIL:
             weights={"pde": 1.0, "data": 1.0},
             regulariser=regulariser,
         ),
+        normalize_data="none",
     )
     return JointFreqODIL(
         problem.wavefield,
         loss,
         u_init=problem.observed,
-        c_min=C_MIN,
-        c_max=C_MAX,
+        n_iter=50,
+        inner_max_iter=20,
+        history_size=20,
+        line_search_fn="strong_wolfe",
+        tolerance_grad=1e-12,
+        tolerance_change=1e-14,
+        lbfgs_lr=1.0,
+        pde_weight=1.0,
+        data_weight=1.0,
         reg_weight=reg_weight,
+        log_every=1,
+        verbose=False,
     )
 
 
@@ -138,7 +143,9 @@ def test_objective_gradient_matches_finite_difference(truth_problem, block):
 def test_objective_gradient_with_regulariser(truth_problem):
     """The regulariser path is differentiated correctly as well."""
     opt = _make_optimiser(
-        truth_problem, regulariser=Regulariser("tikhonov"), reg_weight=1e-6
+        truth_problem,
+        regulariser=Regulariser(kind="tikhonov", eps=1e-8),
+        reg_weight=1e-6,
     )
     # the regulariser term actually contributes at the perturbed point.
     plain = _make_optimiser(truth_problem)

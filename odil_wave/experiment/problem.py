@@ -7,10 +7,11 @@ so every solver operates on an identical problem. Per-band pieces
 are produced on demand by :meth:`Problem.make_band` / :meth:`Problem.warm_start`.
 Observed data are always a Helmholtz solve on the truth model.
 
-When ``observation.pml_width`` differs from ``grid.pml_width``, observations
-are synthesised on a separate forward grid (thicker PML) and reduced to
-receiver traces for the inverse solve — matching the notebook
-``PML_FWD`` / ``PML_INV`` split.
+By default (``pml.observation_width`` null) observations are generated on the
+inversion grid with the inversion operator: the inverse crime. When
+``pml.observation_width`` differs from ``pml.width``, observations are instead
+synthesised on a separate forward grid with that PML width and reduced to
+receiver traces for the inverse solve (a deliberate modelling error).
 
 Numerical behaviour mirrors the notebook helpers ``build_setup`` /
 ``helmholtz_solve`` exactly.
@@ -66,7 +67,7 @@ class Problem:
     init_velocity: VelocityModel
     head_mask: Optional[torch.Tensor]
     space_order: int
-    pml_weight: float
+    damping_scale: float
     # Optional thicker-PML forward grid used only to synthesise observations.
     forward_grid: Optional[Grid] = None
     forward_truth: Optional[VelocityModel] = None
@@ -169,9 +170,9 @@ class Problem:
         """Observed complex wavefields (one per shot) on this band's bins."""
         wf = Wavefield(geom.grid, freq, velocity_model=self.observation_truth)
         solver = HelmholtzSolver(
-            wf, geom, space_order=self.space_order, pml_weight=self.pml_weight
+            wf, geom, space_order=self.space_order, damping_scale=self.damping_scale
         )
-        return solver.solve(verbose=self.cfg.observation.verbose)
+        return solver.solve(verbose=self.cfg.runtime.verbose)
 
     # -- warm start -------------------------------------------------------- #
     def warm_start(
@@ -185,9 +186,12 @@ class Problem:
             return None
         wf = Wavefield(self.grid, band.freq, velocity_model=velocity_model)
         solver = HelmholtzSolver(
-            wf, band.geom, space_order=self.space_order, pml_weight=self.pml_weight
+            wf,
+            band.geom,
+            space_order=self.space_order,
+            damping_scale=self.damping_scale,
         )
-        return solver.solve(verbose=self.cfg.observation.verbose)
+        return solver.solve(verbose=self.cfg.runtime.verbose)
 
 
 def _build_velocity(
@@ -195,34 +199,21 @@ def _build_velocity(
 ) -> VelocityModel:
     """Build a :class:`VelocityModel` from a :class:`ModelCfg`.
 
-    First-class fields (``scale``, ``skull_alpha``, ``skull_sigma``) are
-    forwarded as profile kwargs and override the same keys in ``spec.extra``.
-    ``extra.skull_smooth`` is normalised to ``skull_sigma`` when the first-class
-    ``skull_sigma`` is still at its default ``0`` (alias for
-    :class:`~odil_wave.models.VelocityModel`).
+    The profile fields ``scale``, ``skull_alpha`` and ``skull_sigma`` are
+    forwarded as profile kwargs alongside ``spec.extra``.
     """
     kwargs = dict(spec.extra)
-    kwargs["scale"] = spec.scale
-    kwargs["skull_alpha"] = spec.skull_alpha
-    if spec.skull_sigma != 0.0:
-        kwargs["skull_sigma"] = spec.skull_sigma
-        kwargs.pop("skull_smooth", None)
-    elif "skull_sigma" in kwargs:
-        kwargs["skull_sigma"] = float(kwargs["skull_sigma"])
-        kwargs.pop("skull_smooth", None)
-    elif "skull_smooth" in kwargs:
-        kwargs["skull_sigma"] = float(kwargs.pop("skull_smooth"))
-    else:
-        kwargs["skull_sigma"] = spec.skull_sigma
     if spec.profile == "overdensity" and "center" not in kwargs:
         kwargs["center"] = center
-    pml_c = spec.pml_c
     return VelocityModel(
         grid,
         profile=spec.profile,
         base=spec.base,
         contrast=spec.contrast,
-        **({"pml_c": pml_c} if pml_c is not None else {}),
+        pml_c=spec.pml_c,
+        scale=spec.scale,
+        skull_alpha=spec.skull_alpha,
+        skull_sigma=spec.skull_sigma,
         **kwargs,
     )
 
@@ -269,7 +260,7 @@ def _make_grid(
     Parameters
     ----------
     cfg : RunConfig
-        Config carrying the ``grid`` block.
+        Config carrying the ``grid``, ``pml`` and ``time`` blocks.
     device : torch.device
         Target device.
     dtype : torch.dtype
@@ -282,20 +273,18 @@ def _make_grid(
     Grid
         The constructed grid.
     """
-    g = cfg.grid
+    g, pml, tm = cfg.grid, cfg.pml, cfg.time
     return Grid(
         interior_shape=tuple(g.interior_shape),
+        interior_extent=tuple(tuple(e) for e in g.interior_extent),
         c_min=g.c_min,
         c_max=g.c_max,
-        interior_extent=tuple(tuple(e) for e in g.interior_extent),
-        t_max=g.t_max,
-        init_nt=g.init_nt,
         pml_width=int(pml_width),
-        pml_power=g.pml_power,
-        pml_R0=g.pml_R0,
-        cfl_safety=g.cfl_safety,
-        L0=g.L0,
-        c0=g.c0,
+        pml_power=pml.power,
+        pml_R0=pml.R0,
+        t_max=tm.t_max,
+        init_nt=tm.init_nt,
+        cfl_safety=tm.cfl_safety,
         device=device,
         dtype=dtype,
     )
@@ -321,11 +310,9 @@ def _make_source(cfg: RunConfig, grid: Grid) -> SourceSignal:
         grid,
         kind=s.kind,
         f0=s.f0,
-        t0=s.t0,
         amplitude=s.amplitude,
         n_cycles=s.n_cycles,
         envelope=s.envelope,
-        offset=s.offset,
         dimensionless=s.dimensionless,
     )
 
@@ -337,7 +324,7 @@ def build_problem(cfg: RunConfig) -> Problem:
     if cfg.runtime.torch_num_threads is not None:
         torch.set_num_threads(int(cfg.runtime.torch_num_threads))
 
-    grid = _make_grid(cfg, device, dtype, cfg.grid.pml_width)
+    grid = _make_grid(cfg, device, dtype, cfg.pml.width)
     center = _resolve_center(cfg, grid)
     source = _make_source(cfg, grid)
 
@@ -348,8 +335,8 @@ def build_problem(cfg: RunConfig) -> Problem:
     forward_grid = None
     forward_truth = None
     forward_source = None
-    obs_pml = cfg.observation.pml_width
-    if obs_pml is not None and int(obs_pml) != int(cfg.grid.pml_width):
+    obs_pml = cfg.pml.observation_width
+    if obs_pml is not None and int(obs_pml) != int(cfg.pml.width):
         forward_grid = _make_grid(cfg, device, dtype, int(obs_pml))
         # Shared time base required so FFT bins line up across the split.
         if (
@@ -360,7 +347,7 @@ def build_problem(cfg: RunConfig) -> Problem:
                 "observation/inverse grids must share nt and dt for the PML "
                 f"split; got fwd nt={forward_grid.nt} dt={float(forward_grid.dt)} "
                 f"vs inv nt={grid.nt} dt={float(grid.dt)}. "
-                "Set grid.init_nt so both use the same time stepping."
+                "Set time.init_nt so both use the same time stepping."
             )
         forward_truth = _build_velocity(forward_grid, cfg.truth, center)
         forward_source = _make_source(cfg, forward_grid)
@@ -375,8 +362,8 @@ def build_problem(cfg: RunConfig) -> Problem:
         truth_velocity=truth_velocity,
         init_velocity=init_velocity,
         head_mask=head_mask,
-        space_order=cfg.physics.space_order,
-        pml_weight=cfg.physics.pml_weight,
+        space_order=cfg.grid.space_order,
+        damping_scale=cfg.pml.damping_scale,
         forward_grid=forward_grid,
         forward_truth=forward_truth,
         forward_source=forward_source,

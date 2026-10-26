@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from odil_wave import AcquisitionGeometry
 from odil_wave.geometry import source_ring_indices
+
+from conftest import make_geometry
 
 
 # --------------------------------------------------------------------------- #
@@ -33,7 +34,9 @@ def test_source_ring_indices_guards_count():
 # --------------------------------------------------------------------------- #
 def test_ring_on_grid_and_counts(grid, source, freq_selection):
     """Receivers/sources land inside the grid; realised source count is exposed."""
-    geom = AcquisitionGeometry(grid, source, freq_selection, n_receivers=8, n_sources=4)
+    geom = make_geometry(
+        grid, source, freq_selection, n_sources=4, source_spatial="gaussian"
+    )
     assert geom.recv_ij.shape == (8, 2)
     assert geom.n_sources == 4
     assert geom.src_ij.shape == (4, 2)
@@ -50,12 +53,10 @@ def test_ring_on_grid_and_counts(grid, source, freq_selection):
 
 
 def test_default_ring_center_is_interior_center(grid, source, freq_selection):
-    """Without ring_center the ring is centred on the interior region."""
-    geom = AcquisitionGeometry(grid, source, freq_selection, n_receivers=8)
+    """ring_center=None centres the ring on the interior region."""
+    geom = make_geometry(grid, source, freq_selection, ring_center=None)
     assert geom.ring_center == pytest.approx(grid.interior_center)
-    explicit = AcquisitionGeometry(
-        grid, source, freq_selection, n_receivers=8, ring_center=(0.02, 0.03)
-    )
+    explicit = make_geometry(grid, source, freq_selection, ring_center=(0.02, 0.03))
     assert explicit.ring_center == (0.02, 0.03)
 
 
@@ -85,14 +86,7 @@ def test_point_source_profile_is_single_cell(geometry):
 
 def test_gaussian_source_profile_is_spread(grid, source, freq_selection):
     """A Gaussian source spreads its injection over several cells."""
-    geom = AcquisitionGeometry(
-        grid,
-        source,
-        freq_selection,
-        n_receivers=8,
-        n_sources=2,
-        source_spatial="gaussian",
-    )
+    geom = make_geometry(grid, source, freq_selection, source_spatial="gaussian")
     field_t = geom.source_field_time(0)
     spatial_support = (field_t.abs().sum(dim=0) > 1e-12).sum()
     assert int(spatial_support) > 1

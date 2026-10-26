@@ -2,7 +2,6 @@ from .config import (
     ConfigError,
     RunConfig,
     apply_overrides,
-    canonical_optimiser_name,
     deep_merge,
     default_config_dict,
     load_config_file,
@@ -40,7 +39,6 @@ __all__ = [
     "default_config_dict",
     "apply_overrides",
     "deep_merge",
-    "canonical_optimiser_name",
     # problem
     "Problem",
     "BandContext",

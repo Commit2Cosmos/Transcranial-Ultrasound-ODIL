@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 
 from odil_wave import InverseLoss, LossConfig, WaveEquation, Wavefield
@@ -7,81 +10,126 @@ from odil_wave.experiment import (
     RunConfig,
     apply_overrides,
     build_problem,
-    canonical_optimiser_name,
     deep_merge,
     default_config_dict,
     load_config_file,
     resolve_config,
     validate_config,
 )
-from odil_wave.experiment.config import canonical_regulariser_name
 
-
-TINY_GRID = {
-    "runtime": {"dtype": "float64"},
-    "grid": {
-        "interior_shape": [16, 16],
-        "interior_extent": [[0.0, 0.05], [0.0, 0.05]],
-        "c_min": 1400.0,
-        "c_max": 1700.0,
-        "t_max": 6e-5,
-        "init_nt": 120,
-        "pml_width": 4,
-    },
-    "source": {"kind": "tone_burst", "f0": 40e3, "n_cycles": 2.0},
-    "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
-    "physics": {"space_order": 2},
-    "truth": {
-        "profile": "overdensity",
-        "base": 1500.0,
-        "contrast": 100.0,
-        "extra": {"radius": 0.012},
-    },
-    "init": {"profile": "homogeneous", "base": 1500.0},
-    "observation": {"normalize_data": "none", "pml_width": None},
-    "continuation": {"warm_start": "helmholtz", "bands": [{"frequencies_hz": [40e3]}]},
-    "metrics": {"ssim": {"mask": "none"}},
+# The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
+EXPECTED_SHAPE = {
+    "run": ["run_id", "output_root", "seed", "tags", "notes"],
+    "runtime": ["device", "dtype", "torch_num_threads", "deterministic", "verbose"],
+    "grid": ["interior_shape", "interior_extent", "c_min", "c_max", "space_order"],
+    "pml": ["width", "power", "R0", "damping_scale", "observation_width"],
+    "time": ["t_max", "init_nt", "cfl_safety"],
+    "source": ["kind", "f0", "amplitude", "n_cycles", "envelope", "dimensionless"],
+    "acquisition": [
+        "n_receivers",
+        "n_sources",
+        "a_frac",
+        "b_frac",
+        "ring_center",
+        "sigma_s",
+        "source_spatial",
+    ],
+    "truth": [
+        "profile",
+        "scale",
+        "base",
+        "contrast",
+        "pml_c",
+        "skull_alpha",
+        "skull_sigma",
+        "extra",
+    ],
+    "init": [
+        "profile",
+        "scale",
+        "base",
+        "contrast",
+        "pml_c",
+        "skull_alpha",
+        "skull_sigma",
+        "extra",
+    ],
+    "continuation": ["warm_start", "bands"],
+    "loss": ["weights", "normalize_data", "regulariser"],
+    "optimiser": [
+        "n_iter",
+        "log_every",
+        "inner_max_iter",
+        "history_size",
+        "line_search_fn",
+        "lbfgs_lr",
+        "tolerance_grad",
+        "tolerance_change",
+    ],
+    "metrics": ["ssim"],
 }
 
 
 # --------------------------------------------------------------------------- #
-# Resolution / round-trip
+# Default config / resolution / round-trip
 # --------------------------------------------------------------------------- #
-def test_resolve_config_mints_run_id_and_canonicalises():
-    """A partial config resolves fully, mints a run id and canonicalises names."""
-    cfg = resolve_config({"optimiser": {"name": "joint-odil"}})
-    assert isinstance(cfg, RunConfig)
-    assert cfg.run.run_id  # auto-minted, non-empty
-    assert cfg.optimiser.name == "joint"
+def test_default_config_matches_the_documented_shape():
+    """RunConfig() has exactly the blocks and fields of the documented shape."""
+    d = RunConfig().to_dict()
+    assert list(d) == list(EXPECTED_SHAPE)
+    for block, names in EXPECTED_SHAPE.items():
+        assert list(d[block]) == names, block
+    assert list(d["continuation"]["bands"][0]) == ["frequencies_hz", "n_iter"]
+    assert list(d["loss"]["weights"]) == ["pde", "data", "reg"]
+    assert list(d["loss"]["regulariser"]) == ["name", "eps"]
+    assert list(d["metrics"]["ssim"]) == [
+        "mask",
+        "data_range",
+        "win_size",
+        "gaussian_weights",
+        "sigma",
+    ]
 
 
-def test_default_optimiser_is_joint():
-    """With no optimiser given, the resolved config uses the joint solver."""
+def test_resolve_empty_config_gives_the_default_values():
+    """resolve_config({}) is the default config: 64 sources, one 60 kHz band, and
+    observations on the inversion grid."""
     cfg = resolve_config({})
-    assert cfg.optimiser.name == "joint"
-    assert "_joint_" in cfg.run.run_id
+    assert cfg.acquisition.n_sources == 64
+    assert [b.frequencies_hz for b in cfg.continuation.bands] == [[60e3]]
+    assert cfg.pml.observation_width is None
+    assert cfg.run.run_id  # auto-minted, non-empty
+
+
+def test_default_run_id_has_no_optimiser_token():
+    """Auto-minted run_id is <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>."""
+    run_id = resolve_config({}).run.run_id
+    assert re.fullmatch(r"\d{6}_\d{6}_shepp-logan_125x125_80_60", run_id), run_id
 
 
 def test_resolve_config_overlays_user_fields():
     """User fields override the defaults; untouched fields keep their defaults."""
     cfg = resolve_config({"grid": {"interior_shape": [16, 16]}})
     assert cfg.grid.interior_shape == [16, 16]
-    assert cfg.grid.pml_width == 40  # default preserved
+    assert cfg.pml.width == 40  # default preserved
 
 
-def test_runconfig_dict_roundtrip():
-    """to_dict / from_dict is a faithful round-trip."""
-    cfg = resolve_config(TINY_GRID)
-    cfg2 = RunConfig.from_dict(cfg.to_dict())
-    assert cfg2.to_dict() == cfg.to_dict()
+def test_default_runconfig_dict_roundtrip():
+    """RunConfig() round-trips through to_dict / from_dict."""
+    assert RunConfig.from_dict(RunConfig().to_dict()) == RunConfig()
 
 
-def test_runconfig_yaml_roundtrip(tmp_path):
-    """A config written to YAML reloads to the same resolved config."""
-    cfg = resolve_config(TINY_GRID)
+def test_default_runconfig_yaml_roundtrip(tmp_path):
+    """RunConfig() written to YAML reloads to the same config."""
+    path = RunConfig().to_yaml(tmp_path / "cfg.yaml")
+    assert RunConfig.from_dict(load_config_file(path)) == RunConfig()
+
+
+def test_resolved_config_yaml_roundtrip(tmp_path, tiny_experiment):
+    """A resolved experiment config written to YAML reloads to the same config."""
+    cfg = resolve_config(tiny_experiment)
     path = cfg.to_yaml(tmp_path / "cfg.yaml")
-    loaded = load_config_file(path)
-    assert resolve_config(loaded).to_dict() == cfg.to_dict()
+    assert resolve_config(load_config_file(path)) == cfg
 
 
 def test_unknown_key_raises():
@@ -90,8 +138,35 @@ def test_unknown_key_raises():
         RunConfig.from_dict({"grid": {"not_a_field": 1}})
 
 
+@pytest.mark.parametrize(
+    "removed, key",
+    [
+        ({"optimiser": {"name": "joint"}}, "name"),
+        ({"optimiser": {"joint": {}}}, "joint"),
+        ({"optimiser": {"z_scale": 10.0}}, "z_scale"),
+        ({"optimiser": {"eps_u": 1e-30}}, "eps_u"),
+        ({"optimiser": {"c_min": 1400.0}}, "c_min"),
+        ({"optimiser": {"verbose": True}}, "verbose"),
+        ({"metrics": {"log_c_stats": True}}, "log_c_stats"),
+        ({"loss": {"regulariser": {"params": {"eps": 1e-6}}}}, "params"),
+        ({"physics": {"space_order": 2}}, "physics"),
+        ({"observation": {"normalize_data": "none"}}, "observation"),
+        ({"grid": {"pml_width": 10}}, "pml_width"),
+        ({"grid": {"t_max": 1e-4}}, "t_max"),
+        ({"grid": {"L0": 1.0}}, "L0"),
+        ({"source": {"offset": 0}}, "offset"),
+        ({"source": {"t0": None}}, "t0"),
+    ],
+)
+def test_removed_keys_raise_naming_the_key(removed, key):
+    """Removed / moved keys are plain unknown keys: ConfigError names them."""
+    with pytest.raises(ConfigError, match=rf"unknown key.*'{key}'") as exc_info:
+        resolve_config(removed)
+    assert "moved" not in str(exc_info.value)
+
+
 # --------------------------------------------------------------------------- #
-# Merge / override / canonicalisation helpers
+# Merge / override helpers
 # --------------------------------------------------------------------------- #
 def test_deep_merge_nested():
     """deep_merge recursively overlays without dropping sibling keys."""
@@ -115,24 +190,18 @@ def test_apply_overrides_bad_form_raises():
         apply_overrides({}, ["not_an_assignment"])
 
 
-def test_canonical_name_aliases():
-    """Optimiser / regulariser aliases normalise, unknown names raise."""
-    assert canonical_optimiser_name("pure_joint") == "joint"
-    assert canonical_optimiser_name("joint_odil") == "joint"
-    assert canonical_regulariser_name("l2") == "tikhonov"
-    assert canonical_regulariser_name("tv") == "tv_iso"
-    for name in ("nope", "lbfgsb", "l-bfgs-b", "lbfgs-b", "alt"):
-        with pytest.raises(ConfigError):
-            canonical_optimiser_name(name)
-
-
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
 def test_validate_config_accepts_default():
-    """The default config validates and returns a (possibly empty) warning list."""
-    warnings = validate_config(resolve_config({}))
-    assert isinstance(warnings, list)
+    """The default config validates without warnings."""
+    assert validate_config(resolve_config({})) == []
+
+
+@pytest.mark.parametrize("order", [2, 4, 6, 8, 10])
+def test_supported_space_orders_validate(order):
+    """Every supported stencil order (including 10) is accepted."""
+    validate_config(resolve_config({"grid": {"space_order": order}}))
 
 
 @pytest.mark.parametrize(
@@ -140,11 +209,27 @@ def test_validate_config_accepts_default():
     [
         {"optimiser": {"n_iter": 0}},
         {"optimiser": {"log_every": 0}},
+        {"optimiser": {"inner_max_iter": 0}},
+        {"optimiser": {"history_size": 0}},
+        {"optimiser": {"line_search_fn": "backtracking"}},
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
+        {"continuation": {"warm_start": "field"}},
         {"metrics": {"ssim": {"win_size": 4}}},
         {"runtime": {"dtype": "float16"}},
-        {"optimiser": {"joint": {"inner_max_iter": 0}}},
+        {"grid": {"space_order": 3}},
+        {"grid": {"space_order": 12}},
+        {"pml": {"width": -1}},
+        {"pml": {"damping_scale": -1.0}},
+        {"pml": {"observation_width": -1}},
+        {"loss": {"normalize_data": None}},
+        {"loss": {"normalize_data": "per_shot"}},
+        {"loss": {"regulariser": {"name": None}}},
+        {"loss": {"regulariser": {"name": "tv"}}},
+        {"loss": {"regulariser": {"name": "l2"}}},
+        {"truth": {"profile": "skull"}},
+        {"init": {"profile": "skull"}},
+        {"init": {"extra": {"skull_smooth": 1.0}}},
     ],
 )
 def test_validate_config_rejects_bad(bad):
@@ -156,12 +241,9 @@ def test_validate_config_rejects_bad(bad):
 @pytest.mark.parametrize(
     "removed",
     [
-        {"optimiser": {"name": "lbfgsb"}},
         {"optimiser": {"lbfgsb": {}}},
         {"optimiser": {"u_steps": 5}},
         {"optimiser": {"clamp": True}},
-        {"observation": {"method": "leapfrog_fft"}},
-        {"physics": {"time_order": 2}},
         {"truth": {"pml_fill": "constant"}},
         {"init": {"pml_fill": "edge"}},
         {"diagnostics": {"enabled": False}},
@@ -173,7 +255,7 @@ def test_validate_config_rejects_bad(bad):
     ],
 )
 def test_removed_settings_are_rejected(removed):
-    """lbfgsb / leapfrog / PML-fill-mode settings no longer resolve."""
+    """lbfgsb / PML-fill-mode / diagnostics settings no longer resolve."""
     with pytest.raises(ConfigError):
         resolve_config(removed)
 
@@ -181,19 +263,20 @@ def test_removed_settings_are_rejected(removed):
 # --------------------------------------------------------------------------- #
 # Problem construction
 # --------------------------------------------------------------------------- #
-def test_build_problem_assembles_pieces():
+def test_build_problem_assembles_pieces(tiny_experiment):
     """build_problem constructs the grid, source and truth/init velocity models."""
-    problem = build_problem(resolve_config(TINY_GRID))
-    assert problem.grid.interior_shape == (16, 16)
-    assert problem.truth_velocity.c_max == pytest.approx(1600.0)  # base + contrast
+    problem = build_problem(resolve_config(tiny_experiment))
+    assert problem.grid.interior_shape == (20, 20)
+    assert problem.grid.pml_width == 6
+    assert problem.truth_velocity.c_max == pytest.approx(1650.0)  # base + contrast
     assert problem.init_velocity.c_max == pytest.approx(1500.0)  # homogeneous
     # overdensity truth has no head mask.
     assert problem.head_mask is None
 
 
-def test_make_band_produces_observed_data():
+def test_make_band_produces_observed_data(tiny_experiment):
     """make_band builds the frequency selection, geometry and observed wavefields."""
-    problem = build_problem(resolve_config(TINY_GRID))
+    problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     assert band.freq.n_frequencies == 1
     assert len(band.observed_wfs) == problem.cfg.acquisition.n_sources
@@ -201,21 +284,25 @@ def test_make_band_produces_observed_data():
     assert band.observed_traces is None
 
 
-def test_observed_data_satisfy_inverse_operator_on_truth():
+def test_observed_data_satisfy_inverse_operator_on_truth(tiny_experiment):
     """Observations are a Helmholtz solve on the truth model (inverse crime): the
     inversion's own PDE residual vanishes at (observed u, truth c)."""
-    problem = build_problem(resolve_config(TINY_GRID))
+    problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     wf = Wavefield(problem.grid, band.freq, velocity_model=problem.truth_velocity)
     loss = InverseLoss(
         observed_wavefield=band.observed_wfs,
         config=LossConfig(
             WaveEquation(
-                wf, space_order=problem.space_order, pml_weight=problem.pml_weight
+                wf,
+                space_order=problem.space_order,
+                damping_scale=problem.damping_scale,
             ),
             band.geom,
-            weights={"pde": 1.0, "data": 1.0},
+            weights={"pde": 1.0, "data": 1.0, "reg": 0.0},
+            regulariser=None,
         ),
+        normalize_data="none",
     )
     amp = torch.stack([w.amplitude for w in band.observed_wfs])
     loss.evaluate(amp, problem.truth_velocity.c)
@@ -223,14 +310,44 @@ def test_observed_data_satisfy_inverse_operator_on_truth():
     assert loss._last_residuals["data_rms"] == 0.0
 
 
-def test_warm_start_toggles_with_config():
+def _data_misfit_at_truth(experiment) -> float:
+    """Relative receiver misfit between the observations and a Helmholtz solve
+    on the true model on the inversion grid."""
+    problem = build_problem(resolve_config(experiment))
+    band = problem.make_band([40e3])
+    observed = band.observed_traces
+    if observed is None:
+        observed = torch.stack(
+            [band.geom.extract_observations(w.amplitude) for w in band.observed_wfs]
+        )
+    predicted = torch.stack(
+        [
+            band.geom.extract_observations(w.amplitude)
+            for w in problem.warm_start(problem.truth_velocity, band)
+        ]
+    )
+    return float((predicted - observed).abs().norm() / observed.abs().norm())
+
+
+def test_default_observation_width_commits_the_inverse_crime(tiny_experiment):
+    """With the default pml.observation_width the true model fits the data."""
+    assert _data_misfit_at_truth(tiny_experiment) < 1e-10
+
+
+def test_different_observation_width_is_a_modelling_error(tiny_experiment):
+    """A different observation PML width means the true model no longer fits."""
+    split = deep_merge(tiny_experiment, {"pml": {"observation_width": 12}})
+    assert _data_misfit_at_truth(split) > 1e-6
+
+
+def test_warm_start_toggles_with_config(tiny_experiment):
     """warm_start solves Helmholtz wavefields, or returns None when disabled."""
-    problem = build_problem(resolve_config(TINY_GRID))
+    problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     wfs = problem.warm_start(problem.init_velocity, band)
     assert wfs is not None and len(wfs) == problem.cfg.acquisition.n_sources
 
-    none_cfg = deep_merge(TINY_GRID, {"continuation": {"warm_start": "none"}})
+    none_cfg = deep_merge(tiny_experiment, {"continuation": {"warm_start": "none"}})
     problem2 = build_problem(resolve_config(none_cfg))
     assert (
         problem2.warm_start(problem2.init_velocity, problem2.make_band([40e3])) is None
@@ -243,13 +360,6 @@ def test_warm_start_toggles_with_config():
 def test_default_loss_weights():
     """Default objective weights are pde 1, data 1, reg 0."""
     assert resolve_config({}).loss.weights == {"pde": 1.0, "data": 1.0, "reg": 0.0}
-
-
-@pytest.mark.parametrize("key", ["data_weight", "reg_weight"])
-def test_joint_weight_keys_are_rejected(key):
-    """optimiser.joint.{data,reg}_weight moved to loss.weights and no longer resolve."""
-    with pytest.raises(ConfigError, match="loss.weights"):
-        resolve_config({"optimiser": {"joint": {key: 1.0}}})
 
 
 @pytest.mark.parametrize(
@@ -273,11 +383,20 @@ def test_pde_weight_zero_is_allowed():
     validate_config(resolve_config({"loss": {"weights": {"pde": 0.0}}}))
 
 
-@pytest.mark.parametrize("reg, warns", [(0.0, True), (1e-3, False)])
-def test_inactive_regulariser_warning(reg, warns):
-    """A named regulariser with loss.weights.reg <= 0 warns that it has no effect."""
+@pytest.mark.parametrize("reg", [0.0, 1e-3])
+def test_regulariser_choice_never_warns(reg):
+    """The regulariser is inactive iff loss.weights.reg == 0; no warning either way."""
     cfg = resolve_config(
         {"loss": {"weights": {"reg": reg}, "regulariser": {"name": "tikhonov"}}}
     )
-    warned = any("no effect" in w for w in validate_config(cfg))
-    assert warned is warns
+    assert validate_config(cfg) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((Path(__file__).resolve().parent.parent / "configs").glob("*.yaml")),
+    ids=lambda p: p.name,
+)
+def test_shipped_experiment_configs_validate(path):
+    """Every experiment config in configs/ resolves and validates cleanly."""
+    assert validate_config(resolve_config(load_config_file(path))) == []

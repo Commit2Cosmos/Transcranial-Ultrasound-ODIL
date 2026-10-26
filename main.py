@@ -3,12 +3,16 @@
 
 Examples
 --------
-    python main.py --config configs/default_inverse.yaml
-    python main.py --config configs/default_inverse.yaml \
+    python main.py                                  # the default config
+    python main.py --print-defaults                 # print the default config
+    python main.py --config configs/<experiment>.yaml
+    python main.py --config configs/<experiment>.yaml \
         --override optimiser.n_iter=40
-    python main.py --config configs/default_inverse.yaml --dry-run
+    python main.py --config configs/<experiment>.yaml --dry-run
 
-Run with no ``--config`` to use the built-in defaults.
+The default config is defined in code (the ``RunConfig`` dataclass defaults in
+``odil_wave/experiment/config.py``); an experiment config names only the values
+it changes.
 """
 
 from __future__ import annotations
@@ -17,13 +21,15 @@ import argparse
 import sys
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 
 def _summarise(cfg) -> str:
     lines: List[str] = []
     lines.append(f"run.run_id      : {cfg.run.run_id}")
     lines.append(f"output dir      : {cfg.run_dir()}")
     lines.append(
-        f"optimiser       : {cfg.optimiser.name}  "
+        f"optimiser       : joint  "
         f"(n_iter={cfg.optimiser.n_iter}, log_every={cfg.optimiser.log_every})"
     )
     lines.append(
@@ -31,8 +37,8 @@ def _summarise(cfg) -> str:
         f"seed={cfg.run.seed}"
     )
     lines.append(
-        f"grid            : interior={cfg.grid.interior_shape}, pml={cfg.grid.pml_width}, "
-        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.grid.init_nt}"
+        f"grid            : interior={cfg.grid.interior_shape}, pml={cfg.pml.width}, "
+        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.time.init_nt}"
     )
     lines.append(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
     lines.append(
@@ -40,8 +46,15 @@ def _summarise(cfg) -> str:
         f"n_src={cfg.acquisition.n_sources}, ring={cfg.acquisition.ring_center}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
-    lines.append(f"observation     : normalize={cfg.observation.normalize_data}")
-    lines.append(f"loss weights    : {cfg.loss.weights}")
+    obs_pml = cfg.pml.observation_width
+    lines.append(
+        f"observation pml : {cfg.pml.width if obs_pml is None else obs_pml}"
+        f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
+    )
+    lines.append(
+        f"loss            : weights={cfg.loss.weights}, "
+        f"normalize={cfg.loss.normalize_data}"
+    )
     lines.append(f"warm_start      : {cfg.continuation.warm_start}")
     lines.append(
         f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
@@ -64,7 +77,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--config",
         "-c",
         default=None,
-        help="YAML/JSON config file. Omit to use built-in defaults.",
+        help="YAML/JSON experiment config (only the values that differ from the "
+        "default config). Omit to run the default config.",
+    )
+    parser.add_argument(
+        "--print-defaults",
+        action="store_true",
+        help="Print the full default config as YAML and exit.",
     )
     parser.add_argument(
         "--override",
@@ -84,10 +103,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     # config resolution is torch-free; import lazily so --help stays instant.
     from odil_wave.experiment.config import (
         ConfigError,
+        RunConfig,
         load_config_file,
         resolve_config,
         validate_config,
     )
+
+    if args.print_defaults:
+        print(yaml.safe_dump(RunConfig().to_dict(), sort_keys=False), end="")
+        return 0
 
     user_dict: Optional[Dict[str, Any]] = None
     if args.config is not None:

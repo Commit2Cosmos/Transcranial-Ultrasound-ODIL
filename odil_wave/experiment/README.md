@@ -15,21 +15,24 @@ layer only resolves configuration, orchestrates the run, logs, and saves.
 ## Start a run from a config
 
 ```bash
-python main.py --config configs/default_inverse.yaml
+python main.py                                         # the default config
+python main.py --print-defaults                        # print it as YAML
+python main.py --config configs/example_multiband.yaml # an experiment config
 ```
 
-`configs/default_inverse.yaml` is the single-band joint Shepp-Logan reference
-run. Running with **no** `--config` uses the built-in
-defaults (identical to the shipped file). YAML and JSON are both accepted;
-scientific notation such as `40e3` is parsed as a float, matching the notebook's
-Python literals.
+The **default config** (a single-band joint Shepp-Logan run) is defined only in
+code: the `RunConfig` dataclass defaults in `config.py`, whose docstrings
+document every field. An **experiment config** names only the values that
+differ from it; `resolve_config` applies it, then any CLI overrides, to the
+defaults. YAML and JSON are both accepted; scientific notation such as `40e3`
+is parsed as a float, matching the notebook's Python literals.
 
 Programmatic use:
 
 ```python
 from odil_wave.experiment import resolve_config, run_inverse, load_config_file
 
-cfg = resolve_config(load_config_file("configs/default_inverse.yaml"))
+cfg = resolve_config(load_config_file("configs/example_multiband.yaml"))
 result = run_inverse(cfg)                 # -> RunResult
 print(result.metrics_summary["final_ssim_head_roi"])
 ```
@@ -80,18 +83,17 @@ Values are parsed as JSON (so numbers, booleans, `null`, and lists are typed),
 falling back to a bare string.
 
 ```bash
-python main.py --config configs/default_inverse.yaml \
-    --override optimiser.n_iter=40
+python main.py --override optimiser.n_iter=40
 
 # switch to a low->high continuation schedule
-python main.py -c configs/default_inverse.yaml \
+python main.py \
     -o 'continuation.bands=[{"frequencies_hz":[50e3]},{"frequencies_hz":[60e3]}]'
 ```
 
 ## Dry run
 
 ```bash
-python main.py --config configs/default_inverse.yaml --dry-run
+python main.py --config configs/example_multiband.yaml --dry-run
 ```
 
 `--dry-run` resolves + validates the configuration, prints a concise summary,
@@ -133,8 +135,8 @@ outputs/<run_id>/
 
 ### Fully-resolved config
 
-`config_resolved.yaml` contains every effective value, including code-derived
-defaults and the full `optimiser.joint` block, so the exact run is reconstructable
+`config_resolved.yaml` contains every effective value, including the default
+config values the input did not change, so the exact run is reconstructable
 even when the input omitted fields. Derived quantities that are *outputs* rather
 than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 `metadata.json` and the per-band summaries, not in the config.
@@ -176,7 +178,7 @@ Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`:
 ### Iteration count vs. closure/function-evaluation count
 
 - `solver_iter` is the **outer** iteration of the joint solver (one L-BFGS
-  `.step` of up to `optimiser.joint.inner_max_iter` iterations over `u` and `c`
+  `.step` of up to `optimiser.inner_max_iter` iterations over `u` and `c`
   together per `i`). This is what the record is keyed on.
 - `n_evaluations` is the cumulative number of `InverseLoss.evaluate` calls, i.e.
   L-BFGS **closures / function evaluations** (the line search calls the closure
@@ -227,25 +229,14 @@ The existing metrics are preserved unchanged; `ssim_head_roi` is an addition.
 
 ---
 
-## Add a new optimiser-specific config section
+## Add a config parameter
 
-1. Add a frozen dataclass in `config.py` (e.g. `class MyOptCfg`) with every
-   tunable and its default, and reference it from `OptimiserCfg`:
+Each parameter has exactly one owner (ADR 0001):
 
-   ```python
-   @dataclass(frozen=True)
-   class OptimiserCfg:
-       ...
-       myopt: MyOptCfg = field(default_factory=MyOptCfg)
-   ```
+1. Add the field with its default and a docstring entry to the matching frozen
+   dataclass in `config.py`; that default is part of the default config and is
+   serialised into `config_resolved.yaml` for every run automatically.
+2. Make the library constructor it feeds take it as a required keyword-only
+   argument (no library default), and pass it in `problem.py` / `runner.py`.
 
-   It is now serialised into `config_resolved.yaml` for every run automatically.
-
-2. Register the name/alias in `_OPTIMISER_ALIASES` (`canonical_optimiser_name`).
-
-3. Dispatch on the canonical name in `runner._build_optimiser`, mapping
-   `cfg.optimiser.myopt.*` to your optimiser's constructor.
-   The recorder, artifact layout, and CLI need no changes — they are
-   solver-agnostic.
-
-Do the same for regularisers by extending `runner._build_regulariser`.
+A numerical-method detail that is not in the config keeps its library default.

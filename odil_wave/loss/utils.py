@@ -14,16 +14,15 @@ from odil_wave.plot_utils import length_scale
 from .regulariser import Regulariser
 
 
-_DEFAULT_WEIGHTS = {"pde": 1.0, "data": 1.0, "reg": 0.0}
-
-
 @dataclass
 class LossConfig:
     """Configuration for the loss function.
 
     `weights` multiplies the (already mean-reduced) per-block losses:
     `pde_weight * mean(r_pde**2) + data_weight * mean(r_data**2) + w_reg * R(c_int)`.
-    Missing ``pde`` / ``data`` default to 1.0, missing ``reg`` to 0.0.
+    ``weights`` and ``regulariser`` are set by the run config's ``loss`` block
+    and are required keywords (ADR 0001): ``pde`` is required, ``data`` too for
+    an :class:`InverseLoss`; a missing ``reg`` means 0 (no regulariser term).
     (This is the unscaled :class:`InverseLoss` form; ``JointFreqODIL`` applies
     the same weights to per-(shot, freq) scaled relative terms.)
 
@@ -34,20 +33,19 @@ class LossConfig:
 
     wave_eq: WaveEquation
     geometry: AcquisitionGeometry
-    weights: Optional[dict] = None
-    regulariser: Optional[Regulariser] = None
+    weights: dict = field(kw_only=True)
+    regulariser: Optional[Regulariser] = field(kw_only=True)
 
     speed_offset: int = field(init=False)
     device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)
 
     def __post_init__(self):
-        """Merge default weights and derive device, dtype and DOF offsets.
+        """Complete the weights and derive device, dtype and DOF offsets.
 
         Notes
         -----
-        Fills missing ``weights`` keys (``pde`` / ``data`` -> 1.0, ``reg`` ->
-        0.0) and computes
+        Fills a missing ``reg`` weight with 0.0 and computes
         ``speed_offset``, the number of real wavefield DOFs preceding the
         velocity parameters in a packed optimisation vector.
         """
@@ -55,10 +53,7 @@ class LossConfig:
         Nx, Ny = wf.grid.shape
         nf = wf.n_frequencies
 
-        merged = dict(_DEFAULT_WEIGHTS)
-        if self.weights is not None:
-            merged.update(self.weights)
-        self.weights = merged
+        self.weights = {"reg": 0.0, **self.weights}
 
         # Real/imag packing: 2 * n_sources * nf * nx * ny free u DOFs.
         self.speed_offset = self.geometry.n_sources * nf * Nx * Ny * 2

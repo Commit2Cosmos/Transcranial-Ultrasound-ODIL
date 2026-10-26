@@ -9,15 +9,17 @@ from typing import Literal
 
 import torch
 
-
 RegKind = Literal["tikhonov", "tv_aniso", "tv_iso"]
 
 
 class Regulariser:
     """Smoothness / TV prior on c(x, y) (interior cells only)."""
 
-    def __init__(self, kind: RegKind = "tikhonov", eps: float = 1e-8) -> None:
+    def __init__(self, *, kind: RegKind, eps: float) -> None:
         """Configure the regulariser kind.
+
+        Both are set by the run config's ``loss.regulariser`` block and are
+        required keywords (ADR 0001).
 
         Parameters
         ----------

@@ -5,13 +5,18 @@ from matplotlib.colors import TwoSlopeNorm
 from odil_wave import VelocityModel
 from odil_wave.models import velocity_norm
 
+from conftest import make_model
+
+# Phantom size used by the Shepp-Logan tests (fraction of the interior).
+SCALE = 0.90
+
 
 # --------------------------------------------------------------------------- #
 # Analytic profiles
 # --------------------------------------------------------------------------- #
 def test_homogeneous(grid):
     """A homogeneous medium is a constant field equal to ``base``."""
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0)
+    vm = make_model(grid)
     assert vm.c.shape == grid.shape
     assert torch.all(vm.c == 1500.0)
     assert vm.c_min == 1500.0 and vm.c_max == 1500.0
@@ -21,13 +26,8 @@ def test_homogeneous(grid):
 
 def test_overdensity_anomaly(grid):
     """Overdensity adds a circular contrast blob to the background."""
-    vm = VelocityModel(
-        grid,
-        profile="overdensity",
-        base=1500.0,
-        contrast=200.0,
-        radius=0.012,
-        center=(0.025, 0.025),
+    vm = make_model(
+        grid, "overdensity", contrast=200.0, radius=0.012, center=(0.025, 0.025)
     )
     assert vm.c_max == pytest.approx(1700.0)
     assert vm.c_min == pytest.approx(1500.0)
@@ -38,9 +38,7 @@ def test_overdensity_anomaly(grid):
 
 def test_overdensity_default_center_is_interior_center(grid):
     """Without ``center`` the anomaly is centred on the interior region."""
-    vm = VelocityModel(
-        grid, profile="overdensity", base=1500.0, contrast=200.0, radius=0.012
-    )
+    vm = make_model(grid, "overdensity", contrast=200.0, radius=0.012)
     hot = vm.c > 1500.0
     cx = float(grid.X[hot].mean())
     cy = float(grid.Y[hot].mean())
@@ -51,7 +49,7 @@ def test_overdensity_default_center_is_interior_center(grid):
 
 def test_shepp_logan_masks_and_skull(grid):
     """Shepp-Logan builds head/interior/rim masks with a ~3000 m/s skull rim."""
-    vm = VelocityModel(grid, profile="shepp_logan")
+    vm = make_model(grid, "shepp_logan", scale=SCALE)
     head, interior, rim = vm.skull_region_masks()
     assert head.shape == grid.shape
     assert int(rim.sum()) > 0
@@ -67,7 +65,9 @@ def test_shepp_logan_masks_and_skull(grid):
 
 def test_shepp_logan_skull_alpha_zero_is_water(grid):
     """skull_alpha=0 removes all contrast, leaving the water background."""
-    vm = VelocityModel(grid, profile="shepp_logan_skull", skull_alpha=0.0)
+    vm = make_model(
+        grid, "shepp_logan_skull", scale=SCALE, skull_alpha=0.0, skull_sigma=0.0
+    )
     assert vm.c_min == pytest.approx(1500.0)
     assert vm.c_max == pytest.approx(1500.0)
 
@@ -75,9 +75,13 @@ def test_shepp_logan_skull_alpha_zero_is_water(grid):
 def test_shepp_logan_skull_validates_params(grid):
     """skull_alpha in [0,1] and skull_sigma >= 0 are enforced."""
     with pytest.raises(ValueError):
-        VelocityModel(grid, profile="shepp_logan_skull", skull_alpha=1.5)
+        make_model(
+            grid, "shepp_logan_skull", scale=SCALE, skull_alpha=1.5, skull_sigma=0.0
+        )
     with pytest.raises(ValueError):
-        VelocityModel(grid, profile="shepp_logan_skull", skull_sigma=-1.0)
+        make_model(
+            grid, "shepp_logan_skull", scale=SCALE, skull_alpha=1.0, skull_sigma=-1.0
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -92,7 +96,7 @@ def _pml_ring(grid):
 
 def test_build_full_c_constant_fill(grid):
     """The whole PML ring is padded with the fixed pml_c, not the interior edge."""
-    vm = VelocityModel(grid, profile="homogeneous", base=1500.0, pml_c=1234.0)
+    vm = make_model(grid, pml_c=1234.0)
     # Non-uniform interior so an edge-replicating fill would differ from pml_c.
     ci = (
         torch.arange(grid.interior_nx * grid.interior_ny, dtype=grid.dtype).reshape(
@@ -133,18 +137,12 @@ def test_from_field_custom_profile(grid):
 def test_unknown_profile_raises(grid):
     """An unrecognised profile is rejected."""
     with pytest.raises(ValueError):
-        VelocityModel(grid, profile="does_not_exist")
-
-
-def test_skull_placeholder_not_implemented(grid):
-    """The placeholder 'skull' profile raises NotImplementedError."""
-    with pytest.raises(NotImplementedError):
-        VelocityModel(grid, profile="skull")
+        make_model(grid, "does_not_exist")
 
 
 def test_masks_require_skull_profile(grid):
     """skull_region_masks() is unavailable on maskless profiles."""
-    vm = VelocityModel(grid, profile="homogeneous")
+    vm = make_model(grid)
     with pytest.raises(ValueError):
         vm.skull_region_masks()
 

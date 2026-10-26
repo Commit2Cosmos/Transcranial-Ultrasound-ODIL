@@ -7,6 +7,7 @@ from matplotlib import animation
 
 from odil_wave.grid import Grid, FrequencySelection, complex_dtype
 from odil_wave.models import VelocityModel
+from odil_wave.models.velocity_models import SOS_WATER
 from odil_wave.plot_utils import length_scale, frequency_scale
 
 
@@ -78,7 +79,13 @@ class Wavefield:
         )
 
         if self.velocity_model is None:
-            self.velocity_model = VelocityModel(self.grid)
+            self.velocity_model = VelocityModel(
+                self.grid,
+                profile="homogeneous",
+                base=SOS_WATER,
+                contrast=0.0,
+                pml_c=None,
+            )
 
     @property
     def n_frequencies(self) -> int:
