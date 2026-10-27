@@ -54,8 +54,8 @@ class LossConfig:
         Nx, Ny = wf.grid.shape
         nf = wf.n_frequencies
 
-        # Real/imag packing: 2 * n_sources * nf * nx * ny free u DOFs.
-        self.speed_offset = self.geometry.n_sources * nf * Nx * Ny * 2
+        # Real/imag packing: 2 * n_shots * nf * nx * ny free u DOFs.
+        self.speed_offset = self.geometry.n_shots * nf * Nx * Ny * 2
         self.device = wf.grid.device
         self.dtype = wf.grid.dtype
 
@@ -379,7 +379,7 @@ class LossTape:
         recovered : VelocityModel
             Recovered velocity model.
         geom : AcquisitionGeometry
-            Geometry providing source/receiver positions to overlay.
+            Geometry providing the transducer positions to overlay.
         title : str
             Figure suptitle.
         norm : matplotlib.colors.Normalize, optional
@@ -402,10 +402,8 @@ class LossTape:
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         dmax = float(np.max(np.abs(diff))) * 1.05 + 1e-9
 
-        rx = grid.x[geom.recv_ij[:, 0]].detach().cpu().numpy() * x_mult
-        ry = grid.y[geom.recv_ij[:, 1]].detach().cpu().numpy() * x_mult
-        sx = grid.x[geom.src_ij[:, 0]].detach().cpu().numpy() * x_mult
-        sy = grid.y[geom.src_ij[:, 1]].detach().cpu().numpy() * x_mult
+        tx = grid.x[geom.transducer_ij[:, 0]].detach().cpu().numpy() * x_mult
+        ty = grid.y[geom.transducer_ij[:, 1]].detach().cpu().numpy() * x_mult
 
         if norm is None and vmax > vmin:
             norm = velocity_norm(vmin=vmin, vcenter=vcenter, vmax=vmax)
@@ -435,8 +433,7 @@ class LossTape:
             ax.set_ylabel(f"y [{x_unit}]")
             ax.set_aspect("equal")
             ax.set_title(panel_title)
-            ax.scatter(rx, ry, marker="v", c="lime", edgecolor="black", s=25, zorder=5)
-            ax.scatter(sx, sy, marker="*", c="red", edgecolor="black", s=80, zorder=6)
+            ax.scatter(tx, ty, marker="v", c="lime", edgecolor="black", s=25, zorder=5)
             plt.colorbar(im, ax=ax, shrink=0.85)
 
         ax_err = axes[1, 1]

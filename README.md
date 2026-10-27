@@ -26,7 +26,7 @@ Everything importable lives under the `odil_wave` package:
 |-------------------|----------------|
 | `grid`            | `Grid` — 2D space+time discretization with a PML sponge and non-dimensionalisation; `FrequencySelection` maps requested Hz to the nearest FFT bins. |
 | `source`          | `SourceSignal` — tone-burst / Ricker source wavelets. |
-| `geometry`        | `AcquisitionGeometry` — receiver ring with an evenly-spaced source subset ("octet") on it. |
+| `geometry`        | `AcquisitionGeometry` — transducer ring; shot `s` transmits from transducer `s` and is recorded by the other `n_transducers − 1`. |
 | `models`          | `VelocityModel` — the `c` field and built-in profiles (`shepp_logan`, `…_skull`, …). |
 | `wavefield`       | `Wavefield` — the complex field `u(freq, x, y)` for one shot; multi-shot batches used by losses/optimisers stack these to `(n_shots, nf, nx, ny)`. |
 | `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10), PML sponge/Neumann conditions, plus the `HelmholtzSolver` (frequency) forward solver. |
@@ -105,7 +105,7 @@ or removed keys are rejected.
 | `pml`          | `width`, `power`, `R0`, `damping_scale`, `observation_width` | `observation_width: null` generates the data on the inversion grid (inverse crime); a different width is a deliberate modelling error. |
 | `time`         | `t_max`, `init_nt`, `cfl_safety` | Sets `dt` and the FFT bins the band frequencies snap to. |
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
-| `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center`, `sigma_s` | Ring transmission geometry (ultrasound-style). |
+| `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. |
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
@@ -129,9 +129,9 @@ or removed keys are rejected.
 List several single- or multi-frequency stages under `continuation.bands` to run
 low→high; each stage's recovered `c` warm-starts the next, and its wavefield is
 warm-started by a Helmholtz solve on that model.
-Frequencies within one band are inverted jointly; sources are a fixed,
-evenly-spaced subset of the receiver ring for the whole run (`acquisition.n_sources`) —
-there is no per-band source rotation or scheduling.
+Frequencies within one band are inverted jointly; every transducer
+(`acquisition.n_transducers`) fires one shot in every band — there is no
+per-band source rotation or scheduling.
 
 ---
 
@@ -172,7 +172,7 @@ pytest tests/test_optimisation.py   # a single module
 physics operators (`test_operator.py`), the `Wavefield` container
 (`test_wavefield.py`), the grid/PML/frequency-selection machinery
 (`test_grid.py`), source wavelets (`test_source.py`), velocity model profiles
-(`test_models.py`), acquisition geometry and receiver sampling
+(`test_models.py`), acquisition geometry and trace extraction
 (`test_geometry.py`), the loss/regulariser/loss-tape assembly (`test_loss.py`),
 the experiment config/problem-building layer (`test_experiments.py`), the
 one-owner-per-parameter rule for library constructors

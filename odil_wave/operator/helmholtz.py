@@ -259,7 +259,7 @@ class HelmholtzSolver:
             torch.stack(
                 [
                     self.geometry.source_field(i).to(dtype=cdtype, device=grid.device)
-                    for i in range(self.geometry.n_sources)
+                    for i in range(self.geometry.n_shots)
                 ]
             )
             * t0**2
@@ -354,7 +354,7 @@ class HelmholtzSolver:
         nf = freq.n_frequencies
         Nx, Ny = grid.shape
         n = Nx * Ny
-        n_shots = self.geometry.n_sources
+        n_shots = self.geometry.n_shots
         cdtype = wf.cdtype
         device = grid.device
         c = wf.velocity_model.c.to(device=device)

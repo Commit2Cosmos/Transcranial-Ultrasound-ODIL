@@ -22,7 +22,8 @@ class InverseLoss(DiscreteLoss):
     physical ``c_full``.
 
     Observations: full complex wavefields ``(n_shots, nf, nx, ny)`` or
-    complex receiver traces ``(n_shots, nf, n_receivers)``.
+    complex receiver traces ``(n_shots, nf, n_transducers - 1)``; a shot is
+    never recorded at its own transducer (``AcquisitionGeometry.receivers``).
     """
 
     def __init__(
@@ -43,7 +44,7 @@ class InverseLoss(DiscreteLoss):
         config : LossConfig
             Loss configuration (keyword-only).
         observed_traces : optional
-            Complex receiver traces ``(n_shots, nf, n_receivers)``.
+            Complex receiver traces ``(n_shots, nf, n_transducers - 1)``.
         callback : LossTape, optional
             Diagnostics tape.
 
@@ -67,7 +68,7 @@ class InverseLoss(DiscreteLoss):
             tr = torch.as_tensor(observed_traces, dtype=cdtype)
             if tr.ndim != 3:
                 raise ValueError(
-                    f"observed_traces must be (n_shots, nf, n_receivers), "
+                    f"observed_traces must be (n_shots, nf, n_transducers - 1), "
                     f"got {tuple(tr.shape)}"
                 )
             self.d_obs = tr.to(device=self.config.device)
@@ -103,13 +104,11 @@ class InverseLoss(DiscreteLoss):
         Returns
         -------
         torch.Tensor
-            Complex traces ``(n_shots, nf, n_receivers)``.
+            Complex traces ``(n_shots, nf, n_transducers - 1)``.
         """
         if self._trace_mode:
             return self.d_obs
-        i = self.config.geometry.recv_ij[:, 0]
-        j = self.config.geometry.recv_ij[:, 1]
-        return self.d_obs[:, :, i, j]
+        return self.config.geometry.extract_observations(self.d_obs)
 
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor
@@ -130,9 +129,7 @@ class InverseLoss(DiscreteLoss):
         """
         pde = self.config.wave_eq.residual(amp, wsp, self.sources)
 
-        i = self.config.geometry.recv_ij[:, 0]
-        j = self.config.geometry.recv_ij[:, 1]
-        syn_tr = amp[:, :, i, j]
+        syn_tr = self.config.geometry.extract_observations(amp)
         data = syn_tr - self._obs_traces()
         return pde, data
 

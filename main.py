@@ -40,8 +40,8 @@ def _summarise(cfg) -> str:
     )
     lines.append(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
     lines.append(
-        f"acquisition     : n_recv={cfg.acquisition.n_receivers}, "
-        f"n_src={cfg.acquisition.n_sources}, ring={cfg.acquisition.ring_center}"
+        f"acquisition     : n_transducers={cfg.acquisition.n_transducers}, "
+        f"ring={cfg.acquisition.ring_center}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
     obs_pml = cfg.pml.observation_width

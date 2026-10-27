@@ -86,7 +86,7 @@ def tiny_setup():
     vm = make_model(grid)
     source = make_source(grid, kind="ricker", f0=8e4, offset=0)
     freq = FrequencySelection.from_frequencies(grid, [8e4])
-    geom = make_geometry(grid, source, freq, n_receivers=4, source_spatial="gaussian")
+    geom = make_geometry(grid, source, freq, n_transducers=4, source_spatial="gaussian")
     wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
     return SimpleNamespace(grid=grid, vm=vm, source=source, freq=freq, geom=geom, wf=wf)
 
@@ -554,7 +554,7 @@ def test_helmholtz_solver_solve_smoke(tiny_setup):
         tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
     )
     outputs = solver.solve(verbose=False)
-    assert len(outputs) == tiny_setup.geom.n_sources
+    assert len(outputs) == tiny_setup.geom.n_shots
     for wf_out in outputs:
         assert wf_out.amplitude.shape == (1, tiny_setup.grid.nx, tiny_setup.grid.ny)
         assert torch.isfinite(wf_out.amplitude.real).all()

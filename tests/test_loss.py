@@ -74,7 +74,7 @@ def test_loss_config_weights_and_offset(wave_stack):
     assert cfg.weights == {"pde": 2.0, "data": 3.0}
     g = wave_stack.grid
     nf = wave_stack.freq.n_frequencies
-    expected = wave_stack.geometry.n_sources * nf * g.nx * g.ny * 2
+    expected = wave_stack.geometry.n_shots * nf * g.nx * g.ny * 2
     assert cfg.speed_offset == expected
     assert cfg.dtype == g.dtype
 
@@ -207,7 +207,7 @@ def test_inverse_loss_requires_exactly_one_observation(wave_stack):
 
 
 def test_inverse_loss_rejects_non_3d_traces(wave_stack):
-    """Trace observations must be (n_shots, nf, n_receivers)."""
+    """Trace observations must be (n_shots, nf, n_transducers - 1)."""
     cfg = _inverse_config(wave_stack)
     with pytest.raises(ValueError):
         InverseLoss(observed_traces=wave_stack.obs_traces[0], config=cfg)
@@ -229,6 +229,20 @@ def test_inverse_loss_data_misfit_positive_when_wrong(wave_stack):
     loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
     L = loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c)
     assert float(L) > 0
+
+
+def test_inverse_loss_data_term_ignores_the_transmitting_transducer(wave_stack):
+    """Perturbing u only at each shot's own transducer node leaves the data
+    term unchanged."""
+    cfg = _inverse_config(wave_stack, weights={"pde": 0.0, "data": 1.0})
+    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
+    geom = wave_stack.geometry
+    amp = wave_stack.amp.clone()
+    for s in range(geom.n_shots):
+        i, j = geom.transducer_ij[s]
+        amp[s, :, i, j] += 10.0
+    loss.evaluate(amp, wave_stack.model.c)
+    assert loss._last_residuals["data_loss"] < 1e-30
 
 
 def test_inverse_loss_weights_override(wave_stack):

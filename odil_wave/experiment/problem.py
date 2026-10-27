@@ -50,7 +50,7 @@ class BandContext:
     freq: FrequencySelection
     geom: AcquisitionGeometry
     observed_wfs: List[Wavefield]
-    observed_traces: Optional[torch.Tensor] = None  # (n_shots, nf, n_recv)
+    observed_traces: Optional[torch.Tensor] = None  # (n_shots, nf, n_tr - 1)
 
 
 @dataclass
@@ -126,9 +126,8 @@ class Problem:
             obs_freq = FrequencySelection.from_frequencies(obs_grid, freqs)
             obs_geom = self._geometry(obs_grid, obs_source, obs_freq)
             observed_wfs = self._observed(obs_freq, obs_geom)
-            traces = torch.stack(
-                [obs_geom.extract_observations(wf.amplitude) for wf in observed_wfs],
-                dim=0,
+            traces = obs_geom.extract_observations(
+                torch.stack([wf.amplitude for wf in observed_wfs])
             )
             return BandContext(
                 frequencies_hz=freqs,
@@ -155,8 +154,7 @@ class Problem:
             grid,
             source,
             freq,
-            n_receivers=acq.n_receivers,
-            n_sources=acq.n_sources,
+            n_transducers=acq.n_transducers,
             sigma_s=acq.sigma_s,
             a_frac=acq.a_frac,
             b_frac=acq.b_frac,

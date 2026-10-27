@@ -180,12 +180,11 @@ class SourceCfg:
 
 @dataclass(frozen=True)
 class AcquisitionCfg:
-    """Ring source/receiver layout (odil_wave.AcquisitionGeometry).
+    """Ring transducer layout (odil_wave.AcquisitionGeometry).
 
     Params:
-    * ``n_receivers``: int >= 1 receivers evenly spaced on the ring.
-    * ``n_sources``: int >= 1 requested sources, subsampled from the receiver
-      positions (the active count may be smaller; the step is floored at 1).
+    * ``n_transducers``: int >= 2 transducers evenly spaced on the ring. Each
+      transmits one shot, recorded by the other ``n_transducers - 1``.
     * ``a_frac`` / ``b_frac``: (0, 1]; ring semi-axes as a fraction of the
       interior half-extent in x / y.
     * ``ring_center``: ``"grid_center"`` (centre of the interior extent) |
@@ -197,8 +196,7 @@ class AcquisitionCfg:
     * ``source_spatial``: ``"gaussian"`` | ``"point"``.
     """
 
-    n_receivers: int = 64
-    n_sources: int = 64
+    n_transducers: int = 64
     a_frac: float = 0.9
     b_frac: float = 0.9
     ring_center: Union[str, List[float]] = "grid_center"
@@ -692,6 +690,12 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
+
+    if cfg.acquisition.n_transducers < 2:
+        raise ConfigError(
+            f"acquisition.n_transducers must be >= 2, "
+            f"got {cfg.acquisition.n_transducers}"
+        )
 
     if cfg.grid.space_order not in _SPACE_ORDERS:
         raise ConfigError(

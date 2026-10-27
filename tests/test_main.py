@@ -65,7 +65,7 @@ def test_dry_run_default_config(capsys):
     code = main.main(["--dry-run"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "n_src=64" in out
+    assert "n_transducers=64" in out
     assert "bands (1):" in out
     assert "[dry-run] configuration is valid; no artifacts written." in out
 

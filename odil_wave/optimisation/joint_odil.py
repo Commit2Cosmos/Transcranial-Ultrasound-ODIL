@@ -28,7 +28,10 @@ Formulation
 * Residuals use the repository's exact operator (inverse-crime consistent):
 
       r_pde[s, w]  = WaveEquation.residual(u, c_full, q)[s, w]     (full grid)
-      r_data[s, w] = P u[s, w] - d_obs[s, w]                       (receivers)
+      r_data[s, w] = P_s u[s, w] - d_obs[s, w]                     (receivers)
+
+  where ``P_s`` samples the ``n_transducers - 1`` transducers recording shot
+  ``s`` (never its own), so ``data_scale`` below excludes the self-trace too.
 
   fixed scales ``pde_scale[s, w] = max(RMS_active|q[s, w]|, eps_p)`` (source
   based; NOT the near-zero warm-start PDE residual) and
@@ -209,7 +212,7 @@ class JointFreqODIL(Optimiser):
         self.device = grid.device
         self.wave_eq = loss.config.wave_eq
         self.geometry = loss.config.geometry
-        self.n_shots = self.geometry.n_sources
+        self.n_shots = self.geometry.n_shots
         self.nf = wavefield.n_frequencies
         self.Nx, self.Ny = grid.shape
         self.c0 = float(grid.c0)
@@ -253,10 +256,8 @@ class JointFreqODIL(Optimiser):
 
         # ---- fixed reference model / wavefield / residual scales ---------- #
         self.sources = loss.sources  # (n_shots, nf, Nx, Ny), t0**2-scaled, no m-dep
-        self._obs_traces = loss._obs_traces().detach()  # (n_shots, nf, n_recv)
-        ri = self.geometry.recv_ij[:, 0]
-        rj = self.geometry.recv_ij[:, 1]
-        self._ri, self._rj = ri, rj
+        # (n_shots, nf, n_transducers - 1): no shot is recorded at its source.
+        self._obs_traces = loss._obs_traces().detach()
 
         # Active (non-PML interior) mask over the full grid, for RMS_active.
         self._interior_slice = grid.interior_slice
@@ -368,7 +369,7 @@ class JointFreqODIL(Optimiser):
         u = self.physical_u(u_re, u_im)
         c_full = self.c_full_of_z(z_m)
         r_pde = self.wave_eq.residual(u, c_full, self.sources)
-        u_recv = u[:, :, self._ri, self._rj]
+        u_recv = self.geometry.extract_observations(u)
         r_data = u_recv - self._obs_traces
         return r_pde, r_data
 

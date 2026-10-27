@@ -1,55 +1,39 @@
 import pytest
 import torch
 
-from odil_wave.geometry import source_ring_indices
-
 from conftest import make_geometry
-
-
-# --------------------------------------------------------------------------- #
-# source_ring_indices
-# --------------------------------------------------------------------------- #
-def test_source_ring_indices_even_spacing():
-    """Sources are an evenly spaced subset of the receiver ring."""
-    assert source_ring_indices(8, 4) == [0, 2, 4, 6]
-    assert source_ring_indices(8, 3) == [0, 2, 4]
-    assert source_ring_indices(16, 4) == [0, 4, 8, 12]
-
-
-def test_source_ring_indices_step_floored():
-    """Requesting more sources than receivers floors the step at 1."""
-    assert source_ring_indices(4, 10) == [0, 1, 2, 3]
-
-
-def test_source_ring_indices_guards_count():
-    """A non-positive source count is rejected."""
-    with pytest.raises(ValueError):
-        source_ring_indices(8, 0)
-    with pytest.raises(ValueError):
-        source_ring_indices(8, -2)
 
 
 # --------------------------------------------------------------------------- #
 # AcquisitionGeometry
 # --------------------------------------------------------------------------- #
 def test_ring_on_grid_and_counts(grid, source, freq_selection):
-    """Receivers/sources land inside the grid; realised source count is exposed."""
-    geom = make_geometry(
-        grid, source, freq_selection, n_sources=4, source_spatial="gaussian"
+    """Transducers land on valid grid nodes; one shot per transducer."""
+    geom = make_geometry(grid, source, freq_selection, source_spatial="gaussian")
+    assert geom.n_transducers == 8
+    assert geom.n_shots == 8
+    assert geom.transducer_ij.shape == (8, 2)
+    assert torch.all(geom.transducer_ij[:, 0] >= 0) and torch.all(
+        geom.transducer_ij[:, 0] < grid.nx
     )
-    assert geom.recv_ij.shape == (8, 2)
-    assert geom.n_sources == 4
-    assert geom.src_ij.shape == (4, 2)
-    # every index is a valid full-grid node.
-    assert torch.all(geom.recv_ij[:, 0] >= 0) and torch.all(
-        geom.recv_ij[:, 0] < grid.nx
+    assert torch.all(geom.transducer_ij[:, 1] >= 0) and torch.all(
+        geom.transducer_ij[:, 1] < grid.ny
     )
-    assert torch.all(geom.recv_ij[:, 1] >= 0) and torch.all(
-        geom.recv_ij[:, 1] < grid.ny
-    )
-    # sources are exactly the subsampled receiver nodes.
-    idx = geom.source_ring_indices
-    assert torch.equal(geom.src_ij, geom.recv_ij[idx])
+
+
+@pytest.mark.parametrize("n", [0, 1])
+def test_ring_needs_two_transducers(n, grid, source, freq_selection):
+    """With fewer than two transducers no shot has a recording transducer."""
+    with pytest.raises(ValueError, match="n_transducers"):
+        make_geometry(grid, source, freq_selection, n_transducers=n)
+
+
+def test_every_other_transducer_records_each_shot(geometry):
+    """Shot s is recorded by the N - 1 transducers other than s."""
+    n = geometry.n_transducers
+    assert geometry.receivers.shape == (n, n - 1)
+    for s in range(n):
+        assert sorted(geometry.receivers[s].tolist()) == [r for r in range(n) if r != s]
 
 
 def test_default_ring_center_is_interior_center(grid, source, freq_selection):
@@ -61,17 +45,18 @@ def test_default_ring_center_is_interior_center(grid, source, freq_selection):
 
 
 def test_fixture_ring_lies_in_interior(geometry, grid):
-    """Every receiver and source of the shared fixture sits outside the PML."""
+    """Every transducer of the shared fixture sits outside the PML."""
     sx, sy = grid.interior_slice
-    for ij in (geometry.recv_ij, geometry.src_ij):
-        assert torch.all((ij[:, 0] >= sx.start) & (ij[:, 0] < sx.stop))
-        assert torch.all((ij[:, 1] >= sy.start) & (ij[:, 1] < sy.stop))
+    ij = geometry.transducer_ij
+    assert torch.all((ij[:, 0] >= sx.start) & (ij[:, 0] < sx.stop))
+    assert torch.all((ij[:, 1] >= sy.start) & (ij[:, 1] < sy.stop))
 
 
 def test_src_position_matches_grid_axes(geometry, grid):
-    """src_position returns the physical coordinates of the source node."""
+    """src_position returns the physical coordinates of the transmitting
+    transducer's node."""
     x, y = geometry.src_position(0)
-    i, j = int(geometry.src_ij[0, 0]), int(geometry.src_ij[0, 1])
+    i, j = int(geometry.transducer_ij[0, 0]), int(geometry.transducer_ij[0, 1])
     assert x == pytest.approx(float(grid.x[i]))
     assert y == pytest.approx(float(grid.y[j]))
 
@@ -104,21 +89,25 @@ def test_source_field_shapes(geometry, grid, freq_selection):
     assert sft.dtype == grid.dtype
 
 
-def test_extract_observations_samples_receivers(geometry, grid, freq_selection):
-    """extract_observations gathers exactly the receiver nodes of a field."""
-    nf = freq_selection.n_frequencies
-    U = torch.arange(nf * grid.nx * grid.ny, dtype=grid.dtype).reshape(
-        nf, grid.nx, grid.ny
+def test_extract_observations_skips_the_transmitting_transducer(
+    geometry, grid, freq_selection
+):
+    """Each shot's traces are its N - 1 receivers' nodes, never its own node."""
+    n, nf = geometry.n_transducers, freq_selection.n_frequencies
+    U = torch.arange(n * nf * grid.nx * grid.ny, dtype=grid.dtype).reshape(
+        n, nf, grid.nx, grid.ny
     )
     obs = geometry.extract_observations(U)
-    assert obs.shape == (nf, geometry.n_receivers)
-    i, j = geometry.recv_ij[:, 0], geometry.recv_ij[:, 1]
-    assert torch.equal(obs, U[:, i, j])
+    assert obs.shape == (n, nf, n - 1)
+    for s in range(n):
+        ij = geometry.receiver_ij[s]
+        assert torch.equal(obs[s], U[s][:, ij[:, 0], ij[:, 1]])
+        own = U[s][:, geometry.transducer_ij[s, 0], geometry.transducer_ij[s, 1]]
+        assert not torch.isin(own, obs[s]).any()
 
 
-def test_extract_observations_batched(geometry, grid, freq_selection):
-    """Extraction preserves a leading shot/batch dimension."""
-    nf = freq_selection.n_frequencies
-    U = torch.randn(3, nf, grid.nx, grid.ny)
-    obs = geometry.extract_observations(U)
-    assert obs.shape == (3, nf, geometry.n_receivers)
+def test_extract_observations_batched(geometry, grid):
+    """Extraction keeps any dims between the shot axis and the grid axes."""
+    n = geometry.n_transducers
+    U = torch.randn(n, 3, 2, grid.nx, grid.ny)
+    assert geometry.extract_observations(U).shape == (n, 3, 2, n - 1)
