@@ -25,3 +25,33 @@ _Avoid_: effective config, final config
 
 **Inverse crime**:
 Generating the observed data with the same discrete operator and grid that the inversion uses, so that the true model fits the data exactly.
+
+**Transducer**:
+An element on the ring that both transmits and records. Every transducer transmits exactly once per run and records every shot except its own.
+_Avoid_: source or receiver alone, when the element is meant
+
+**Shot**:
+One transmission by one transducer, recorded by all the other transducers.
+
+**Offset**:
+The separation along the ring between the transmitting transducer and a recording transducer.
+
+**Interior**:
+The physical region being imaged; everything on the grid except the PML.
+_Avoid_: active region, domain
+
+**PML**:
+The absorbing layer around the interior that suppresses reflections from the grid boundary. Its size that matters physically is its thickness in metres.
+_Avoid_: sponge, absorbing boundary
+
+**PDE term**:
+The part of the objective that penalises the wave-equation residual over the interior and the PML, measured relative to the size of the wave term itself.
+
+**Data term**:
+The part of the objective that penalises the mismatch between the wavefield at the receivers and the observed data.
+
+**Same physical problem**:
+Two discretisations with the same domain, source shape and PML thickness, all measured in metres, differing only in grid spacing.
+
+**Grid independence**:
+The property that the balance between the objective's terms does not change when the same physical problem is discretised at a different resolution.
