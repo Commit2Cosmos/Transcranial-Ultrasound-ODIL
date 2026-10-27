@@ -44,8 +44,7 @@ SOURCE_KW = dict(
     dimensionless=True,
 )
 GEOMETRY_KW = dict(
-    n_receivers=8,
-    n_sources=2,
+    n_transducers=8,
     sigma_s=None,
     a_frac=0.9,
     b_frac=0.9,

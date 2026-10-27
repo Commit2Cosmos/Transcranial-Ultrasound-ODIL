@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import math
 import torch
@@ -12,46 +12,8 @@ from odil_wave.plot_utils import length_scale, time_scale
 from odil_wave.source import SourceSignal
 
 
-def source_ring_indices(
-    n_receivers: int,
-    n_sources_per_offset: int,
-) -> List[int]:
-    """Receiver-ring indices for the source octet.
-
-    Places sources at ``i * step`` for ``i = 0 .. n_sources_per_offset-1`` with
-    ``step = n_receivers // n_sources_per_offset`` (the ``recv[::step][:n_sources]``
-    subsample), so the sources are an evenly spaced octet on the receiver ring.
-    ``step`` is floored at 1, so requesting more sources than receivers just
-    returns every receiver index once.
-
-    Parameters
-    ----------
-    n_receivers : int
-        Number of receivers on the ring.
-    n_sources_per_offset : int
-        Requested number of sources to subsample from the ring; must be
-        positive.
-
-    Returns
-    -------
-    List[int]
-        Indices into the receiver ring to use as source positions.
-
-    Raises
-    ------
-    ValueError
-        If ``n_sources_per_offset`` is not positive.
-    """
-    if n_sources_per_offset <= 0:
-        raise ValueError(
-            f"n_sources_per_offset must be positive, got {n_sources_per_offset}."
-        )
-    step = max(1, n_receivers // n_sources_per_offset)
-    return list(range(0, n_receivers, step))[:n_sources_per_offset]
-
-
 def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
-    """Rescale a (NT, n_receivers) trace gather for plotting.
+    """Rescale a (NT, n_traces) trace gather for plotting.
 
     mode:
       - None / "none":    pass-through
@@ -70,12 +32,13 @@ def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
 
 
 class AcquisitionGeometry:
-    """Elliptical array of transducers around the interior region.
+    """Elliptical ring of transducers around the interior region.
 
-    Receivers are placed on an ellipse inscribed in the grid's interior
-    region; sources are an evenly spaced subset of the receiver ring (see
-    `source_ring_indices`). Provides the source injection fields (time- and
-    frequency-domain), receiver extraction, and plotting helpers used by the
+    Transducers are evenly spaced on an ellipse inscribed in the grid's
+    interior region. Shot ``s`` transmits from transducer ``s`` and is recorded
+    by the other ``n_transducers - 1`` (`receivers`); a transducer never
+    records its own shot. Provides the source injection fields (time- and
+    frequency-domain), trace extraction, and plotting helpers used by the
     forward solvers and loss functions.
     """
 
@@ -85,15 +48,14 @@ class AcquisitionGeometry:
         source: SourceSignal,
         frequency_selection: FrequencySelection,
         *,
-        n_receivers: int,
-        n_sources: Optional[int],
+        n_transducers: int,
         sigma_s: Optional[float],
         a_frac: float,
         b_frac: float,
         ring_center: Optional[Tuple[float, float]],
         source_spatial: str,
     ):
-        """Build the receiver/source ring for a given grid.
+        """Build the transducer ring for a given grid.
 
         Parameters
         ----------
@@ -107,13 +69,9 @@ class AcquisitionGeometry:
         frequency_selection : FrequencySelection
             Frequency bins used by `source_field` for the frequency-domain
             source, and by the complex dtype it produces.
-        n_receivers : int
-            Number of receivers placed on the ellipse.
-        n_sources : int or None
-            Requested subsample count from the receiver ring (see
-            `source_ring_indices`); ``None`` -> `n_receivers`. The actual
-            active shot count, exposed as `self.n_sources`, may be smaller
-            since the subsampling step is floored at 1.
+        n_transducers : int
+            Number of transducers placed on the ellipse (>= 2); also the
+            number of shots.
         sigma_s : float or None
             Width in metres of the Gaussian source profile
             ``exp(-r**2 / sigma_s**2)`` (standard deviation
@@ -121,10 +79,10 @@ class AcquisitionGeometry:
             ``None`` -> derived from the grid spacing and the source's
             dominant wavelength.
         a_frac, b_frac : float
-            Semi-axes of the receiver ellipse as a fraction of the half-width
+            Semi-axes of the transducer ellipse as a fraction of the half-width
             / half-height of the grid's interior region.
         ring_center : (float, float) or None
-            Physical-coordinate centre of the receiver ellipse; ``None`` ->
+            Physical-coordinate centre of the transducer ellipse; ``None`` ->
             the centre of the grid's interior region.
         source_spatial : {"gaussian", "point"}
             Spatial injection profile: ``"gaussian"`` is a Gaussian blob of
@@ -137,8 +95,12 @@ class AcquisitionGeometry:
         self.device = self.grid.device
         self.dtype = self.grid.dtype
 
-        self.n_receivers = n_receivers
-        self.n_sources_per_offset = n_receivers if n_sources is None else int(n_sources)
+        if n_transducers < 2:
+            raise ValueError(
+                f"n_transducers must be >= 2 so every shot is recorded, "
+                f"got {n_transducers}."
+            )
+        self.n_transducers = int(n_transducers)
         self.sigma_s = (
             self._default_sigma_s(grid, source) if sigma_s is None else sigma_s
         )
@@ -147,12 +109,20 @@ class AcquisitionGeometry:
         self.ring_center = grid.interior_center if ring_center is None else ring_center
         self.source_spatial = source_spatial
 
-        self.recv_ij = self._place_ellipse(self.n_receivers)
-        self.source_ring_indices = source_ring_indices(
-            self.n_receivers, self.n_sources_per_offset
+        self.transducer_ij = self._place_ellipse(self.n_transducers)
+        # receivers[s]: the transducers recording shot s, ascending, without s.
+        ids = torch.arange(self.n_transducers, device=self.device)
+        others = ids.view(1, -1) != ids.view(-1, 1)
+        self.receivers = ids.expand(self.n_transducers, -1)[others].view(
+            self.n_transducers, self.n_transducers - 1
         )
-        self.n_sources = len(self.source_ring_indices)
-        self.src_ij = self.recv_ij[self.source_ring_indices]
+        # (n_shots, n_transducers - 1, 2) grid nodes of each shot's receivers.
+        self.receiver_ij = self.transducer_ij[self.receivers]
+
+    @property
+    def n_shots(self) -> int:
+        """One shot per transducer."""
+        return self.n_transducers
 
     @staticmethod
     def _default_sigma_s(grid: Grid, source: SourceSignal) -> float:
@@ -184,7 +154,7 @@ class AcquisitionGeometry:
 
     def src_position(self, src_idx: int) -> Tuple[float, float]:
         """Physical (x, y) coordinates of source `src_idx`."""
-        i, j = int(self.src_ij[src_idx, 0]), int(self.src_ij[src_idx, 1])
+        i, j = int(self.transducer_ij[src_idx, 0]), int(self.transducer_ij[src_idx, 1])
         return float(self.grid.x[i]), float(self.grid.y[j])
 
     def _spatial_profile(self, src_idx: int) -> torch.Tensor:
@@ -192,8 +162,8 @@ class AcquisitionGeometry:
         tensor of shape `grid.shape`. Selects between a Gaussian blob and a
         point (Kronecker delta) source based on `self.source_spatial`."""
         if self.source_spatial == "point":
-            i = int(self.src_ij[src_idx, 0])
-            j = int(self.src_ij[src_idx, 1])
+            i = int(self.transducer_ij[src_idx, 0])
+            j = int(self.transducer_ij[src_idx, 1])
             spatial = torch.zeros(self.grid.shape, dtype=self.dtype, device=self.device)
             spatial[i, j] = 1.0
             return spatial
@@ -211,7 +181,7 @@ class AcquisitionGeometry:
         Parameters
         ----------
         src_idx : int
-            Index into the active source set (0 .. `self.n_sources` - 1).
+            Shot index (0 .. `self.n_shots` - 1).
 
         Returns
         -------
@@ -230,7 +200,7 @@ class AcquisitionGeometry:
         Parameters
         ----------
         src_idx : int
-            Index into the active source set (0 .. `self.n_sources` - 1).
+            Shot index (0 .. `self.n_shots` - 1).
 
         Returns
         -------
@@ -247,20 +217,25 @@ class AcquisitionGeometry:
         )
 
     def extract_observations(self, U: torch.Tensor) -> torch.Tensor:
-        """Pull receiver samples out of a full-grid wavefield.
+        """Pull each shot's recorded traces out of its full-grid wavefield.
 
         Parameters
         ----------
         U : torch.Tensor
-            Field with trailing spatial dims ``(..., nx, ny)`` — time-domain
-            ``(nt, nx, ny)`` or frequency-domain ``(nf, nx, ny)``.
+            Per-shot fields ``(n_shots, ..., nx, ny)`` — e.g. frequency-domain
+            ``(n_shots, nf, nx, ny)`` or time-domain ``(n_shots, nt, nx, ny)``.
 
         Returns
         -------
         torch.Tensor
-            ``U`` indexed at the receiver locations, shape ``(..., n_receivers)``.
+            Shot ``s`` sampled at its `receivers[s]` nodes, shape
+            ``(n_shots, ..., n_transducers - 1)``; the transmitting
+            transducer's own node is never sampled.
         """
-        return U[..., self.recv_ij[:, 0], self.recv_ij[:, 1]]
+        ij = self.receiver_ij
+        shot = torch.arange(self.n_shots, device=self.device).view(-1, 1)
+        # Advanced indices split by `...` put their broadcast dims first.
+        return U[shot, ..., ij[..., 0], ij[..., 1]].movedim(1, -1)
 
     def plot_traces(
         self,
@@ -269,20 +244,25 @@ class AcquisitionGeometry:
         normalize: Optional[str] = "per_receiver",
         cmap: str = "RdBu_r",
         title: Optional[str] = None,
+        shot: int = 0,
     ):
-        """Plot recorded traces: receiver id (y) vs time (x), amplitude as colour.
+        """Plot recorded traces: transducer id (y) vs time (x), amplitude as colour.
+
+        The transmitting transducer records nothing, so its row is left blank.
 
         Parameters
         ----------
         wavefield :
-            A `Wavefield`, a `(NT, NX, NY)` amplitude tensor/array, or a list
-            of either (one entry per shot, producing a subplot grid). `ax` is
-            ignored when a list is given.
+            A `Wavefield` or `(NT, NX, NY)` amplitude tensor/array for shot
+            `shot`, or a list of either with one entry per shot (index = shot),
+            producing a subplot grid. `ax` is ignored when a list is given.
         ax : matplotlib.axes.Axes, optional
             Axes to draw into for a single wavefield. Defaults to a new
             figure/axes.
         normalize : {"per_receiver", "none", None}, default "per_receiver"
             Per-receiver max-abs balancing, or no rescaling.
+        shot : int, default 0
+            Shot a single (non-list) `wavefield` belongs to.
 
         Returns
         -------
@@ -291,14 +271,20 @@ class AcquisitionGeometry:
         """
         is_list = isinstance(wavefield, (list, tuple))
         items = list(wavefield) if is_list else [wavefield]
+        shots = list(range(len(items))) if is_list else [shot]
 
         traces_per_shot = []
-        for item in items:
+        for s, item in zip(shots, items):
             amp = (
                 item.amplitude if hasattr(item, "amplitude") else torch.as_tensor(item)
             )
-            tr = self.extract_observations(amp).detach().cpu().numpy()
-            traces_per_shot.append(_normalize_traces(tr, normalize))
+            ij = self.receiver_ij[s]
+            tr = amp[..., ij[:, 0], ij[:, 1]].detach().cpu().numpy()
+            gather = np.full((tr.shape[0], self.n_transducers), np.nan)
+            gather[:, self.receivers[s].cpu().numpy()] = _normalize_traces(
+                tr, normalize
+            )
+            traces_per_shot.append(gather)
 
         t = self.grid.t.cpu().numpy()
         t_mult, t_unit = time_scale(float(t[-1]) if t.size else 1.0)
@@ -306,13 +292,13 @@ class AcquisitionGeometry:
             float(t[0]) * t_mult,
             float(t[-1]) * t_mult,
             -0.5,
-            self.n_receivers - 0.5,
+            self.n_transducers - 0.5,
         )
         norm_tag = "" if normalize is None else f" ({normalize})"
 
         if not is_list:
             traces = traces_per_shot[0]
-            vmax = float(np.max(np.abs(traces))) or 1.0
+            vmax = float(np.nanmax(np.abs(traces))) or 1.0
             if ax is None:
                 _, ax = plt.subplots(figsize=(7.5, 4.5))
             im = ax.imshow(
@@ -325,8 +311,8 @@ class AcquisitionGeometry:
                 vmax=vmax,
             )
             ax.set_xlabel(f"time [{t_unit}]")
-            ax.set_ylabel("receiver id")
-            ax.set_title(title or f"trace gather{norm_tag}")
+            ax.set_ylabel("transducer id")
+            ax.set_title(title or f"trace gather, shot {shot}{norm_tag}")
             plt.colorbar(im, ax=ax, shrink=0.85, label="amplitude")
             return ax
 
@@ -337,7 +323,7 @@ class AcquisitionGeometry:
             nrows, ncols, figsize=(6.5 * ncols, 3.5 * nrows), squeeze=False
         )
         for k, (ax_k, traces) in enumerate(zip(axes.flat, traces_per_shot)):
-            vmax = float(np.max(np.abs(traces))) or 1.0
+            vmax = float(np.nanmax(np.abs(traces))) or 1.0
             im = ax_k.imshow(
                 traces.T,
                 origin="lower",
@@ -348,7 +334,7 @@ class AcquisitionGeometry:
                 vmax=vmax,
             )
             ax_k.set_xlabel(f"time [{t_unit}]")
-            ax_k.set_ylabel("receiver id")
+            ax_k.set_ylabel("transducer id")
             ax_k.set_title(f"shot {k}")
             plt.colorbar(im, ax=ax_k, shrink=0.85, label="amplitude")
         for ax_k in axes.flat[n_shots:]:
@@ -363,7 +349,7 @@ class AcquisitionGeometry:
         Parameters
         ----------
         src_idx : int, default 0
-            Index into the active source set (0 .. `self.n_sources` - 1).
+            Shot index (0 .. `self.n_shots` - 1).
         t_idx : int, optional
             Time index to plot. Defaults to the peak time of the source's
             temporal waveform.
@@ -415,7 +401,7 @@ class AcquisitionGeometry:
         vcenter: float = 1600.0,
         vmax: float = 3000.0,
     ):
-        """Overlay the source/receiver ring on the velocity model.
+        """Overlay the transducer ring on the velocity model.
 
         The velocity colourbar uses a two-slope normalisation so that
         ``[vmin, vcenter]`` and ``[vcenter, vmax]`` each fill half the bar
@@ -426,7 +412,7 @@ class AcquisitionGeometry:
         ----------
         velocity_model : VelocityModel
             Background image; also sets the axis unit scaling that the
-            receiver/source markers are plotted in.
+            transducer markers are plotted in.
         ax : matplotlib.axes.Axes, optional
             Axes to draw into. Defaults to a new figure/axes.
 
@@ -448,29 +434,17 @@ class AcquisitionGeometry:
 
         (_, xmax), (_, ymax) = self.grid.extent
         x_mult, _ = length_scale(max(abs(xmax), abs(ymax)))
-        rx = self.grid.x[self.recv_ij[:, 0]].cpu().numpy() * x_mult
-        ry = self.grid.y[self.recv_ij[:, 1]].cpu().numpy() * x_mult
-        sx = self.grid.x[self.src_ij[:, 0]].cpu().numpy() * x_mult
-        sy = self.grid.y[self.src_ij[:, 1]].cpu().numpy() * x_mult
+        tx = self.grid.x[self.transducer_ij[:, 0]].cpu().numpy() * x_mult
+        ty = self.grid.y[self.transducer_ij[:, 1]].cpu().numpy() * x_mult
         ax.scatter(
-            rx,
-            ry,
+            tx,
+            ty,
             marker="v",
             c="lime",
             edgecolor="black",
             s=70,
-            label=f"{self.n_receivers} receivers",
+            label=f"{self.n_transducers} transducers",
             zorder=5,
-        )
-        ax.scatter(
-            sx,
-            sy,
-            marker="*",
-            c="red",
-            edgecolor="black",
-            s=180,
-            label=f"{self.n_sources} sources",
-            zorder=6,
         )
         ax.legend(loc="upper right", fontsize=8)
         plt.tight_layout()

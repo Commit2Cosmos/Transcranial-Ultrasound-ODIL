@@ -99,6 +99,23 @@ def test_objective_vanishes_at_truth(truth_problem):
     assert opt._last["data_term"] < 1e-20
 
 
+def test_data_term_ignores_the_transmitting_transducer(truth_problem):
+    """Perturbing u only at each shot's own transducer node leaves the data
+    term, and its per-(shot, frequency) scale, unchanged."""
+    opt = _make_optimiser(truth_problem)
+    n = opt.geometry.n_transducers
+    assert opt.data_scale.shape == (n, opt.nf, 1)
+    u_re, u_im, z = opt.init_params()
+    bumped = u_re.clone()
+    for s in range(n):
+        i, j = opt.geometry.transducer_ij[s]
+        bumped[s, :, i, j] += 10.0
+    _, r_data = opt.residuals(u_re, u_im, z)
+    _, r_bumped = opt.residuals(bumped, u_im, z)
+    assert r_data.shape == (n, opt.nf, n - 1)
+    assert torch.equal(r_bumped, r_data)
+
+
 def _directional_check(opt, block):
     """Relative error of autograd vs central-difference directional derivatives."""
     u_re, u_im, z = opt.init_params()

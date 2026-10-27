@@ -58,7 +58,7 @@ class DiscreteLoss(ABC):
                     self.config.geometry.source_field(i).to(
                         dtype=cdtype, device=self.config.device
                     )
-                    for i in range(self.config.geometry.n_sources)
+                    for i in range(self.config.geometry.n_shots)
                 ]
             )
             * t0**2

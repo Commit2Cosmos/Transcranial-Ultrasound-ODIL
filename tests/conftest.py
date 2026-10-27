@@ -69,10 +69,9 @@ def make_source(grid, **overrides) -> SourceSignal:
 
 
 def make_geometry(grid, source, freq, **overrides) -> AcquisitionGeometry:
-    """8-receiver / 2-source point-injection ring; keyword overrides win."""
+    """8-transducer point-injection ring; keyword overrides win."""
     kw = dict(
-        n_receivers=8,
-        n_sources=2,
+        n_transducers=8,
         sigma_s=None,
         a_frac=0.55,
         b_frac=0.70,
@@ -103,7 +102,7 @@ TINY_EXPERIMENT = {
     "pml": {"width": 6},
     "time": {"t_max": 6e-5, "init_nt": 200},
     "source": {"f0": 40e3, "n_cycles": 2.0},
-    "acquisition": {"n_receivers": 8, "n_sources": 4, "source_spatial": "point"},
+    "acquisition": {"n_transducers": 8, "source_spatial": "point"},
     "truth": {"profile": "overdensity", "contrast": 150.0, "extra": {"radius": 0.012}},
     "init": {"profile": "homogeneous"},
     "continuation": {"bands": [{"frequencies_hz": [40e3]}]},
@@ -144,7 +143,7 @@ def source(grid) -> SourceSignal:
 
 @pytest.fixture
 def geometry(grid, source, freq_selection) -> AcquisitionGeometry:
-    """8-receiver / 2-source point-injection ring."""
+    """8-transducer point-injection ring."""
     return make_geometry(grid, source, freq_selection)
 
 
@@ -170,13 +169,11 @@ def wave_stack() -> SimpleNamespace:
     wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
     sources = (
         torch.stack(
-            [geom.source_field(i).to(dtype=wf.cdtype) for i in range(geom.n_sources)]
+            [geom.source_field(i).to(dtype=wf.cdtype) for i in range(geom.n_shots)]
         )
         * g.t0**2
     )
-    obs_traces = torch.stack(
-        [geom.extract_observations(s.amplitude) for s in sols], dim=0
-    )
+    obs_traces = geom.extract_observations(amp)
     return SimpleNamespace(
         grid=g,
         freq=fs,

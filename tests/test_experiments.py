@@ -27,8 +27,7 @@ EXPECTED_SHAPE = {
     "time": ["t_max", "init_nt", "cfl_safety"],
     "source": ["kind", "f0", "amplitude", "n_cycles", "envelope", "dimensionless"],
     "acquisition": [
-        "n_receivers",
-        "n_sources",
+        "n_transducers",
         "a_frac",
         "b_frac",
         "ring_center",
@@ -93,10 +92,10 @@ def test_default_config_matches_the_documented_shape():
 
 
 def test_resolve_empty_config_gives_the_default_values():
-    """resolve_config({}) is the default config: 64 sources, one 60 kHz band, and
-    observations on the inversion grid."""
+    """resolve_config({}) is the default config: 64 transducers, one 60 kHz band,
+    and observations on the inversion grid."""
     cfg = resolve_config({})
-    assert cfg.acquisition.n_sources == 64
+    assert cfg.acquisition.n_transducers == 64
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[60e3]]
     assert cfg.pml.observation_width is None
     assert cfg.run.run_id  # auto-minted, non-empty
@@ -159,6 +158,8 @@ def test_unknown_key_raises():
         ({"grid": {"L0": 1.0}}, "L0"),
         ({"source": {"offset": 0}}, "offset"),
         ({"source": {"t0": None}}, "t0"),
+        ({"acquisition": {"n_receivers": 64}}, "n_receivers"),
+        ({"acquisition": {"n_sources": 64}}, "n_sources"),
     ],
 )
 def test_removed_keys_raise_naming_the_key(removed, key):
@@ -166,6 +167,13 @@ def test_removed_keys_raise_naming_the_key(removed, key):
     with pytest.raises(ConfigError, match=rf"unknown key.*'{key}'") as exc_info:
         resolve_config(removed)
     assert "moved" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("n", [0, 1])
+def test_fewer_than_two_transducers_is_rejected(n):
+    """A ring needs another transducer to record each shot."""
+    with pytest.raises(ConfigError, match="n_transducers"):
+        validate_config(resolve_config({"acquisition": {"n_transducers": n}}))
 
 
 @pytest.mark.parametrize(
@@ -292,9 +300,18 @@ def test_make_band_produces_observed_data(tiny_experiment):
     problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     assert band.freq.n_frequencies == 1
-    assert len(band.observed_wfs) == problem.cfg.acquisition.n_sources
+    assert len(band.observed_wfs) == problem.cfg.acquisition.n_transducers
     # not PML-split, so full wavefields (no reduced traces).
     assert band.observed_traces is None
+
+
+def test_pml_split_traces_skip_the_transmitting_transducer(tiny_experiment):
+    """Reduced observations hold N - 1 traces per shot, one per other transducer."""
+    split = deep_merge(tiny_experiment, {"pml": {"observation_width": 12}})
+    problem = build_problem(resolve_config(split))
+    band = problem.make_band([40e3])
+    n = problem.cfg.acquisition.n_transducers
+    assert band.observed_traces.shape == (n, 1, n - 1)
 
 
 def test_observed_data_satisfy_inverse_operator_on_truth(tiny_experiment):
@@ -322,6 +339,26 @@ def test_observed_data_satisfy_inverse_operator_on_truth(tiny_experiment):
     assert loss._last_residuals["data_rms"] == 0.0
 
 
+def _amplitudes(wavefields) -> torch.Tensor:
+    """Stack per-shot wavefields to ``(n_shots, nf, nx, ny)``."""
+    return torch.stack([w.amplitude for w in wavefields])
+
+
+def test_observed_data_are_reciprocal(tiny_experiment):
+    """d[s -> r] ~= d[r -> s]: guards the per-shot receiver bookkeeping."""
+    problem = build_problem(resolve_config(tiny_experiment))
+    band = problem.make_band([40e3])
+    traces = band.geom.extract_observations(_amplitudes(band.observed_wfs))
+    n = band.geom.n_transducers
+    d = torch.full((n, n), float("nan"), dtype=traces.dtype)
+    for s in range(n):
+        d[s, band.geom.receivers[s]] = traces[s, 0]
+    off = ~torch.eye(n, dtype=torch.bool)
+    rel = (d - d.T)[off].abs().max() / d[off].abs().max()
+    # Measured 1.1e-15 on this point-source problem; an index slip is O(1).
+    assert float(rel) < 1e-10
+
+
 def _data_misfit_at_truth(experiment) -> float:
     """Relative receiver misfit between the observations and a Helmholtz solve
     on the true model on the inversion grid."""
@@ -329,14 +366,9 @@ def _data_misfit_at_truth(experiment) -> float:
     band = problem.make_band([40e3])
     observed = band.observed_traces
     if observed is None:
-        observed = torch.stack(
-            [band.geom.extract_observations(w.amplitude) for w in band.observed_wfs]
-        )
-    predicted = torch.stack(
-        [
-            band.geom.extract_observations(w.amplitude)
-            for w in problem.warm_start(problem.truth_velocity, band)
-        ]
+        observed = band.geom.extract_observations(_amplitudes(band.observed_wfs))
+    predicted = band.geom.extract_observations(
+        _amplitudes(problem.warm_start(problem.truth_velocity, band))
     )
     return float((predicted - observed).abs().norm() / observed.abs().norm())
 
@@ -357,7 +389,7 @@ def test_warm_start_solves_one_wavefield_per_shot(tiny_experiment):
     problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     wfs = problem.warm_start(problem.init_velocity, band)
-    assert len(wfs) == problem.cfg.acquisition.n_sources
+    assert len(wfs) == problem.cfg.acquisition.n_transducers
 
 
 # --------------------------------------------------------------------------- #

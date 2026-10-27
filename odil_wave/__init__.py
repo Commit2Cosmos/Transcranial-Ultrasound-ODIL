@@ -5,7 +5,6 @@ from odil_wave.grid import (
 from odil_wave.source import SourceSignal
 from odil_wave.geometry import (
     AcquisitionGeometry,
-    source_ring_indices,
 )
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
@@ -24,7 +23,6 @@ __all__ = [
     "FrequencySelection",
     "SourceSignal",
     "AcquisitionGeometry",
-    "source_ring_indices",
     "VelocityModel",
     "Wavefield",
     "WaveEquation",
