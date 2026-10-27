@@ -182,7 +182,7 @@ one-owner-per-parameter rule for library constructors
 
 ```bash
 pip install -e .           # editable install; see pyproject.toml for the full dependency list
-pip install -e ".[dev]"    # + black, ruff, pre-commit, ipykernel, torchinfo
+pip install -e ".[dev]"    # + ruff, pre-commit, ipykernel, torchinfo
 ```
 
 Requires Python ≥ 3.12.

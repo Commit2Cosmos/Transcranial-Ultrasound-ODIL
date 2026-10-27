@@ -709,8 +709,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(f"pml.damping_scale must be >= 0, got {pml.damping_scale}")
     if pml.observation_width is not None and int(pml.observation_width) < 0:
         raise ConfigError(
-            f"pml.observation_width must be >= 0 when set, "
-            f"got {pml.observation_width}"
+            f"pml.observation_width must be >= 0 when set, got {pml.observation_width}"
         )
 
     if cfg.runtime.dtype.lower() not in (

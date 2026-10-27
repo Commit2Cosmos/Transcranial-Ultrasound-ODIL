@@ -27,7 +27,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     # pinned to the .pre-commit-config.yaml revs so local runs match CI
-    "black==24.8.0",
     "ruff==0.17.2",
     "pre-commit>=3.0",
     "ipykernel",
@@ -45,8 +44,8 @@ include = ["odil_wave*"]
 
 [tool.ruff]
 line-length = 88
-# match pre-commit's ruff hook, which skips notebooks
-extend-exclude = ["*.ipynb"]
+# match pre-commit's ruff hooks, which only see Python files
+extend-exclude = ["*.ipynb", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
