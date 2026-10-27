@@ -47,7 +47,6 @@ def _make_optimiser(problem, regulariser=None, reg_weight=0.0) -> JointFreqODIL:
             weights={"pde": 1.0, "data": 1.0},
             regulariser=regulariser,
         ),
-        normalize_data="none",
     )
     return JointFreqODIL(
         problem.wavefield,

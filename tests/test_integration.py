@@ -63,7 +63,7 @@ def test_forward_to_loss_gradient_flows():
         weights={"pde": 1.0, "data": 100.0},
         regulariser=None,
     )
-    loss = InverseLoss(observed_wavefield=sols, config=cfg, normalize_data="none")
+    loss = InverseLoss(observed_wavefield=sols, config=cfg)
 
     c = init.c.clone().requires_grad_(True)
     L = loss.evaluate(u0, c)

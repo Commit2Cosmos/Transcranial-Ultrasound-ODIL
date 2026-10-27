@@ -5,7 +5,7 @@ from typing import get_args
 
 import pytest
 
-from odil_wave import InverseLoss, LossConfig, Regulariser, WaveEquation
+from odil_wave import Regulariser, WaveEquation
 from odil_wave.experiment import config
 from odil_wave.loss.regulariser import RegKind
 
@@ -35,14 +35,3 @@ def test_profiles_build_a_velocity_model(profile, grid):
 def test_unknown_profile_is_rejected(grid):
     with pytest.raises(ValueError):
         make_model(grid, profile="not_a_profile")
-
-
-@pytest.mark.parametrize("mode", config._NORMALIZE_DATA)
-def test_normalize_data_modes_build_an_inverse_loss(mode, wave_stack):
-    cfg = LossConfig(
-        wave_stack.wave_eq,
-        wave_stack.geometry,
-        weights={"pde": 1.0, "data": 1.0},
-        regulariser=None,
-    )
-    InverseLoss(observed_wavefield=wave_stack.sols, config=cfg, normalize_data=mode)

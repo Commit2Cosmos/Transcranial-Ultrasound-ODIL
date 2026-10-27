@@ -206,7 +206,7 @@ def _build_optimiser(
     n_iter : int
         Outer-iteration budget for this band.
     u_init :
-        Warm-start wavefield (or ``None``).
+        Per-shot Helmholtz warm-start wavefields.
 
     Returns
     -------
@@ -298,14 +298,12 @@ def run_frequency_band(
             observed_traces=band_ctx.observed_traces,
             config=loss_config,
             callback=tape,
-            normalize_data=cfg.loss.normalize_data,
         )
     else:
         loss = InverseLoss(
             observed_wavefield=band_ctx.observed_wfs,
             config=loss_config,
             callback=tape,
-            normalize_data=cfg.loss.normalize_data,
         )
     tape.bind_loss(loss)
 
@@ -382,7 +380,6 @@ def run_frequency_band(
         "wall_s": wall_s,
         "warm_start_s": warm_s,
         "optimise_s": optimise_s,
-        "warm_start": cfg.continuation.warm_start,
         "final_metrics": final_metrics,
         "optimiser_result": opt_result,
         "c_final": "c_final.npy",
@@ -492,8 +489,6 @@ def _dump_band_config(
         "n_iter_effective": n_iter,
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
         "n_shots": int(band_ctx.geom.n_sources),
-        "warm_start": cfg.continuation.warm_start,
-        "normalize_data": cfg.loss.normalize_data,
         "space_order": cfg.grid.space_order,
         "pml": _asdict(cfg.pml),
         "loss_weights": dict(cfg.loss.weights),

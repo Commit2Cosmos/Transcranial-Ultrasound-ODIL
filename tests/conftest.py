@@ -107,7 +107,7 @@ TINY_EXPERIMENT = {
     "truth": {"profile": "overdensity", "contrast": 150.0, "extra": {"radius": 0.012}},
     "init": {"profile": "homogeneous"},
     "continuation": {"bands": [{"frequencies_hz": [40e3]}]},
-    "loss": {"weights": {"data": 10.0}, "normalize_data": "none"},
+    "loss": {"weights": {"data": 10.0}},
     "optimiser": {"n_iter": 10, "log_every": 1},
     "metrics": {"ssim": {"mask": "none"}},
 }

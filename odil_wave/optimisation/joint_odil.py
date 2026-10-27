@@ -66,7 +66,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -160,7 +160,9 @@ class JointFreqODIL(Optimiser):
     library defaults. See the module docstring for the formulation. ``loss``
     must be an :class:`InverseLoss` (the operator, geometry, sources and
     observations are read from it, so the PDE / receiver operators are
-    identical to truth-data generation).
+    identical to truth-data generation). ``u_init`` (per-shot warm-start
+    wavefields, normally a Helmholtz solve on the current model) is required:
+    it seeds ``u`` and sets ``u_ref``.
     """
 
     def __init__(
@@ -168,6 +170,7 @@ class JointFreqODIL(Optimiser):
         wavefield: Wavefield,
         loss: InverseLoss,
         *,
+        u_init: Sequence[Wavefield] | torch.Tensor,
         n_iter: int,
         inner_max_iter: int,
         history_size: int,
@@ -180,7 +183,6 @@ class JointFreqODIL(Optimiser):
         reg_weight: float,
         log_every: int,
         verbose: bool,
-        u_init=None,
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
@@ -192,6 +194,13 @@ class JointFreqODIL(Optimiser):
         super().__init__(wavefield, loss)
         if not isinstance(loss, InverseLoss):
             raise TypeError("JointFreqODIL requires an InverseLoss")
+        if u_init is None:
+            # A u = 0 seed collapses u_ref to eps_u and leaves an exactly zero
+            # model gradient (the PDE residual is -q, independent of c).
+            raise ValueError(
+                "JointFreqODIL requires a warm-start wavefield u_init "
+                "(e.g. a Helmholtz solve on the current model)"
+            )
 
         grid = wavefield.grid
         self.grid = grid
@@ -280,11 +289,6 @@ class JointFreqODIL(Optimiser):
     # ------------------------------------------------------------------ #
     def _stack_u_init(self) -> torch.Tensor:
         """Warm-start wavefields as a detached ``(n_shots, nf, Nx, Ny)`` tensor."""
-        if self.u_init is None:
-            seed = self.wavefield.amplitude.detach()
-            if seed.ndim == 3:
-                seed = seed.unsqueeze(0).expand(self.n_shots, -1, -1, -1)
-            return seed.to(dtype=self.cdtype, device=self.device).contiguous()
         if isinstance(self.u_init, (list, tuple)):
             stack = torch.stack(
                 [

@@ -107,8 +107,8 @@ or removed keys are rejected.
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
 | `acquisition`  | `n_receivers`, `n_sources`, `a_frac`/`b_frac`, `ring_center`, `sigma_s` | Ring transmission geometry (ultrasound-style). |
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
-| `continuation` | `warm_start` (`helmholtz`/`none`), `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next. |
-| `loss`         | `weights.{pde,data,reg}`, `normalize_data`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). Per-receiver normalisation stabilises the data term. |
+| `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
+| `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
 | `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
 | `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
 
@@ -127,7 +127,8 @@ or removed keys are rejected.
 ### Frequency continuation (`bands`)
 
 List several single- or multi-frequency stages under `continuation.bands` to run
-low→high; each stage's recovered `c` warm-starts the next (`continuation.warm_start`).
+low→high; each stage's recovered `c` warm-starts the next, and its wavefield is
+warm-started by a Helmholtz solve on that model.
 Frequencies within one band are inverted jointly; sources are a fixed,
 evenly-spaced subset of the receiver ring for the whole run (`acquisition.n_sources`) —
 there is no per-band source rotation or scheduling.

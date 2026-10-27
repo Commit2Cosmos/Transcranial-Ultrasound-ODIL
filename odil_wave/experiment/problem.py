@@ -177,13 +177,9 @@ class Problem:
     # -- warm start -------------------------------------------------------- #
     def warm_start(
         self, velocity_model: VelocityModel, band: BandContext
-    ) -> Optional[List[Wavefield]]:
-        """Helmholtz warm-start wavefields for ``u`` on the current model.
-
-        Returns ``None`` when ``continuation.warm_start == 'none'``.
-        """
-        if self.cfg.continuation.warm_start == "none":
-            return None
+    ) -> List[Wavefield]:
+        """Helmholtz warm-start wavefields for ``u`` (one per shot) on the
+        current model."""
         wf = Wavefield(self.grid, band.freq, velocity_model=velocity_model)
         solver = HelmholtzSolver(
             wf,

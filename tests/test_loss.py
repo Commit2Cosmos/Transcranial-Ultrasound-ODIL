@@ -9,8 +9,8 @@ These affirm:
 * ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
   c-history cadence, and rebuilds from saved records.
 * ``ForwardLoss`` / ``InverseLoss`` are (near) zero at the true wavefield+model,
-  scale with the PDE/data weights, support trace observations, per-receiver
-  normalisation and weight overrides, and validate their inputs.
+  scale with the PDE/data weights, support trace observations and weight
+  overrides, and validate their inputs.
 """
 
 import numpy as np
@@ -186,7 +186,6 @@ def test_inverse_loss_zero_at_truth(wave_stack):
     loss = InverseLoss(
         observed_wavefield=wave_stack.sols,
         config=_inverse_config(wave_stack),
-        normalize_data="none",
     )
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
     assert float(L) < 1e-18
@@ -198,13 +197,12 @@ def test_inverse_loss_requires_exactly_one_observation(wave_stack):
     """Exactly one of observed_wavefield / observed_traces must be supplied."""
     cfg = _inverse_config(wave_stack)
     with pytest.raises(ValueError):
-        InverseLoss(config=cfg, normalize_data="none")  # neither
+        InverseLoss(config=cfg)  # neither
     with pytest.raises(ValueError):
         InverseLoss(
             observed_wavefield=wave_stack.sols,
             observed_traces=wave_stack.obs_traces,
             config=cfg,
-            normalize_data="none",
         )  # both
 
 
@@ -212,9 +210,7 @@ def test_inverse_loss_rejects_non_3d_traces(wave_stack):
     """Trace observations must be (n_shots, nf, n_receivers)."""
     cfg = _inverse_config(wave_stack)
     with pytest.raises(ValueError):
-        InverseLoss(
-            observed_traces=wave_stack.obs_traces[0], config=cfg, normalize_data="none"
-        )
+        InverseLoss(observed_traces=wave_stack.obs_traces[0], config=cfg)
 
 
 def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
@@ -222,7 +218,6 @@ def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
     loss = InverseLoss(
         observed_traces=wave_stack.obs_traces,
         config=_inverse_config(wave_stack),
-        normalize_data="none",
     )
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
     assert float(L) < 1e-18
@@ -231,9 +226,7 @@ def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
 def test_inverse_loss_data_misfit_positive_when_wrong(wave_stack):
     """A wrong wavefield produces a positive data misfit."""
     cfg = _inverse_config(wave_stack, weights={"pde": 0.0, "data": 1.0})
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=cfg, normalize_data="none"
-    )
+    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
     L = loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c)
     assert float(L) > 0
 
@@ -243,7 +236,6 @@ def test_inverse_loss_weights_override(wave_stack):
     loss = InverseLoss(
         observed_wavefield=wave_stack.sols,
         config=_inverse_config(wave_stack, {"pde": 1.0, "data": 1.0}),
-        normalize_data="none",
     )
     amp = wave_stack.amp * 0.5
     full = float(loss.evaluate(amp, wave_stack.model.c))
@@ -251,22 +243,6 @@ def test_inverse_loss_weights_override(wave_stack):
         loss.evaluate(amp, wave_stack.model.c, weights_override={"pde": 0.0})
     )
     assert data_only < full  # dropping the PDE term lowers the loss
-
-
-def test_inverse_loss_per_receiver_normalisation(wave_stack):
-    """Per-receiver normalisation rescales the data residual (toggleable)."""
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols,
-        config=_inverse_config(wave_stack, {"pde": 0.0, "data": 1.0}),
-        normalize_data="per_receiver",
-    )
-    assert loss._trace_scale is not None
-    L_norm = float(loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c))
-    loss.set_normalization(False)
-    assert loss._trace_scale is None
-    L_raw = float(loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c))
-    # both positive, and normalisation changes the misfit scale.
-    assert L_norm > 0 and L_raw > 0 and L_norm != pytest.approx(L_raw)
 
 
 def test_inverse_loss_regulariser_term(wave_stack):
@@ -277,9 +253,7 @@ def test_inverse_loss_regulariser_term(wave_stack):
         weights={"pde": 1.0, "data": 1.0, "reg": 1.0},
         regulariser=Regulariser(kind="tikhonov", eps=1e-8),
     )
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=cfg, normalize_data="none"
-    )
+    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
     g = wave_stack.grid
     c_int = wave_stack.model.c[g.interior_slice].clone()
     c_int[0, 0] += 100.0  # introduce a gradient

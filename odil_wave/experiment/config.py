@@ -254,16 +254,15 @@ class BandCfg:
 
 @dataclass(frozen=True)
 class ContinuationCfg:
-    """Frequency-band continuation schedule + warm-start policy.
+    """Frequency-band continuation schedule.
+
+    Every band warm-starts ``u`` with a Helmholtz solve on the current model.
 
     Params:
-    * ``warm_start``: ``"helmholtz"`` (re-solve Helmholtz on the current model
-      each band to warm-start u) | ``"none"`` (start u from the wavefield seed).
     * ``bands``: ordered list[:class:`BandCfg`], solved in sequence (typically
       low-to-high frequency).
     """
 
-    warm_start: str = "helmholtz"
     bands: List[BandCfg] = field(default_factory=lambda: [BandCfg()])
 
 
@@ -283,23 +282,19 @@ class RegulariserCfg:
 
 @dataclass(frozen=True)
 class LossCfg:
-    """Objective weights, data normalisation and regularisation.
+    """Objective weights and regularisation.
 
     Params:
     * ``weights``: the only place the joint objective weights are set, applied
       as ``Phi = pde * pde_term + data * data_term + reg * R(c)``. Keys ``pde``,
       ``data`` and ``reg`` (all required); each >= 0 and ``data`` > 0.
       ``reg`` > 0 activates the regulariser.
-    * ``normalize_data``: ``"none"`` | ``"per_receiver"``; applied in the data
-      term. ``per_receiver`` divides synthetic and observed traces by each
-      receiver's peak observed magnitude.
     * ``regulariser``: :class:`RegulariserCfg`.
     """
 
     weights: Dict[str, float] = field(
         default_factory=lambda: {"pde": 1.0, "data": 1.0, "reg": 0.0}
     )
-    normalize_data: str = "per_receiver"
     regulariser: RegulariserCfg = field(default_factory=RegulariserCfg)
 
 
@@ -582,8 +577,6 @@ def apply_overrides(
 # mirror the library: WaveEquation's stencil orders, the Regulariser kinds and
 # the VelocityModel profiles / profile kwargs.
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
-_NORMALIZE_DATA = ("none", "per_receiver")
-_WARM_STARTS = ("helmholtz", "none")
 _LINE_SEARCHES = ("strong_wolfe", "none")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
@@ -699,11 +692,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"band {bi} has a non-positive frequency")
         if band.n_iter is not None and band.n_iter < 1:
             raise ConfigError(f"band {bi} n_iter must be >= 1 when set")
-    if cfg.continuation.warm_start not in _WARM_STARTS:
-        raise ConfigError(
-            f"continuation.warm_start must be 'helmholtz' or 'none', "
-            f"got {cfg.continuation.warm_start!r}"
-        )
 
     if cfg.grid.space_order not in _SPACE_ORDERS:
         raise ConfigError(
@@ -747,11 +735,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"loss.weights.{key} must be >= 0, got {val}")
     if float(weights["data"]) <= 0:
         raise ConfigError(f"loss.weights.data must be > 0, got {weights['data']}")
-    if loss.normalize_data not in _NORMALIZE_DATA:
-        raise ConfigError(
-            f"loss.normalize_data must be one of {list(_NORMALIZE_DATA)}, "
-            f"got {loss.normalize_data!r}"
-        )
     if loss.regulariser.name not in _REGULARISERS:
         raise ConfigError(
             f"loss.regulariser.name must be one of {list(_REGULARISERS)}, "
