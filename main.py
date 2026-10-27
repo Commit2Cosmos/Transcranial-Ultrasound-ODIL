@@ -49,11 +49,7 @@ def _summarise(cfg) -> str:
         f"observation pml : {cfg.pml.width if obs_pml is None else obs_pml}"
         f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
     )
-    lines.append(
-        f"loss            : weights={cfg.loss.weights}, "
-        f"normalize={cfg.loss.normalize_data}"
-    )
-    lines.append(f"warm_start      : {cfg.continuation.warm_start}")
+    lines.append(f"loss            : weights={cfg.loss.weights}")
     lines.append(
         f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
         f"data_range={cfg.metrics.ssim.data_range}"

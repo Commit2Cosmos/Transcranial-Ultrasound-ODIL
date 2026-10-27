@@ -31,7 +31,6 @@ class InverseLoss(DiscreteLoss):
         *,
         config: LossConfig,
         observed_traces=None,
-        normalize_data: str,
         callback: LossTape | None = None,
     ):
         """Initialise the inverse loss from wavefield or trace observations.
@@ -45,11 +44,6 @@ class InverseLoss(DiscreteLoss):
             Loss configuration (keyword-only).
         observed_traces : optional
             Complex receiver traces ``(n_shots, nf, n_receivers)``.
-        normalize_data : {"none", "per_receiver"}
-            Data-normalisation mode (keyword-only, set by the run config's
-            ``loss.normalize_data``): ``"none"`` leaves the data residual
-            unscaled; ``"per_receiver"`` divides synthetic and observed traces
-            by each receiver's peak-abs observed magnitude.
         callback : LossTape, optional
             Diagnostics tape.
 
@@ -80,9 +74,6 @@ class InverseLoss(DiscreteLoss):
         else:
             obs = self._stack_observations(observed_wavefield)
             self.d_obs = torch.as_tensor(obs, dtype=cdtype, device=self.config.device)
-
-        self.normalize_data = normalize_data
-        self._trace_scale = self._compute_trace_scale()
 
     @staticmethod
     def _stack_observations(observed_wavefield):
@@ -120,31 +111,6 @@ class InverseLoss(DiscreteLoss):
         j = self.config.geometry.recv_ij[:, 1]
         return self.d_obs[:, :, i, j]
 
-    def _compute_trace_scale(self) -> torch.Tensor | None:
-        """Per-receiver amplitude scale for balancing the data residual.
-
-        Returns
-        -------
-        torch.Tensor or None
-            ``None`` when :attr:`normalize_data` is ``"none"``.
-            For ``"per_receiver"`` a positive scale of shape
-            ``(n_shots, 1, n_receivers)``.
-        """
-        if self.normalize_data == "none":
-            return None
-        if self.normalize_data == "per_receiver":
-            obs_tr = self._obs_traces()
-            scale = obs_tr.abs().amax(dim=1, keepdim=True)
-            return scale.clamp(min=1e-12).detach()
-        raise ValueError(
-            f"Invalid normalize_data {self.normalize_data!r}; "
-            "expected 'none' or 'per_receiver'."
-        )
-
-    def set_normalization(self, enabled: bool) -> None:
-        """Enable / disable per-receiver ``trace_scale`` for subsequent evals."""
-        self._trace_scale = self._compute_trace_scale() if enabled else None
-
     def _residuals(
         self, amp: torch.Tensor, wsp: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -167,11 +133,7 @@ class InverseLoss(DiscreteLoss):
         i = self.config.geometry.recv_ij[:, 0]
         j = self.config.geometry.recv_ij[:, 1]
         syn_tr = amp[:, :, i, j]
-        obs_tr = self._obs_traces()
-        if self._trace_scale is not None:
-            syn_tr = syn_tr / self._trace_scale
-            obs_tr = obs_tr / self._trace_scale
-        data = syn_tr - obs_tr
+        data = syn_tr - self._obs_traces()
         return pde, data
 
     def evaluate(

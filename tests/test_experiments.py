@@ -55,8 +55,8 @@ EXPECTED_SHAPE = {
         "skull_sigma",
         "extra",
     ],
-    "continuation": ["warm_start", "bands"],
-    "loss": ["weights", "normalize_data", "regulariser"],
+    "continuation": ["bands"],
+    "loss": ["weights", "regulariser"],
     "optimiser": [
         "n_iter",
         "log_every",
@@ -152,6 +152,8 @@ def test_unknown_key_raises():
         ({"loss": {"regulariser": {"params": {"eps": 1e-6}}}}, "params"),
         ({"physics": {"space_order": 2}}, "physics"),
         ({"observation": {"normalize_data": "none"}}, "observation"),
+        ({"loss": {"normalize_data": "none"}}, "normalize_data"),
+        ({"continuation": {"warm_start": "helmholtz"}}, "warm_start"),
         ({"grid": {"pml_width": 10}}, "pml_width"),
         ({"grid": {"t_max": 1e-4}}, "t_max"),
         ({"grid": {"L0": 1.0}}, "L0"),
@@ -164,6 +166,19 @@ def test_removed_keys_raise_naming_the_key(removed, key):
     with pytest.raises(ConfigError, match=rf"unknown key.*'{key}'") as exc_info:
         resolve_config(removed)
     assert "moved" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "override, key",
+    [
+        ("loss.normalize_data=none", "normalize_data"),
+        ("continuation.warm_start=helmholtz", "warm_start"),
+    ],
+)
+def test_removed_keys_as_cli_overrides_raise_naming_the_key(override, key):
+    """A CLI override naming a removed key is rejected as an unknown key."""
+    with pytest.raises(ConfigError, match=rf"unknown key.*'{key}'"):
+        resolve_config(apply_overrides(default_config_dict(), [override]))
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +230,6 @@ def test_supported_space_orders_validate(order):
         {"optimiser": {"line_search_fn": "backtracking"}},
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
-        {"continuation": {"warm_start": "field"}},
         {"metrics": {"ssim": {"win_size": 4}}},
         {"runtime": {"dtype": "float16"}},
         {"grid": {"space_order": 3}},
@@ -223,8 +237,6 @@ def test_supported_space_orders_validate(order):
         {"pml": {"width": -1}},
         {"pml": {"damping_scale": -1.0}},
         {"pml": {"observation_width": -1}},
-        {"loss": {"normalize_data": None}},
-        {"loss": {"normalize_data": "per_shot"}},
         {"loss": {"regulariser": {"name": None}}},
         {"loss": {"regulariser": {"name": "tv"}}},
         {"loss": {"regulariser": {"name": "l2"}}},
@@ -303,7 +315,6 @@ def test_observed_data_satisfy_inverse_operator_on_truth(tiny_experiment):
             weights={"pde": 1.0, "data": 1.0, "reg": 0.0},
             regulariser=None,
         ),
-        normalize_data="none",
     )
     amp = torch.stack([w.amplitude for w in band.observed_wfs])
     loss.evaluate(amp, problem.truth_velocity.c)
@@ -341,18 +352,12 @@ def test_different_observation_width_is_a_modelling_error(tiny_experiment):
     assert _data_misfit_at_truth(split) > 1e-6
 
 
-def test_warm_start_toggles_with_config(tiny_experiment):
-    """warm_start solves Helmholtz wavefields, or returns None when disabled."""
+def test_warm_start_solves_one_wavefield_per_shot(tiny_experiment):
+    """warm_start always solves Helmholtz wavefields, one per shot."""
     problem = build_problem(resolve_config(tiny_experiment))
     band = problem.make_band([40e3])
     wfs = problem.warm_start(problem.init_velocity, band)
-    assert wfs is not None and len(wfs) == problem.cfg.acquisition.n_sources
-
-    none_cfg = deep_merge(tiny_experiment, {"continuation": {"warm_start": "none"}})
-    problem2 = build_problem(resolve_config(none_cfg))
-    assert (
-        problem2.warm_start(problem2.init_velocity, problem2.make_band([40e3])) is None
-    )
+    assert len(wfs) == problem.cfg.acquisition.n_sources
 
 
 # --------------------------------------------------------------------------- #
