@@ -53,6 +53,16 @@ The separation along the ring between the transmitting transducer and a recordin
 The physical region being imaged; everything on the grid except the PML.
 _Avoid_: active region, domain
 
+**Head region**:
+The skull and everything it encloses.
+
+**Skull region**:
+The skull alone: the bony shell of the head region.
+
+**Brain region**:
+Everything inside the skull, excluding the skull itself.
+_Avoid_: interior, intracranial ROI, head ROI
+
 **PML**:
 The absorbing layer around the interior that suppresses reflections from the grid boundary. Its size that matters physically is its thickness in metres.
 _Avoid_: sponge, absorbing boundary

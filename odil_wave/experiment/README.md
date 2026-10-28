@@ -156,28 +156,76 @@ fires every outer iteration and stamps the outer index + current velocity field;
 the inherited `log(...)` fires only at `log_every` and carries the exact loss the
 solver reports. This needs **zero changes to the optimiser**.
 
-Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`:
+Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`.
 
-| field | meaning |
+> **Spec ahead of code.** This table is the column set decided in
+> "Review reconstruction metrics" (#42). The implementation issue lands the
+> code and removes this note. Regions follow `GLOSSARY.md` (**Brain region**,
+> **Skull region**, **Interior**); `c*`, `u*`, `d_obs` are the truth model, the
+> true wavefield and the observed traces.
+
+Rows: one per `optimiser.log_every` outer iterations, plus one at the **final
+iterate of every band** (always), plus one **starting-model baseline** row per
+run (`band_index = 0`, `iter = 0`: after the warm start, before any update).
+Band and run summaries report exactly these columns at the final iterate.
+
+#### Identity and cost
+
+| column | meaning / calculation |
 |---|---|
-| `run_id`, `solver` | run identity + solver name (`joint`) |
-| `band_index`, `band_frequencies_hz` | which continuation stage, and its Hz |
-| `solver_iter` | the **logical outer iteration** index `i` (per band) |
-| `global_iter` | cumulative logged-record index across all bands |
+| `run_id` | run identity; lets rows of several runs be concatenated |
+| `band_index` | continuation stage; join to `band_summary.json` for its frequencies |
+| `iter` | outer iteration within the band (`0` = baseline row) |
+| `iter_total` | cumulative outer iterations across all bands, up to this row |
 | `wall_s` | wall-clock seconds since the run started |
-| `loss_total` | total objective (exactly what the solver reports/prints) |
-| `pde_term`, `data_term`, `reg_term` | weighted contributions `w·term`; `reg_term` is `0.0` with no regulariser configured (and `null` if a regulariser is wired but not decomposable) |
-| `pde_loss`, `data_loss` | unweighted mean‑squared residual terms |
-| `pde_rms`, `data_rms`, `pde_src_ratio` | residual RMS diagnostics |
-| `c_min`, `c_max`, `c_mean`, `c_std` | velocity summary over the non-PML interior |
-| `rel_c_error` | relative L2 `‖c−c*‖/‖c*‖` over the interior (`null` without truth) |
-| `ssim_head_roi` | masked head-ROI SSIM (see below); `null` if unavailable |
-| `ssim_reason` | why SSIM is `null` (e.g. `no ground truth`), else `null` |
-| `n_evaluations` | cumulative loss **function-evaluation** count so far |
+| `n_evaluations` | cumulative `InverseLoss.evaluate` calls (L-BFGS closures) across the **whole run**; the cost axis for equal-cost comparisons |
+
+#### Objective (what the optimiser minimises)
+
+| column | meaning / calculation |
+|---|---|
+| `loss_total` | total objective exactly as the solver reports it |
+| `pde_term` | `w_pde · mean(\|r_pde\|²)`, the weighted **PDE term** |
+| `data_term` | `w_data · mean(\|r_data\|²)`, the weighted **Data term** |
+| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser |
+
+#### Normalised residuals (comparable across bands and configs)
+
+| column | meaning / calculation |
+|---|---|
+| `rel_data_residual` | `‖d_syn − d_obs‖₂ / ‖d_obs‖₂` over the band's shots × frequencies × receivers; `d_syn` is the wavefield sampled at the receivers |
+| `pde_src_ratio` | `RMS(r_pde) / RMS(source)`, PDE residual over interior + PML relative to the source |
+| `rel_wavefield_error` | `‖u − u*‖₂ / ‖u*‖₂` over the interior, all shots × band frequencies; `u*` is the true wavefield, cropped to the interior |
+
+#### Model error (m/s, against `c*`)
+
+| column | meaning / calculation |
+|---|---|
+| `rmse_brain` | `sqrt(mean((c − c*)²))` over the brain region |
+| `bias_brain` | `mean(c − c*)` over the brain region; sign shows too slow / too fast |
+| `rmse_skull` | as `rmse_brain`, over the skull region |
+| `bias_skull` | as `bias_brain`, over the skull region; catches a skull left at its starting value |
+| `ssim_brain` | SSIM of `c` vs `c*`: per-pixel map over the interior (`gaussian_weights=True`, `sigma=1.5`, `use_sample_covariance=False`, `data_range` = peak-to-peak of `c*` in the brain region), averaged over the brain region **eroded by the window radius** so windows straddling the skull edge are excluded |
+
+#### Optimiser health
+
+| column | meaning / calculation |
+|---|---|
+| `c_min`, `c_max` | extremes of `c` over the interior; blow-up check |
+| `sat_frac` | fraction of cells whose bounded-`c` sigmoid is within `1e-3` of 0 or 1, i.e. pinned at a speed bound |
+| `grad_u_norm` | `‖∇_u L‖₂` over real and imaginary wavefield parts |
+| `grad_z_norm` | `‖∇_z L‖₂`, with `z` the unconstrained model variable |
+
+Missing truth, brain mask or an SSIM window too large for the grid is a
+**config error at startup**, not an empty cell.
+
+Derived in post-processing, not on the tape: `rel_data_residual` per frequency
+and per **Offset** (ring angle 0–180°, one point per distinct offset) at each
+band's final iterate, from the saved receiver wavefield and observed data.
 
 ### Iteration count vs. closure/function-evaluation count
 
-- `solver_iter` is the **outer** iteration of the joint solver (one L-BFGS
+- `iter` is the **outer** iteration of the joint solver (one L-BFGS
   `.step` of up to `optimiser.inner_max_iter` iterations over `u` and `c`
   together per `i`). This is what the record is keyed on.
 - `n_evaluations` is the cumulative number of `InverseLoss.evaluate` calls, i.e.
@@ -195,37 +243,10 @@ the configured regulariser, never by subtraction.
 
 ---
 
-## Masked head-ROI SSIM
+## Brain-region SSIM
 
-`ssim_head_roi` scores structural similarity **only inside the intracranial head
-ROI**, using `odil_wave.metrics.ssim(pred, true, grid, mask=...)`:
-
-1. Both fields are sliced to the **non-PML interior** (PML pixels never enter the
-   score).
-2. The mask is `VelocityModel.head_mask` (the region inside the skull, for
-   `shepp_logan` / `shepp_logan_skull`). The per-pixel SSIM map is computed on
-   the interior and averaged **only over the mask**, so outside-head pixels are
-   excluded from the mean.
-3. `data_range` defaults (`"auto"`) to the peak-to-peak of the *true* field
-   within the mask. `win_size`, `gaussian_weights`, `sigma` are configurable
-   under `metrics.ssim`.
-4. If ground truth is unavailable, or the truth profile has no head mask, or the
-   window is too large for the grid, `ssim_head_roi` is `null` and `ssim_reason`
-   records why — the run never fails on SSIM.
-
-Configure via:
-
-```yaml
-metrics:
-  ssim:
-    mask: head_roi        # head_roi | interior | none
-    data_range: auto      # "auto" or a float
-    win_size: 7
-    gaussian_weights: false
-    sigma: 1.5
-```
-
-The existing metrics are preserved unchanged; `ssim_head_roi` is an addition.
+Settings live under `metrics.ssim` in the config and are recorded in the
+resolved config; the scoring rule is in the `ssim_brain` row above.
 
 ---
 
