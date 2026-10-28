@@ -10,16 +10,29 @@ Frequency-domain full-waveform inversion of sound speed with a joint ODIL solve 
 The single, complete set of experiment values that every run starts from.
 _Avoid_: base config, default YAML, template config
 
-**Experiment config**:
-The changes one experiment makes to the default config, naming only the values that differ from it.
-_Avoid_: user config, overlay, override file
+**Run config**:
+The changes one run makes to the default config, naming only the values that differ from it.
+_Avoid_: experiment config, user config, overlay, override file
 
 **Override**:
-A single value change given on the command line, applied on top of the experiment config.
+A single value change given on the command line, applied on top of the run config.
 
 **Resolved config**:
 The fully specified config of one run: the default config with that run's changes applied, recorded with the run.
 _Avoid_: effective config, final config
+
+### Experiments
+
+**Run**:
+One execution of the solver with one resolved config.
+
+**Experiment**:
+One question about a single isolated parameter or feature, answered by one or more runs.
+_Avoid_: run, when one execution is meant
+
+**Experiment record**:
+The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and what has since invalidated it.
+_Avoid_: report, results file
 
 ### Inversion
 
