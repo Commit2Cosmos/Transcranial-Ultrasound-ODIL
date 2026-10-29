@@ -30,6 +30,13 @@ One execution of the solver with one resolved config.
 One question about a single isolated parameter or feature, answered by one or more runs.
 _Avoid_: run, when one execution is meant
 
+**Protocol**:
+The pre-registered plan of an experiment (its question, hypothesis and design), written before any run.
+_Avoid_: plan, proposal
+
+**Experiment id**:
+The number and short name reserved for an experiment when it is launched, shared by its spec, its runs' directory and its record.
+
 **Baseline**:
 The run config an experiment varies its one parameter or feature from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.
 _Avoid_: base config, reference config; baseline for the starting model of a run
@@ -39,8 +46,20 @@ The metrics recorded at the start of each frequency band, after the band's warm 
 _Avoid_: baseline row
 
 **Experiment record**:
-The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and what has since invalidated it.
+The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and whether it has since been superseded or invalidated.
 _Avoid_: report, results file
+
+**Experiment bank**:
+All experiment records together, with an index that an agent reads first.
+_Avoid_: results archive, log
+
+**Superseded**:
+Said of an experiment record when a newer record answers the same question in its place.
+_Avoid_: obsolete, replaced
+
+**Invalidated**:
+Said of an experiment record when a later code change means one of its supported conclusions no longer holds.
+_Avoid_: superseded, when no newer record exists
 
 ### Inversion
 
