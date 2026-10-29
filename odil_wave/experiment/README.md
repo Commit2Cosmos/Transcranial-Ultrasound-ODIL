@@ -159,14 +159,17 @@ solver reports. This needs **zero changes to the optimiser**.
 Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`.
 
 > **Spec ahead of code.** This table is the column set decided in
-> "Review reconstruction metrics" (#42). The implementation issue lands the
+> "Review reconstruction metrics" (#42), amended by "Standard post-processing
+> and plot set" (#53). The implementation issue lands the
 > code and removes this note. Regions follow `GLOSSARY.md` (**Brain region**,
 > **Skull region**, **Interior**); `c*`, `u*`, `d_obs` are the truth model, the
 > true wavefield and the observed traces.
 
 Rows: one per `optimiser.log_every` outer iterations, plus one at the **final
-iterate of every band** (always), plus one **starting-model baseline** row per
-run (`band_index = 0`, `iter = 0`: after the warm start, before any update).
+iterate of every band** (always), plus one **start row** per band (`iter = 0`:
+after the band's warm start, before any update). The warm start is a Helmholtz
+solve on the current model, so a start row's data residual is the forward-model
+misfit at the band's frequencies.
 Band and run summaries report exactly these columns at the final iterate.
 
 #### Identity and cost
@@ -175,7 +178,7 @@ Band and run summaries report exactly these columns at the final iterate.
 |---|---|
 | `run_id` | run identity; lets rows of several runs be concatenated |
 | `band_index` | continuation stage; join to `band_summary.json` for its frequencies |
-| `iter` | outer iteration within the band (`0` = baseline row) |
+| `iter` | outer iteration within the band (`0` = start row) |
 | `iter_total` | cumulative outer iterations across all bands, up to this row |
 | `wall_s` | wall-clock seconds since the run started |
 | `n_evaluations` | cumulative `InverseLoss.evaluate` calls (L-BFGS closures) across the **whole run**; the cost axis for equal-cost comparisons |
@@ -196,6 +199,7 @@ Band and run summaries report exactly these columns at the final iterate.
 | `rel_data_residual` | `‖d_syn − d_obs‖₂ / ‖d_obs‖₂` over the band's shots × frequencies × receivers; `d_syn` is the wavefield sampled at the receivers |
 | `pde_src_ratio` | `RMS(r_pde) / RMS(source)`, PDE residual over interior + PML relative to the source |
 | `rel_wavefield_error` | `‖u − u*‖₂ / ‖u*‖₂` over the interior, all shots × band frequencies; `u*` is the true wavefield, cropped to the interior |
+| `rel_model_update` | `‖c − c_prev‖₂ / ‖c_prev‖₂` over the interior, `c_prev` at the previous row of the same band (`null` on a start row); truth-free plateau signal |
 
 #### Model error (m/s, against `c*`)
 

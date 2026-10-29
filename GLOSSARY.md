@@ -30,6 +30,14 @@ One execution of the solver with one resolved config.
 One question about a single isolated parameter or feature, answered by one or more runs.
 _Avoid_: run, when one execution is meant
 
+**Baseline**:
+The run config an experiment varies its one parameter or feature from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.
+_Avoid_: base config, reference config; baseline for the starting model of a run
+
+**Start row**:
+The metrics recorded at the start of each frequency band, after the band's warm start and before its first update.
+_Avoid_: baseline row
+
 **Experiment record**:
 The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and what has since invalidated it.
 _Avoid_: report, results file
