@@ -103,35 +103,54 @@ and writes **no** artifacts.
 
 ## Where each artifact is written
 
+> **Spec ahead of code.** This layout is the one decided in "Contents of a
+> saved run" (#54). The implementation issue lands the code and removes this
+> note.
+
 One self-contained directory per run at `<output_root>/<run_id>/`:
 
 ```
 outputs/<run_id>/
   config_resolved.yaml     # every effective value used by the run
-  metadata.json            # code/env/host/git/seed/grid tying artifacts to this run
-  metrics.csv              # per-iteration metric tape (plotting-friendly)
-  metrics.jsonl            # per-iteration metric tape (append-friendly)
+  metadata.json            # written once at start: code/env/host/git/uv.lock/seed/grid
+  git.diff                 # scratch runs only: tracked + staged diff
+  tape.csv                 # per-row metric tape (see below); empty cell = null
+  problem.npz              # c*, c0 (interior), pml_c, brain/skull masks,
+                           #   transducer angles, interior slice
   bands/
     band_00_40khz/
-      band_config.yaml         # resolved per-band configuration
-      c_final.npy              # full-grid c after this band (float32)
-      c_final_metadata.json    # shape/dtype/bins/grid summary/stats
-      band_summary.json        # times, iters, termination, final metrics, closures
+      arrays.npz               # freqs, c (interior), d_obs, d_syn_start,
+                               #   d_syn_final (all shots), shots, u, u_star
+      band_summary.json        # frequencies, times, iters, termination, final
+                               #   metrics, costs, warnings, worst-fit shot
     band_01_50khz/ ...
-  final/
-    c_final.npy            # final run-level c (float32)
-    run_summary.json       # status, wall time, per-band + final metrics
-  failure.json             # only if the run stopped/failed mid-band
+  run_summary.json         # always written: status, wall time, warnings,
+                           #   per-band + final metrics, traceback on failure
+  figures/                 # post-processing output (PNG + CSV)
 ```
 
-- **YAML** for configs, **JSON/JSONL** for metadata + logs, **CSV** for plotting,
-  `.npy` for velocity fields. Writes are atomic (tmp + rename) for summaries and
-  configs; the CSV/JSONL tapes are flushed per record so a crash still leaves a
-  valid, truncated log.
-- Wavefield snapshots are **not** written (no option requests them).
-- On failure mid-band, `failure.json` records the exception type/message,
-  traceback, last band index, and last completed logical iteration; the metric
-  tape and already-completed band artifacts are preserved.
+- **YAML** for configs, **JSON** for metadata and summaries, **CSV** for the
+  tape, uncompressed **`.npz`** for arrays. Writes are atomic (tmp + rename) for
+  summaries, configs and arrays; the tape is flushed per row so a crash still
+  leaves a valid, truncated log.
+- Arrays are always **float32 / complex64**, whatever `runtime.dtype`; masks
+  are bool.
+- `c`, `c*` and `c0` cover the **interior** only: the PML is frozen at the
+  scalar `pml_c`, so the full-grid `c` is the interior padded with `pml_c`.
+- **Wavefields** are saved at each band's final iterate, all band frequencies,
+  for the transducers nearest 0°, 90°, 180° and 270° plus the worst-fit shot
+  (highest per-shot `rel_data_residual`) unless it is one of those four;
+  `shots` holds the indices. `u` is on the full inversion grid (the PDE
+  residual needs the PML); `u_star` is on the interior. Shapes are
+  `(n_saved_shots, n_freq, nx, ny)`.
+- `metadata.json` records the git sha and `dirty` flag (false unless the run is
+  scratch), `scratch`, and `uv_lock_sha256`.
+- `run_summary.json` has `status: completed | failed | interrupted`. A failed
+  or interrupted band keeps its tape rows but writes no `arrays.npz` or
+  `band_summary.json`.
+- **Size**: about 2.3 MB per frequency at the default grid (5 shots ×
+  (0.34 MB `u` + 0.125 MB `u_star`)), so ~15 MB for a 3-band, 6-frequency run.
+  Not enforced.
 
 ### Fully-resolved config
 
@@ -145,7 +164,7 @@ than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 
 ## Iteration-level log record — exact semantics
 
-One record is appended to `metrics.csv` and `metrics.jsonl` at every
+One row is appended to `tape.csv` at every
 `optimiser.log_every` **logical outer iterations** (and always on the last
 iteration). A record corresponds to **one accepted outer iteration `i`** of the
 solver — *not* an L-BFGS closure / function evaluation.
@@ -156,7 +175,7 @@ fires every outer iteration and stamps the outer index + current velocity field;
 the inherited `log(...)` fires only at `log_every` and carries the exact loss the
 solver reports. This needs **zero changes to the optimiser**.
 
-Fields (CSV columns == JSONL keys), see `recorder.FIELDNAMES`.
+Fields (`tape.csv` columns), see `recorder.FIELDNAMES`.
 
 > **Spec ahead of code.** This table is the column set decided in
 > "Review reconstruction metrics" (#42), amended by "Standard post-processing
