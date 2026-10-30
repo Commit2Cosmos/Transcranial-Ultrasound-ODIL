@@ -31,11 +31,22 @@ One question about a single isolated parameter or feature, answered by one or mo
 _Avoid_: run, when one execution is meant
 
 **Protocol**:
-The pre-registered plan of an experiment (its question, hypothesis and design), written before any run.
+The pre-registered plan of an experiment (its question, hypothesis and design), written before any run. Its design is made executable by the experiment spec.
 _Avoid_: plan, proposal
+
+**Experiment spec**:
+The committed file that defines exactly the runs an experiment's protocol designs: its baseline, and the one parameter or feature it varies with the values it takes.
+_Avoid_: experiment config, sweep file
 
 **Experiment id**:
 The number and short name reserved for an experiment when it is launched, shared by its spec, its runs' directory and its record.
+
+**Scratch run**:
+A run made from code with uncommitted changes, for trying things out. No experiment record may cite it.
+
+**Probe run**:
+A few iterations of an experiment's baseline, run only to estimate how long the experiment will take.
+_Avoid_: test run, dry run
 
 **Baseline**:
 The run config an experiment varies its one parameter or feature from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.

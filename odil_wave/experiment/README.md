@@ -101,16 +101,152 @@ and writes **no** artifacts.
 
 ---
 
+## Experiments
+
+> **Spec ahead of code.** This section is the design decided in "Experiment
+> spec format and reproduce command" (#56). The implementation issue lands the
+> code and removes this note.
+
+An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
+**baseline** run config. Its **experiment spec** is run by one entry point into
+one experiment directory, at one commit.
+
+```bash
+python main.py --experiment configs/experiments/0007-tv-weight.yaml            # launch / resume
+python main.py --experiment configs/experiments/0007-tv-weight.yaml --dry-run  # validate every run
+python main.py --experiment configs/experiments/0007-tv-weight.yaml --probe    # runtime estimate
+python main.py --reproduce 0007-tv-weight                                      # regenerate
+python main.py --scratch -c configs/foo.yaml                                   # standalone, dirty tree
+```
+
+### Experiment spec
+
+`configs/experiments/NNNN-slug.yaml`, committed **before** launch (the id is
+reserved then; see `docs/experiments/README.md`).
+
+```yaml
+schema_version: 1
+id: 0007-tv-weight
+issue: 61                      # the protocol issue
+baseline:                      # an inline run config: only values that differ from the default config
+  continuation:
+    bands:
+      - {frequencies_hz: [40e3], n_iter: 30}
+      - {frequencies_hz: [50e3, 60e3], n_iter: 20}
+sweep:
+  key: loss.weights.reg        # one dotted key
+  values: [0.0, 1.0e-7, 1.0e-6]
+  # labels: [...]              # one per value; required if any value is a list or dict
+```
+
+- **One sweep, one key.** A value is applied at `key` like a run config:
+  **dicts deep-merge, lists replace.** A feature touching several keys is swept
+  at their common parent, e.g. `key: loss`,
+  `values: [{weights: {reg: 0}}, {weights: {reg: 1e-6}, regulariser: {name: tv_iso}}]`;
+  a band ablation is `key: continuation.bands` with whole schedules as values.
+- **Labels** name the runs (directory, `summary.csv`, plot legends). A scalar
+  value gets `<last key segment, kebab-case>-<value>` (e.g. `reg-1e-6`);
+  `labels` are required when any value is a list or dict.
+- **The baseline is one of the runs**: exactly one value must resolve to the
+  baseline's resolved config; it is marked `is_baseline` in `summary.csv`.
+- No budget field: per-band `n_iter` comes from the baseline, unless `n_iter`
+  or the bands are what is swept.
+- Launch fails if `id` doesn't match the filename or its number is already used
+  by another spec or record.
+- **Everything compared must be selectable by config at one commit.** New code
+  (e.g. another ODIL formulation) is merged behind a config key whose default
+  keeps the current behaviour (ADR 0001), and only then compared by sweeping
+  that key. Comparing two commits is not an experiment.
+
+### `--experiment <spec>`
+
+- Requires a **clean tree**: `git status --porcelain` is empty (an untracked,
+  non-ignored file counts as dirty). Otherwise exit 2.
+- `--config`, `--override` and `--scratch` are errors with `--experiment`: the
+  committed spec alone defines the runs.
+- Runs execute sequentially in `values` order; a failed run doesn't stop the
+  others. Experiment post-processing runs at the end.
+- **Resume**: re-running on an existing experiment directory skips `completed`
+  runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD
+  and the spec hash match `experiment.json`; otherwise it refuses.
+- `--dry-run` resolves and validates every run and writes nothing.
+- `--probe` runs **3 iterations of the baseline's first band**, measures s/iter,
+  and prints an estimate per run (s/iter × the run's total iterations) and for
+  the experiment. It is allowed on a dirty tree, reserves nothing and writes
+  only to `outputs/probes/<YYMMDD-HHMMSS>/`.
+
+### Where runs and experiments are written
+
+`run.run_id` and `run.output_root` are not config values: the entry point picks
+the directory (a hidden `--out <dir>` sets it for `--reproduce` and tests), so a
+regenerated run's `config_resolved.yaml` is identical to the original's.
+
+```
+outputs/experiments/NNNN-slug[_<device>]/   # suffix only for cuda / mps; none for cpu
+  spec.yaml              # verbatim copy of the committed spec
+  experiment.json        # schema_version, commit, spec hash, device, times, per-run status
+  runs/
+    00_reg-0/            # <idx>_<label>: a run dir as below
+    01_reg-1e-7/
+  figures/               # experiment post-processing
+  summary.csv            # one row per run: swept value, final-iterate columns
+outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/   # standalone run
+outputs/probes/<YYMMDD-HHMMSS>/                  # --probe
+```
+
+`idx` is two digits, 0-based. `experiment.json` holds no absolute paths or
+host names. With the record, the experiment skill commits `experiment.json` and
+`summary.csv` to `docs/experiments/NNNN-slug/`; the entry point only writes
+under `outputs/`.
+
+### Standalone and scratch runs
+
+A standalone run (`--config` / `--override`, no `--experiment`) also requires a
+clean tree. `--scratch` allows a dirty one: `_scratch` is appended to the
+directory name, `metadata.json` has `scratch: true`, and `git.diff` is saved.
+No experiment record may cite a scratch run.
+
+### `--reproduce <experiment-id>`
+
+Regenerates an experiment's runs, e.g. after deleting them or on another
+machine. It **compares nothing** and never edits the record.
+
+1. Read `commit` and `spec` from the record's frontmatter
+   (`docs/experiments/<id>.md`).
+2. `git worktree add --detach <tmp> <commit>`; inside it run
+   `uv run --frozen python main.py --experiment <spec> --out <target>`, which
+   also runs post-processing; remove the worktree.
+3. `<target>` is `outputs/experiments/<id>/` on CPU and
+   `outputs/experiments/<id>_<device>/` on cuda / mps, by the device the runs
+   use. It refuses if `<target>` exists.
+
+The only accepted override is `-o runtime.device=<device>`, to regenerate on a
+device other than the recorded one; any other key is an error. Exit codes:
+`0` all runs completed, `1` a run failed, `2` could not start. Commits from
+before `--experiment` existed cannot be reproduced.
+
+### Compatibility
+
+The spec, `metadata.json` and `experiment.json` carry an integer
+`schema_version` (from 1). Readers (post-processing, the index script) support
+every version from 1 up; a format change bumps the version and adds a reader
+path, never rewrites old directories. The flags `--experiment`, `--out`,
+`--postprocess`, `--reproduce` and `--probe` are a stable contract: a new
+`--reproduce` calls the old `main.py` inside the worktree.
+
+---
+
 ## Where each artifact is written
 
 > **Spec ahead of code.** This layout is the one decided in "Contents of a
 > saved run" (#54). The implementation issue lands the code and removes this
 > note.
 
-One self-contained directory per run at `<output_root>/<run_id>/`:
+One self-contained directory per run (located as in "Where runs and
+experiments are written" above):
 
 ```
-outputs/<run_id>/
+<run_dir>/
   config_resolved.yaml     # every effective value used by the run
   metadata.json            # written once at start: code/env/host/git/uv.lock/seed/grid
   git.diff                 # scratch runs only: tracked + staged diff
@@ -143,8 +279,8 @@ outputs/<run_id>/
   `shots` holds the indices. `u` is on the full inversion grid (the PDE
   residual needs the PML); `u_star` is on the interior. Shapes are
   `(n_saved_shots, n_freq, nx, ny)`.
-- `metadata.json` records the git sha and `dirty` flag (false unless the run is
-  scratch), `scratch`, and `uv_lock_sha256`.
+- `metadata.json` records `schema_version`, the git sha and `dirty` flag (false
+  unless the run is scratch), `scratch`, and `uv_lock_sha256`.
 - `run_summary.json` has `status: completed | failed | interrupted`. A failed
   or interrupted band keeps its tape rows but writes no `arrays.npz` or
   `band_summary.json`.
