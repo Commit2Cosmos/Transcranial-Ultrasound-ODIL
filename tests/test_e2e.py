@@ -12,7 +12,6 @@ import torch
 import yaml
 
 from odil_wave.experiment import build_problem, deep_merge, resolve_config
-from odil_wave.experiment.runner import _final_recovery_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -68,12 +67,13 @@ def test_cli_tiny_two_band_run_float32(tmp_path, tiny_run_config, device):
     summary = json.loads((run_dir / "final" / "run_summary.json").read_text())
     assert summary["status"] == "completed"
     assert summary["n_bands"] == 2
-    final_err = summary["metrics_summary"]["final_rel_c_error"]
-    assert final_err is not None and np.isfinite(final_err)
+    metrics = summary["metrics_summary"]
+    final_err = metrics["final_metrics"]["rmse_brain"]
+    assert np.isfinite(final_err)
+    # the run's start row scores the starting model
+    assert final_err < metrics["start_metrics"]["rmse_brain"]
 
     problem = build_problem(cfg)
-    init_err = _final_recovery_metrics(problem, problem.init_velocity)["rel_c_error"]
-    assert final_err < init_err
 
     c_final = np.load(run_dir / "final" / "c_final.npy")
     assert c_final.shape == tuple(problem.grid.shape)

@@ -1,11 +1,14 @@
 """Shared fixtures for the odil_wave test-suite."""
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import matplotlib
 
 import pytest
 import torch
+import yaml
 
 from odil_wave import (
     AcquisitionGeometry,
@@ -17,9 +20,13 @@ from odil_wave import (
     WaveEquation,
     Wavefield,
 )
-from odil_wave.experiment import deep_merge
+from odil_wave.experiment import deep_merge, resolve_config
 
 matplotlib.use("Agg")
+
+# The repo-root ``main.py`` CLI, importable as ``main``.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 # Small, shared problem parameters.
 INTERIOR = (20, 20)
@@ -103,12 +110,16 @@ TINY_RUN_CONFIG = {
     "time": {"t_max": 6e-5, "init_nt": 200},
     "source": {"f0": 40e3, "n_cycles": 2.0},
     "acquisition": {"n_transducers": 8, "source_spatial": "point"},
-    "truth": {"profile": "overdensity", "contrast": 150.0, "extra": {"radius": 0.012}},
+    # Shepp-Logan has the brain and skull regions the tape scores. A slow skull
+    # keeps the truth inside the grid's velocity bounds; a small head keeps the
+    # transducers in water and is recovered within the tiny budget.
+    "truth": {"profile": "shepp_logan", "scale": 0.6, "extra": {"c_skull": 1700.0}},
     "init": {"profile": "homogeneous"},
     "continuation": {"bands": [{"frequencies_hz": [40e3]}]},
     "loss": {"weights": {"data": 10.0}},
     "optimiser": {"n_iter": 10, "log_every": 1},
-    "metrics": {"ssim": {"mask": "none"}},
+    # A 5-cell SSIM window leaves part of the tiny brain region after erosion.
+    "metrics": {"ssim": {"sigma": 0.5}},
 }
 
 
@@ -121,6 +132,34 @@ def tiny_run_config(tmp_path) -> dict:
     return deep_merge(
         TINY_RUN_CONFIG, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
     )
+
+
+# Two bands of 3 outer iterations logged every 2: ``log_every`` doesn't divide
+# ``n_iter``, so each band's final iterate is logged off the cadence.
+TINY_TWO_BAND_RUN = {
+    "continuation": {"bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]},
+    "optimiser": {"n_iter": 3, "log_every": 2},
+}
+
+
+@pytest.fixture(scope="session")
+def tiny_two_band_run(tmp_path_factory) -> SimpleNamespace:
+    """One tiny two-band run through the CLI, shared by tests that only read it.
+
+    Returns ``run_dir`` and the resolved ``config``.
+    """
+    import main
+
+    root = tmp_path_factory.mktemp("tiny_two_band_run")
+    user = deep_merge(
+        deep_merge(TINY_RUN_CONFIG, TINY_TWO_BAND_RUN),
+        {"run": {"output_root": str(root), "run_id": "two_band"}},
+    )
+    config_path = root / "run_config.yaml"
+    config_path.write_text(yaml.safe_dump(user))
+    assert main.main(["--config", str(config_path)]) == 0
+    config = resolve_config(user)
+    return SimpleNamespace(run_dir=config.run_dir(), config=config)
 
 
 @pytest.fixture

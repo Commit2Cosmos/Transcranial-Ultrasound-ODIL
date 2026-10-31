@@ -110,7 +110,7 @@ or removed keys are rejected.
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
 | `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
-| `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
+| `metrics`      | `ssim.sigma` | Gaussian window of the tape's `ssim_brain`; the truth must have brain and skull regions (`shepp_logan`/`shepp_logan_skull`). |
 
 ### Optimiser
 

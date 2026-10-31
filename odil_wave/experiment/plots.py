@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import csv
 import json
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
@@ -70,11 +71,27 @@ def _resolve_grid_pml(
 # Loading saved artifacts
 # --------------------------------------------------------------------------- #
 def load_metrics(run_dir: Union[str, Path]) -> List[dict]:
-    """Read ``metrics.jsonl`` (one dict per logged iteration) from a run dir."""
-    path = Path(run_dir) / "metrics.jsonl"
+    """Read ``tape.csv`` from a run dir: one dict per row, column -> value.
+
+    Numbers are floats (``band_index``, ``iter``, ``iter_total`` and
+    ``n_evaluations`` ints) and an empty cell is ``None``.
+    """
+    path = Path(run_dir) / "tape.csv"
     if not path.exists():
-        raise FileNotFoundError(f"no metrics.jsonl under {run_dir!r} ({path})")
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        raise FileNotFoundError(f"no tape.csv under {run_dir!r} ({path})")
+    ints = {"band_index", "iter", "iter_total", "n_evaluations"}
+    with open(path, newline="") as f:
+        return [
+            {
+                k: v
+                if k == "run_id"
+                else None
+                if v == ""
+                else (int if k in ints else float)(v)
+                for k, v in row.items()
+            }
+            for row in csv.DictReader(f)
+        ]
 
 
 def _records(source: RunDirOrRecords) -> List[dict]:
@@ -170,12 +187,12 @@ def plot_run_history(
     source: RunDirOrRecords,
     *,
     title: str = "Run history",
-    x: str = "global_iter",
+    x: str = "iter_total",
 ):
-    """Per-band loss and head-ROI SSIM vs iteration (from ``metrics.jsonl``).
+    """Per-band loss and brain-region SSIM vs iteration (from ``tape.csv``).
 
-    ``x`` selects the horizontal axis: ``"global_iter"`` (default, a continuous
-    run-wide view) or ``"solver_iter"`` (each band starts at 0, overlaid).
+    ``x`` selects the horizontal axis: ``"iter_total"`` (default, a continuous
+    run-wide view) or ``"iter"`` (each band starts at 0, overlaid).
     """
     records = _records(source)
     if not records:
@@ -191,7 +208,7 @@ def plot_run_history(
         ax_loss.semilogy(
             it, [r.get("loss_total") for r in recs], "o-", ms=3, label=f"band {bi}"
         )
-        ssim_vals = [r.get("ssim_head_roi") for r in recs]
+        ssim_vals = [r.get("ssim_brain") for r in recs]
         if any(s is not None for s in ssim_vals):
             any_ssim = True
             ax_ssim.plot(
@@ -209,8 +226,8 @@ def plot_run_history(
     ax_loss.legend()
 
     ax_ssim.set_xlabel(x)
-    ax_ssim.set_ylabel("ssim_head_roi")
-    ax_ssim.set_title("Head-ROI SSIM")
+    ax_ssim.set_ylabel("ssim_brain")
+    ax_ssim.set_title("Brain-region SSIM")
     ax_ssim.grid(alpha=0.3)
     if any_ssim:
         ax_ssim.legend()
@@ -245,7 +262,7 @@ def plot_velocity_recovery(
     acquisition geometry rebuilt from the run's saved config, so only the run
     directory is required. Pass them explicitly to reuse a live ``Problem``.
 
-    Loads ``final/c_final.npy`` and the ``rel_c_error`` series and delegates to
+    Loads ``final/c_final.npy`` and the tape and delegates to
     :meth:`odil_wave.loss.LossTape.show_velocity_recovery`. Extra ``kwargs``
     (``vmin`` / ``vcenter`` / ``vmax`` / ``norm``) are forwarded to it.
     """
@@ -302,8 +319,8 @@ class LiveVelocityView:
 
     Pass an instance as ``run_inverse(..., on_band_end=view)``. After every
     completed band it clears the current cell output (in Jupyter) and draws two
-    panels: the newly recovered velocity, and the head-ROI SSIM / relative
-    c-error trend across the bands finished so far — so a stalled inversion is
+    panels: the newly recovered velocity, and the brain-region SSIM / RMSE
+    trend across the bands finished so far — so a stalled inversion is
     obvious and the kernel can be interrupted.
 
     Parameters
@@ -353,7 +370,7 @@ class LiveVelocityView:
         self.figsize = figsize
         self._labels: List[str] = []
         self._ssim: List[Optional[float]] = []
-        self._rel_err: List[Optional[float]] = []
+        self._rmse: List[Optional[float]] = []
 
     def __call__(self, band_result, run_result: Any = None) -> None:
         """Redraw the recovered velocity and progress trend after a band.
@@ -376,8 +393,8 @@ class LiveVelocityView:
 
         metrics = band_result.final_metrics or {}
         self._labels.append(f"{band_result.band_index}:{band_result.label}")
-        self._ssim.append(metrics.get("ssim_head_roi"))
-        self._rel_err.append(metrics.get("rel_c_error"))
+        self._ssim.append(metrics.get("ssim_brain"))
+        self._rmse.append(metrics.get("rmse_brain"))
 
         try:  # only meaningful inside a notebook; harmless otherwise
             from IPython.display import clear_output
@@ -421,7 +438,7 @@ class LiveVelocityView:
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
         ax.set_aspect("equal")
-        ssim = (band_result.final_metrics or {}).get("ssim_head_roi")
+        ssim = (band_result.final_metrics or {}).get("ssim_brain")
         ssim_s = f"  SSIM={ssim:.3f}" if isinstance(ssim, (int, float)) else ""
         ax.set_title(
             f"recovered c — band {band_result.band_index} ({band_result.label}){ssim_s}"
@@ -429,12 +446,12 @@ class LiveVelocityView:
         plt.colorbar(im, ax=ax, shrink=0.85, label="c [m/s]")
 
     def _draw_trend(self, ax) -> None:
-        """Draw the per-band SSIM and relative c-error trends onto ``ax``.
+        """Draw the per-band ssim_brain and rmse_brain trends onto ``ax``.
 
         Parameters
         ----------
         ax : matplotlib.axes.Axes
-            Axis to draw on (a twin y-axis is added for the c-error series).
+            Axis to draw on (a twin y-axis is added for the RMSE series).
 
         Notes
         -----
@@ -448,21 +465,21 @@ class LiveVelocityView:
                 [np.nan if s is None else s for s in self._ssim],
                 "o-",
                 color="tab:green",
-                label="SSIM (head ROI)",
+                label="ssim_brain",
             )
-            ax.set_ylabel("SSIM (head ROI)", color="tab:green")
+            ax.set_ylabel("ssim_brain", color="tab:green")
             ax.tick_params(axis="y", labelcolor="tab:green")
             drew = True
-        if any(e is not None for e in self._rel_err):
+        if any(e is not None for e in self._rmse):
             ax_r = ax.twinx()
             ax_r.plot(
                 x,
-                [np.nan if e is None else e for e in self._rel_err],
+                [np.nan if e is None else e for e in self._rmse],
                 "s--",
                 color="tab:red",
-                label="rel c-error",
+                label="rmse_brain [m/s]",
             )
-            ax_r.set_ylabel("rel c-error", color="tab:red")
+            ax_r.set_ylabel("rmse_brain [m/s]", color="tab:red")
             ax_r.tick_params(axis="y", labelcolor="tab:red")
             drew = True
         ax.set_xticks(x)

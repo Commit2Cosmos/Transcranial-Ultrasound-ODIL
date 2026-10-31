@@ -21,7 +21,7 @@ from .plots import (
     rebuild_problem,
 )
 from .problem import BandContext, Problem, build_problem, grid_summary
-from .recorder import FIELDNAMES, RecordingTape, RunRecorder
+from .tape import TAPE_COLUMNS, BandTape, MetricTape
 from .runner import (
     BandResult,
     RunResult,
@@ -44,10 +44,10 @@ __all__ = [
     "BandContext",
     "build_problem",
     "grid_summary",
-    # recorder
-    "RunRecorder",
-    "RecordingTape",
-    "FIELDNAMES",
+    # metric tape
+    "MetricTape",
+    "BandTape",
+    "TAPE_COLUMNS",
     # plots / analysis
     "LiveVelocityView",
     "animate_bands",

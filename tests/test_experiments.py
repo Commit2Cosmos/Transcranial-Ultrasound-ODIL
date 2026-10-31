@@ -82,13 +82,7 @@ def test_default_config_matches_the_documented_shape():
     assert list(d["continuation"]["bands"][0]) == ["frequencies_hz", "n_iter"]
     assert list(d["loss"]["weights"]) == ["pde", "data", "reg"]
     assert list(d["loss"]["regulariser"]) == ["name", "eps"]
-    assert list(d["metrics"]["ssim"]) == [
-        "mask",
-        "data_range",
-        "win_size",
-        "gaussian_weights",
-        "sigma",
-    ]
+    assert list(d["metrics"]["ssim"]) == ["sigma"]
 
 
 def test_resolve_empty_config_gives_the_default_values():
@@ -238,7 +232,8 @@ def test_supported_space_orders_validate(order):
         {"optimiser": {"line_search_fn": "backtracking"}},
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
-        {"metrics": {"ssim": {"win_size": 4}}},
+        {"metrics": {"ssim": {"sigma": 0.0}}},
+        {"metrics": {"ssim": {"win_size": 7}}},
         {"runtime": {"dtype": "float16"}},
         {"grid": {"space_order": 3}},
         {"grid": {"space_order": 12}},
@@ -289,10 +284,10 @@ def test_build_problem_assembles_pieces(tiny_run_config):
     problem = build_problem(resolve_config(tiny_run_config))
     assert problem.grid.interior_shape == (20, 20)
     assert problem.grid.pml_width == 6
-    assert problem.truth_velocity.c_max == pytest.approx(1650.0)  # base + contrast
+    assert problem.truth_velocity.c_max == pytest.approx(1700.0)  # the skull
     assert problem.init_velocity.c_max == pytest.approx(1500.0)  # homogeneous
-    # overdensity truth has no head mask.
-    assert problem.head_mask is None
+    # the Shepp-Logan truth has a head mask on the interior.
+    assert problem.head_mask.shape == (20, 20) and problem.head_mask.any()
 
 
 def test_make_band_produces_observed_data(tiny_run_config):

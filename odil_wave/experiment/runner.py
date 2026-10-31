@@ -18,17 +18,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
-import torch
 
-from odil_wave.loss import InverseLoss, LossConfig, Regulariser
-from odil_wave.metrics import ssim as _ssim
+from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from . import envinfo
 from .config import BandCfg, RunConfig, validate_config
 from .problem import Problem, build_problem, grid_summary
-from .recorder import RunRecorder
+from .tape import MetricTape
 
 # Name of the (only) solver, recorded in run metadata and loss-tape names.
 SOLVER_NAME = "joint"
@@ -46,7 +44,8 @@ class BandResult:
     label: str
     n_iter_requested: int
     wall_s: float
-    final_metrics: Dict[str, Any]
+    start_metrics: Dict[str, Any]  # the band's start row of the tape
+    final_metrics: Dict[str, Any]  # the tape row at the band's final iterate
     c_final_path: Path
     velocity_model: Any = None
 
@@ -131,54 +130,6 @@ def _band_label(frequencies_hz: List[float]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Metrics helpers
-# --------------------------------------------------------------------------- #
-def _final_recovery_metrics(problem: Problem, velocity_model: Any) -> Dict[str, Any]:
-    """SSIM (head ROI) + relative L2 c-error of a recovered model vs truth."""
-    out: Dict[str, Any] = {
-        "ssim_head_roi": None,
-        "ssim_reason": None,
-        "rel_c_error": None,
-    }
-    truth = problem.truth_velocity
-    grid = problem.grid
-    if truth is None:
-        out["ssim_reason"] = "no ground truth"
-        return out
-    sc = problem.cfg.metrics.ssim
-    mask = problem.head_mask if sc.mask == "head_roi" else None
-    if sc.mask == "head_roi" and mask is None:
-        out["ssim_reason"] = "no head_mask for truth profile"
-    else:
-        try:
-            kwargs: Dict[str, Any] = {
-                "win_size": int(sc.win_size),
-                "gaussian_weights": bool(sc.gaussian_weights),
-            }
-            if sc.gaussian_weights:
-                kwargs["sigma"] = float(sc.sigma)
-            if sc.data_range != "auto":
-                kwargs["data_range"] = float(sc.data_range)
-            val = _ssim(velocity_model.c, truth.c, grid, mask=mask, **kwargs)
-            out["ssim_head_roi"] = float(val) if np.isfinite(val) else None
-        except Exception as exc:
-            out["ssim_reason"] = f"ssim error: {type(exc).__name__}: {exc}"
-    with torch.no_grad():
-        c_int = (
-            velocity_model.c[grid.interior_slice]
-            .detach()
-            .cpu()
-            .numpy()
-            .astype(np.float64)
-        )
-        t_int = truth.c[grid.interior_slice].detach().cpu().numpy().astype(np.float64)
-    denom = float(np.linalg.norm(t_int))
-    if denom > 0:
-        out["rel_c_error"] = float(np.linalg.norm(c_int - t_int) / denom)
-    return out
-
-
-# --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
 def _build_optimiser(
@@ -247,7 +198,7 @@ def run_frequency_band(
     problem: Problem,
     velocity_model: Any,
     band_cfg: BandCfg,
-    recorder: RunRecorder,
+    tape: MetricTape,
     band_index: int,
     bands_dir: Path,
 ) -> BandResult:
@@ -283,11 +234,13 @@ def run_frequency_band(
         weights=dict(cfg.loss.weights),
         regulariser=_build_regulariser(cfg),
     )
-    tape = recorder.band_tape(
-        band_index=band_index,
-        frequencies_hz=freqs,
+    band_tape = tape.start_band(band_index, band_ctx)
+    # The loss callback keeps the solver's scalar history and result; the
+    # tape rows come from ``on_log``.
+    loss_tape = LossTape(
         name=f"{SOLVER_NAME}_{label}",
         log_every=cfg.optimiser.log_every,
+        store_c_history=False,
     )
     # PML split: observations synthesised on a separate forward grid are
     # reduced to receiver traces; otherwise use full observed wavefields.
@@ -295,36 +248,25 @@ def run_frequency_band(
         loss = InverseLoss(
             observed_traces=band_ctx.observed_traces,
             config=loss_config,
-            callback=tape,
+            callback=loss_tape,
         )
     else:
         loss = InverseLoss(
             observed_wavefield=band_ctx.observed_wfs,
             config=loss_config,
-            callback=tape,
+            callback=loss_tape,
         )
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
-    minimise_kwargs: Dict[str, Any] = {"on_iteration": tape.on_iteration}
     t_opt = time.perf_counter()
-    recovered_wfs, _ = opt.minimise(**minimise_kwargs)
+    recovered_wfs, _ = opt.minimise(on_log=band_tape.record)
     optimise_s = time.perf_counter() - t_opt
 
     recovered_velocity = recovered_wfs[0].velocity_model
-    opt_result = dict(getattr(tape, "result", None) or {})
-
-    recovery = _final_recovery_metrics(problem, recovered_velocity)
-    hist = tape.history
-    final_metrics = {
-        "loss": opt_result.get("loss"),
-        "pde_rms": (hist["pde_rms"][-1] if hist.get("pde_rms") else None),
-        "data_rms": (hist["data_rms"][-1] if hist.get("data_rms") else None),
-        "pde_src_ratio": (
-            hist["pde_src_ratio"][-1] if hist.get("pde_src_ratio") else None
-        ),
-        **recovery,
-    }
+    opt_result = dict(loss_tape.result or {})
+    start_metrics = band_tape.start_row
+    final_metrics = band_tape.final_row
 
     # ---- per-band artifacts --------------------------------------------- #
     band_dir = bands_dir / f"band_{band_index:02d}_{label}"
@@ -373,25 +315,18 @@ def run_frequency_band(
         "wall_s": wall_s,
         "warm_start_s": warm_s,
         "optimise_s": optimise_s,
+        "start_metrics": start_metrics,
         "final_metrics": final_metrics,
         "optimiser_result": opt_result,
         "c_final": "c_final.npy",
     }
     _atomic_json(band_dir / "band_summary.json", band_summary)
 
-    ssim_s = (
-        f"{final_metrics['ssim_head_roi']:.4f}"
-        if final_metrics["ssim_head_roi"] is not None
-        else "n/a"
-    )
-    loss_s = (
-        f"{final_metrics['loss']:.6e}"
-        if isinstance(final_metrics["loss"], (int, float))
-        else "n/a"
-    )
     print(
         f"  [band {band_index} {label}] iters {n_iter} "
-        f"loss={loss_s}  ssim_head_roi={ssim_s}  "
+        f"loss={final_metrics['loss_total']:.6e}  "
+        f"rmse_brain={final_metrics['rmse_brain']:.2f} m/s  "
+        f"ssim_brain={final_metrics['ssim_brain']:.4f}  "
         f"wall={wall_s:.1f}s"
     )
 
@@ -401,6 +336,7 @@ def run_frequency_band(
         label=label,
         n_iter_requested=n_iter,
         wall_s=wall_s,
+        start_metrics=start_metrics,
         final_metrics=final_metrics,
         c_final_path=c_path,
         velocity_model=recovered_velocity,
@@ -557,20 +493,19 @@ def run_inverse(
         meta["grid"] = grid_summary(problem)
         _atomic_json(run_dir / "metadata.json", meta)
 
-        recorder = RunRecorder(
+        # Raises ConfigError, before any band, if the truth gives nothing to score.
+        tape = MetricTape(
+            run_dir / "tape.csv",
             run_id=config.run.run_id,
-            solver_name=SOLVER_NAME,
-            out_dir=run_dir,
-            grid=problem.grid,
-            truth_velocity=problem.truth_velocity,
-            metrics_cfg=config.metrics,
+            problem=problem,
+            t0=t_run0,
         )
 
         current = problem.init_velocity
         for bi, band_cfg in enumerate(band_stages):
             last_band_index = bi
             band_res = run_frequency_band(
-                problem, current, band_cfg, recorder, bi, bands_dir
+                problem, current, band_cfg, tape, bi, bands_dir
             )
             result.band_results.append(band_res)
             current = band_res.velocity_model
@@ -588,21 +523,14 @@ def run_inverse(
         result.final_velocity = current
         result.final_c_path = final_path
 
-        recovery = _final_recovery_metrics(problem, current)
+        # Tape rows: the run's first start row, its final iterate, and each
+        # band's final iterate.
+        final_metrics = result.band_results[-1].final_metrics
         result.metrics_summary = {
             "n_bands": len(result.band_results),
-            "final_ssim_head_roi": recovery["ssim_head_roi"],
-            "final_rel_c_error": recovery["rel_c_error"],
-            "per_band": [
-                {
-                    "band_index": b.band_index,
-                    "label": b.label,
-                    "ssim_head_roi": b.final_metrics.get("ssim_head_roi"),
-                    "rel_c_error": b.final_metrics.get("rel_c_error"),
-                    "loss": b.final_metrics.get("loss"),
-                }
-                for b in result.band_results
-            ],
+            "start_metrics": result.band_results[0].start_metrics,
+            "final_metrics": final_metrics,
+            "per_band": [b.final_metrics for b in result.band_results],
         }
         result.status = "completed"
         run_summary = {
@@ -618,21 +546,16 @@ def run_inverse(
         _atomic_json(final_dir / "run_summary.json", run_summary)
         print(
             f"[run {config.run.run_id}] completed: "
-            f"final ssim_head_roi={recovery['ssim_head_roi']}, "
-            f"rel_c_error={recovery['rel_c_error']}"
+            f"final rmse_brain={final_metrics['rmse_brain']:.2f} m/s, "
+            f"ssim_brain={final_metrics['ssim_brain']:.4f}"
         )
         return result
 
     except Exception as exc:  # noqa: BLE001 - we want to record any failure
         result.status = "failed"
-        last_completed_iter = None
-        try:
-            # global_iter counts logged records emitted so far.
-            last_completed_iter = getattr(
-                locals().get("recorder", None), "_global_iter", None
-            )
-        except Exception:
-            pass
+        # iter_total of the last tape row written, if any.
+        last_row = getattr(locals().get("tape"), "last_row", None)
+        last_completed_iter = None if last_row is None else last_row["iter_total"]
         err = {
             "run_id": config.run.run_id,
             "status": "failed",
