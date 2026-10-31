@@ -37,7 +37,7 @@ Everything importable lives under the `odil_wave` package:
 
 Top-level `main.py` is the CLI entry point. The **default config** is defined in
 code — the `RunConfig` dataclass defaults in `odil_wave/experiment/config.py`,
-whose docstrings document every field — and `configs/` holds **experiment
+whose docstrings document every field — and `configs/` holds **run
 configs** that name only the values they change (see
 [ADR 0001](docs/adr/0001-config-defaults-single-owner.md)).
 
@@ -54,7 +54,7 @@ python main.py
 # Print the full default config as YAML
 python main.py --print-defaults
 
-# An experiment config (only the values that differ from the defaults)
+# A run config (only the values that differ from the defaults)
 python main.py --config configs/example_multiband.yaml
 
 # Validate + print a summary, write nothing
@@ -174,7 +174,7 @@ physics operators (`test_operator.py`), the `Wavefield` container
 (`test_grid.py`), source wavelets (`test_source.py`), velocity model profiles
 (`test_models.py`), acquisition geometry and trace extraction
 (`test_geometry.py`), the loss/regulariser/loss-tape assembly (`test_loss.py`),
-the experiment config/problem-building layer (`test_experiments.py`), the
+the run-config/problem-building layer (`test_experiments.py`), the
 one-owner-per-parameter rule for library constructors
 (`test_parameter_ownership.py`), and end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
 

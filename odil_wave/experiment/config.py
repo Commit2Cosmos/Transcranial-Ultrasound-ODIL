@@ -1,11 +1,11 @@
-"""Typed, serialisable experiment configuration for frequency-domain FWI runs.
+"""Typed, serialisable run configuration for frequency-domain FWI runs.
 
 Dependency-light (standard library + PyYAML only, no ``torch`` / ``odil_wave``
 imports) so a config can be resolved and validated without importing the
 numerical stack.
 
 The dataclass defaults below are the **default config**, the only one: there is
-no default YAML file (ADR 0001). An experiment config names only the values it
+no default YAML file (ADR 0001). A run config names only the values it
 changes; :func:`resolve_config` applies it (and any CLI overrides) to these
 defaults, and the resolved config written to ``config_resolved.yaml`` records
 every value. ``python main.py --print-defaults`` prints the default config.
@@ -600,7 +600,7 @@ def resolve_config(
     user_config: Optional[Dict[str, Any]] = None,
     overrides: Optional[List[str]] = None,
 ) -> RunConfig:
-    """Resolve an experiment config ``user_config`` and dotted ``overrides`` onto
+    """Resolve a run config ``user_config`` and dotted ``overrides`` onto
     the default config into a complete :class:`RunConfig`."""
     merged = deep_merge(default_config_dict(), user_config or {})
     merged = apply_overrides(merged, overrides)
