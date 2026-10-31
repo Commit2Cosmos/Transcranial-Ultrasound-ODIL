@@ -50,10 +50,7 @@ def _summarise(cfg) -> str:
         f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
-    lines.append(
-        f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
-        f"data_range={cfg.metrics.ssim.data_range}"
-    )
+    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma}")
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
@@ -130,7 +127,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from odil_wave.experiment.runner import run_inverse
 
-    result = run_inverse(cfg, input_config=user_dict)
+    try:
+        result = run_inverse(cfg, input_config=user_dict)
+    except ConfigError as exc:  # found at startup, once the problem is built
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
     print(f"\nartifacts: {result.run_dir}")
     return 0 if result.status == "completed" else 1
 

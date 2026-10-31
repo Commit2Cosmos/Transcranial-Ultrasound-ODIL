@@ -34,13 +34,13 @@ from odil_wave.experiment import resolve_config, run_inverse, load_config_file
 
 cfg = resolve_config(load_config_file("configs/example_multiband.yaml"))
 result = run_inverse(cfg)                 # -> RunResult
-print(result.metrics_summary["final_ssim_head_roi"])
+print(result.metrics_summary["final_metrics"]["ssim_brain"])
 ```
 
 ## Plotting & analysis
 
 All figures come from the library, so a saved run reproduces without
-re-solving. These helpers read the artifacts below (`metrics.jsonl`,
+re-solving. These helpers read the artifacts below (`tape.csv`,
 `bands/*/c_final.npy`, `final/c_final.npy`):
 
 ```python
@@ -50,8 +50,8 @@ from odil_wave.experiment import (
 )
 
 rd = result.run_dir
-plot_run_history(rd)                       # per-band loss & head-ROI SSIM
-load_loss_tape(rd).show()                  # rebuilt LossTape: loss / PDE / data RMS
+plot_run_history(rd)                       # per-band loss & brain-region SSIM
+load_loss_tape(rd).show()                  # rebuilt LossTape from the tape
 plot_velocity_recovery(rd, problem.truth_velocity, band0.geom)  # truth|rec|diff|error
 animate_bands(rd, problem.grid, filename="c_bands.gif")         # one frame per band
 ```
@@ -300,33 +300,29 @@ than inputs (grid `dt`/`dx`/`nt`, FFT bins, head-mask cell count) live in
 
 ## Iteration-level log record — exact semantics
 
-One row is appended to `tape.csv` at every
-`optimiser.log_every` **logical outer iterations** (and always on the last
-iteration). A record corresponds to **one accepted outer iteration `i`** of the
-solver — *not* an L-BFGS closure / function evaluation.
+A row of `tape.csv` is the solver's state after **`iter` accepted outer
+iterations** of a band — *not* an L-BFGS closure / function evaluation.
 
-Implementation: `RecordingTape` subclasses `LossTape` and is passed both as the
-loss `callback` and as the optimiser's `on_iteration` hook. `on_iteration(i, c)`
-fires every outer iteration and stamps the outer index + current velocity field;
-the inherited `log(...)` fires only at `log_every` and carries the exact loss the
-solver reports. This needs **zero changes to the optimiser**.
+Implementation: `JointFreqODIL.minimise(on_log=...)` hands an `Iterate` (the
+objective terms, residual ratios, gradient norms, `sat_frac`, `c` and `u` from
+one evaluation at that point) to `BandTape.record` in `tape.py`, which adds the
+run-wide counters and the truth-based columns and appends the row, flushed.
 
-Fields (`tape.csv` columns):
+Fields (`tape.csv` columns; the column set decided in "Review reconstruction
+metrics" (#42), amended by "Standard post-processing and plot set" (#53)).
+Regions follow `GLOSSARY.md` (**Brain region**, **Skull region**, **Interior**);
+`c*`, `u*`, `d_obs` are the truth model, the true wavefield and the observed
+traces.
 
-> **Planned (#62).** This table is the column set decided in
-> "Review reconstruction metrics" (#42), amended by "Standard post-processing
-> and plot set" (#53); "Metric tape" (#62) lands the code and removes this
-> note. Until then a run writes `metrics.csv` / `metrics.jsonl` with the
-> columns in `recorder.FIELDNAMES`. Regions follow `GLOSSARY.md` (**Brain region**,
-> **Skull region**, **Interior**); `c*`, `u*`, `d_obs` are the truth model, the
-> true wavefield and the observed traces.
-
-Rows: one per `optimiser.log_every` outer iterations, plus one at the **final
-iterate of every band** (always), plus one **start row** per band (`iter = 0`:
-after the band's warm start, before any update). The warm start is a Helmholtz
-solve on the current model, so a start row's data residual is the forward-model
-misfit at the band's frequencies.
-Band and run summaries report exactly these columns at the final iterate.
+Rows: one per `optimiser.log_every` outer iterations (`iter` a multiple of it),
+plus one at the **final iterate of every band** (always), plus one **start row**
+per band (`iter = 0`: after the band's warm start, before any update). The warm
+start is a Helmholtz solve on the current model, so a start row's data residual
+is the forward-model misfit at the band's frequencies.
+Band and run summaries report exactly these columns: `band_summary.json` has the
+band's `start_metrics` and `final_metrics` rows; `run_summary.json`'s
+`metrics_summary` has the run's first `start_metrics`, its `final_metrics` and
+each band's final row (`per_band`).
 
 #### Identity and cost
 
@@ -377,7 +373,13 @@ Band and run summaries report exactly these columns at the final iterate.
 | `grad_z_norm` | `‖∇_z L‖₂`, with `z` the unconstrained model variable |
 
 Missing truth, brain mask or an SSIM window too large for the grid is a
-**config error at startup**, not an empty cell.
+**config error at startup**, not an empty cell: a truth profile without brain
+and skull regions, or a window wider than the interior, fails validation; a
+window that erodes the whole brain region, or a truth constant over it (no SSIM
+data range), fails once the problem is built, before the first band. The CLI
+exits 2 for each.
+
+A non-finite value is written as `nan` / `inf`, never as an empty cell.
 
 Derived in post-processing, not on the tape: `rel_data_residual` per frequency
 and per **Offset** (ring angle 0–180°, one point per distinct offset) at each
@@ -398,14 +400,16 @@ band's final iterate, from the saved receiver wavefield and observed data.
 Note: `loss_total`, `pde_term`, `data_term` and `reg_term` all come from one
 objective evaluation at the logged (post-step) point, so
 `pde_term + data_term + reg_term == loss_total` up to float rounding. The
-band's `final_metrics.loss` is the objective at the final iterate.
+band's `final_metrics.loss_total` is the objective at the final iterate.
 
 ---
 
 ## Brain-region SSIM
 
-Settings live under `metrics.ssim` in the config and are recorded in the
-resolved config; the scoring rule is in the `ssim_brain` row above.
+The one setting, `metrics.ssim.sigma` (default 1.5, Wang 2004), is the Gaussian
+window's std in cells; the window spans `2 * round(3.5 * sigma) + 1` cells (11
+at the default) and the brain region is eroded by its radius. It is recorded in
+the resolved config; the scoring rule is in the `ssim_brain` row above.
 
 ---
 

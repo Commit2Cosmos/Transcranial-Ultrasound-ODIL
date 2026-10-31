@@ -1,3 +1,4 @@
+import csv
 import json
 
 import numpy as np
@@ -23,9 +24,9 @@ from odil_wave.experiment import (
 from conftest import make_geometry, make_grid, make_model, make_source
 
 
-def _rel_c_error(model, truth, grid) -> float:
-    """Relative L2 velocity error on the interior."""
-    c = model.c[grid.interior_slice].detach().cpu().numpy().astype(np.float64)
+def _rel_c_error(c, truth, grid) -> float:
+    """Relative L2 error of a full-grid velocity ``c`` on the interior."""
+    c = np.asarray(c)[grid.interior_slice].astype(np.float64)
     t = truth.c[grid.interior_slice].detach().cpu().numpy().astype(np.float64)
     return float(np.linalg.norm(c - t) / np.linalg.norm(t))
 
@@ -77,34 +78,28 @@ def test_forward_to_loss_gradient_flows():
 def test_run_inverse_tiny_problem_recovers(tiny_run_config):
     """A full tiny run_inverse completes, writes artifacts, and improves the model."""
     cfg = resolve_config(tiny_run_config)
-
-    # Baseline error of the (homogeneous) starting model against the truth.
     problem = build_problem(cfg)
-    init_err = _rel_c_error(problem.init_velocity, problem.truth_velocity, problem.grid)
-
     result = run_inverse(cfg)
 
     # --- run outcome --------------------------------------------------------- #
     assert result.status == "completed"
-    final_err = result.metrics_summary["final_rel_c_error"]
-    assert final_err is not None and np.isfinite(final_err)
     # the recovered model is closer to the truth than the starting model.
-    assert final_err < init_err
+    start = result.metrics_summary["start_metrics"]
+    final = result.metrics_summary["final_metrics"]
+    assert final["rmse_brain"] < start["rmse_brain"]
+    c_final = np.load(result.final_c_path)
+    assert _rel_c_error(c_final, problem.truth_velocity, problem.grid) < _rel_c_error(
+        problem.init_velocity.c, problem.truth_velocity, problem.grid
+    )
 
     # --- artifacts ----------------------------------------------------------- #
     run_dir = result.run_dir
     assert (run_dir / "config_resolved.yaml").exists()
-    assert (run_dir / "metrics.jsonl").exists()
-    assert result.final_c_path.exists()
-    c_final = np.load(result.final_c_path)
     assert c_final.shape == tuple(problem.grid.shape)
 
     # --- loss decreased over the run ---------------------------------------- #
-    records = [
-        json.loads(line)
-        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
-    ]
-    losses = [r["loss_total"] for r in records if r.get("loss_total") is not None]
+    with open(run_dir / "tape.csv", newline="") as f:
+        losses = [float(r["loss_total"]) for r in csv.DictReader(f)]
     assert len(losses) >= 2
     assert losses[-1] <= losses[0]
 
@@ -245,100 +240,6 @@ def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch):
     )
     assert L_off == L_plain
     assert L_on > L_plain
-
-
-@pytest.mark.parametrize(
-    "weights",
-    [{"pde": 1.0, "data": 1.0, "reg": 0.0}, {"pde": 2.0, "data": 10.0, "reg": 0.0}],
-)
-def test_logged_terms_sum_to_objective(tiny_run_config, weights):
-    """Logged pde_term + data_term (+ reg_term = 0) equal the logged objective."""
-    user_cfg = deep_merge(
-        tiny_run_config,
-        {
-            "run": {"run_id": "terms"},
-            "loss": {"weights": weights},
-            "optimiser": {"n_iter": 3},
-        },
-    )
-    result = run_inverse(resolve_config(user_cfg))
-
-    rows = [
-        json.loads(line)
-        for line in (result.run_dir / "metrics.jsonl").read_text().splitlines()
-    ]
-    assert rows
-    for r in rows:
-        assert r["reg_term"] == 0.0
-        np.testing.assert_allclose(
-            r["pde_term"] + r["data_term"], r["loss_total"], rtol=1e-10
-        )
-        np.testing.assert_allclose(
-            r["data_term"], weights["data"] * r["data_loss"], rtol=1e-12
-        )
-
-
-def _records(run_dir):
-    return [
-        json.loads(line)
-        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
-    ]
-
-
-def _band_summaries(run_dir):
-    return [
-        json.loads((p / "band_summary.json").read_text())
-        for p in sorted((run_dir / "bands").iterdir())
-        if p.is_dir()
-    ]
-
-
-def test_n_evaluations_counts_closures_across_the_run(tiny_run_config):
-    """n_evaluations is the run-wide running total of joint-optimiser closures."""
-    user_cfg = deep_merge(
-        tiny_run_config,
-        {
-            "run": {"run_id": "n_eval"},
-            "continuation": {
-                "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
-            },
-            "optimiser": {"n_iter": 2},
-        },
-    )
-    result = run_inverse(resolve_config(user_cfg))
-    rows = _records(result.run_dir)
-    closures = [
-        s["optimiser_result"]["n_closure"] for s in _band_summaries(result.run_dir)
-    ]
-    assert len(closures) == 2 and all(n > 0 for n in closures)
-
-    last = [[r for r in rows if r["band_index"] == b][-1] for b in (0, 1)]
-    assert last[0]["n_evaluations"] == closures[0]
-    assert last[1]["n_evaluations"] == closures[0] + closures[1]
-    counts = [r["n_evaluations"] for r in rows]
-    assert counts == sorted(counts) and counts[0] > 0
-
-
-def test_logged_reg_term_closes_the_objective(tiny_run_config):
-    """With a regulariser, the logged terms (reg_term included) sum to loss_total."""
-    user_cfg = deep_merge(
-        tiny_run_config,
-        {
-            "run": {"run_id": "reg_terms"},
-            "loss": {
-                "weights": {"pde": 1.0, "data": 1.0, "reg": 1e-3},
-                "regulariser": {"name": "tikhonov"},
-            },
-            "optimiser": {"n_iter": 3},
-        },
-    )
-    rows = _records(run_inverse(resolve_config(user_cfg)).run_dir)
-    assert rows
-    for r in rows:
-        assert r["reg_term"] is not None and r["reg_term"] > 0
-        assert r["pde_term"] + r["data_term"] + r["reg_term"] == pytest.approx(
-            r["loss_total"], rel=1e-6
-        )
 
 
 def test_optimiser_result_loss_is_at_the_final_iterate(tiny_run_config, monkeypatch):

@@ -327,22 +327,32 @@ class OptimiserCfg:
 
 @dataclass(frozen=True)
 class SSIMCfg:
-    """Masked SSIM settings for the ``ssim_head_roi`` metric.
+    """Settings of the tape's ``ssim_brain`` metric.
+
+    The scoring rule is fixed (Gaussian window, ``use_sample_covariance=False``,
+    data range = peak-to-peak of the truth over the brain region, map averaged
+    over the brain region eroded by the window radius).
 
     Params:
-    * ``mask``: ``"head_roi"`` (intracranial mask) | ``"interior"`` (whole
-      non-PML interior) | ``"none"``.
-    * ``data_range``: ``"auto"`` (peak-to-peak of truth in mask) | float.
-    * ``win_size``: odd int >= 3; SSIM window size.
-    * ``gaussian_weights``: Gaussian vs uniform SSIM window.
-    * ``sigma``: Gaussian window std (used when ``gaussian_weights``).
+    * ``sigma``: > 0 Gaussian window std in cells. The window spans
+      ``2 * round(3.5 * sigma) + 1`` cells (``sigma = 1.5``: 11, Wang 2004)
+      and must fit in the interior.
     """
 
-    mask: str = "head_roi"
-    data_range: Union[str, float] = "auto"
-    win_size: int = 7
-    gaussian_weights: bool = False
     sigma: float = 1.5
+
+
+def ssim_window_radius(sigma: float) -> int:
+    """Radius in cells of the Gaussian SSIM window of std ``sigma``.
+
+    Matches ``skimage.metrics.structural_similarity``, which truncates the
+    Gaussian at 3.5 standard deviations.
+    """
+    return int(3.5 * float(sigma) + 0.5)
+
+
+# Truth profiles that define a brain and a skull region.
+_REGION_PROFILES = ("shepp_logan", "shepp_logan_skull")
 
 
 @dataclass(frozen=True)
@@ -744,22 +754,20 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"got {loss.regulariser.name!r}"
         )
 
-    ws = cfg.metrics.ssim.win_size
-    if ws < 3 or ws % 2 == 0:
-        raise ConfigError(f"metrics.ssim.win_size must be odd and >= 3, got {ws}")
-    if cfg.metrics.ssim.mask not in ("head_roi", "interior", "none"):
+    # The tape scores the brain and skull regions of the truth model.
+    if cfg.truth.profile not in _REGION_PROFILES:
         raise ConfigError(
-            f"metrics.ssim.mask must be head_roi/interior/none, "
-            f"got {cfg.metrics.ssim.mask!r}"
+            f"truth.profile {cfg.truth.profile!r} has no brain or skull region "
+            f"for the tape's model-error metrics; use one of {list(_REGION_PROFILES)}"
         )
-
-    if (
-        cfg.truth.profile not in ("shepp_logan", "shepp_logan_skull")
-        and cfg.metrics.ssim.mask == "head_roi"
-    ):
-        warnings.append(
-            f"truth profile {cfg.truth.profile!r} has no head mask; "
-            "ssim_head_roi will be recorded as null."
+    sigma = float(cfg.metrics.ssim.sigma)
+    if sigma <= 0:
+        raise ConfigError(f"metrics.ssim.sigma must be > 0, got {sigma}")
+    win = 2 * ssim_window_radius(sigma) + 1
+    if win > min(cfg.grid.interior_shape):
+        raise ConfigError(
+            f"metrics.ssim.sigma={sigma} gives a {win}-cell SSIM window, larger "
+            f"than the interior {list(cfg.grid.interior_shape)}"
         )
 
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):

@@ -176,8 +176,8 @@ class LossTape:
         Parameters
         ----------
         records : sequence of dict
-            Per-iteration metric dicts (``metrics.jsonl`` rows) written by
-            :class:`odil_wave.experiment.RunRecorder`.
+            Per-iteration metric dicts (``tape.csv`` rows) written by
+            :class:`odil_wave.experiment.MetricTape`.
         name : str
             Name for the reconstructed tape.
 
@@ -195,13 +195,10 @@ class LossTape:
         # (history key, record key) — records use ``loss_total`` for the loss.
         key_map = [
             ("loss", "loss_total"),
-            ("pde_rms", "pde_rms"),
-            ("data_rms", "data_rms"),
-            ("pde_loss", "pde_loss"),
-            ("data_loss", "data_loss"),
             ("pde_src_ratio", "pde_src_ratio"),
-            ("rel_c_error", "rel_c_error"),
-            ("ssim_head_roi", "ssim_head_roi"),
+            ("rel_data_residual", "rel_data_residual"),
+            ("rmse_brain", "rmse_brain"),
+            ("ssim_brain", "ssim_brain"),
         ]
         tape = cls(name=name, store_c_history=False)
         for hist_key, rec_key in key_map:
