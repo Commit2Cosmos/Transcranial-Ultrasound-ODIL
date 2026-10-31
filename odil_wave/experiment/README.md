@@ -50,7 +50,7 @@ print(result.metrics_summary["final_metrics"]["ssim_brain"])
 
 All figures come from the library, so a saved run reproduces without
 re-solving. These helpers read the artifacts below (`tape.csv`,
-`bands/*/c_final.npy`; the last band's is the run's final model):
+`bands/*/arrays.npz`; the last band's `c` is the run's final model):
 
 ```python
 from odil_wave.experiment import (
@@ -251,14 +251,6 @@ path, never rewrites old directories. The flags `--experiment`, `--out`,
 
 ## Where each artifact is written
 
-> **Spec ahead of code (in part).** This layout is the one decided in
-> "Contents of a saved run" (#54). Not written yet: `problem.npz`, the band
-> `arrays.npz` and the band-summary contents listed below (#64 lands them and
-> removes this note); until then each band directory holds the recovered
-> full-grid `c_final.npy` beside its `band_summary.json`. Everything else here
-> (location, `metadata.json`, `git.diff`, `tape.csv`, `run_summary.json`,
-> atomic writes) is implemented.
-
 One self-contained directory per run (located as in "Where runs and
 experiments are written" above):
 
@@ -268,14 +260,14 @@ experiments are written" above):
   metadata.json            # written once at start: code/env/host/git/uv.lock/seed/grid
   git.diff                 # scratch runs only: tracked + staged diff
   tape.csv                 # per-row metric tape (see below); empty cell = null
-  problem.npz              # c*, c0 (interior), pml_c, brain/skull masks,
-                           #   transducer angles, interior slice
+  problem.npz              # c_star, c0 (interior), pml_c, brain_mask,
+                           #   skull_mask, transducer_angles_deg, interior_slice
   bands/
     band_00_40khz/
       arrays.npz               # freqs, c (interior), d_obs, d_syn_start,
                                #   d_syn_final (all shots), shots, u, u_star
-      band_summary.json        # frequencies, times, iters, final metrics,
-                               #   costs, warnings, worst-fit shot
+      band_summary.json        # frequencies, times, iters, start/final
+                               #   metrics, costs, warnings, worst-fit shot
     band_01_50khz/ ...
   run_summary.json         # always written: status, wall time, warnings,
                            #   per-band + final metrics, traceback on failure
@@ -296,11 +288,32 @@ experiments are written" above):
   `shots` holds the indices. `u` is on the full inversion grid (the PDE
   residual needs the PML); `u_star` is on the interior. Shapes are
   `(n_saved_shots, n_freq, nx, ny)`.
+- **`problem.npz`**: `c_star` and `c0` (truth and starting model, interior),
+  `pml_c` (the frozen PML speed), `brain_mask` and `skull_mask` (interior),
+  `transducer_angles_deg` (transducer `k` at `360 k / n_transducers`, so shot
+  `k`'s angle) and `interior_slice` (`[[x_start, x_stop], [y_start, y_stop]]`
+  on the full grid).
+- **`arrays.npz`** at the band's final iterate: `freqs` (Hz, the FFT bins
+  solved at, nearest the requested frequencies), `c` (interior), `d_obs`,
+  `d_syn_start` (the start row's warm start) and `d_syn_final`, all shots, each
+  `(n_shots, n_freq, n_transducers - 1)` with shot `s`'s receivers in ascending
+  transducer order without `s`; `shots`, `u` and `u_star` as below.
+- **`band_summary.json`**: `frequencies_hz`, `fft_bins`, `t_start_epoch_s`,
+  `wall_s` / `warm_start_s` / `optimise_s`, `n_iter_requested`,
+  `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
+  `n_outer_iter`, `n_closure`, `n_evaluations`), `warnings`, `worst_fit_shot`
+  and `saved_shots`.
+- **Optimiser-health warnings** (fixed in code, `health.py`): `c` within 1% of
+  a speed bound (`grid.c_min` / `grid.c_max`), `sat_frac` above 1%, and
+  `grad_u_norm` or `grad_z_norm` rising at 3 consecutive logged rows. Each
+  fires at most once per band; it is printed and listed under `warnings` in
+  `band_summary.json` and `run_summary.json` (after any config warnings).
 - `metadata.json` records `schema_version`, the git sha and `dirty` flag (false
   unless the run is scratch), `scratch`, and `uv_lock_sha256`.
 - `run_summary.json` has `status: completed | failed | interrupted`. A failed
   or interrupted band keeps its tape rows but writes no `arrays.npz` or
-  `band_summary.json`.
+  `band_summary.json`: a band directory is written under a hidden temporary
+  name and renamed into place once complete.
 - **Size**: about 2.3 MB per frequency at the default grid (5 shots ×
   (0.34 MB `u` + 0.125 MB `u_star`)), so ~15 MB for a 3-band, 6-frequency run.
   Not enforced.

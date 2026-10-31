@@ -10,20 +10,21 @@ Public entry points
 
 from __future__ import annotations
 
+import shutil
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import numpy as np
-
 from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from . import envinfo
+from .arrays import BandArrays, save_problem
 from .config import BandCfg, ConfigError, RunConfig, validate_config
+from .health import HealthCheck
 from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, write_json
 from .tape import MetricTape
@@ -46,8 +47,9 @@ class BandResult:
     wall_s: float
     start_metrics: Dict[str, Any]  # the band's start row of the tape
     final_metrics: Dict[str, Any]  # the tape row at the band's final iterate
-    c_final_path: Path
+    band_dir: Path  # holds arrays.npz and band_summary.json
     velocity_model: Any = None
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -158,12 +160,16 @@ def run_frequency_band(
     tape: MetricTape,
     band_index: int,
     bands_dir: Path,
+    *,
+    warnings: Optional[List[str]] = None,
 ) -> BandResult:
     """Run a single continuation stage and write its per-band artifacts.
 
     ``velocity_model`` is the current (warm) starting model; the recovered
     model is returned in the :class:`BandResult` and becomes the next band's
-    start. One ``c_final.npy`` is written for this band.
+    start. The band's ``arrays.npz`` and ``band_summary.json`` are written
+    only once it completes. Each optimiser-health warning is printed when it
+    fires and appended to ``warnings`` (the run's list) as well as the band's.
     """
     cfg = problem.cfg
     freqs = list(band_cfg.frequencies_hz)
@@ -173,6 +179,7 @@ def run_frequency_band(
     )
 
     t0 = time.perf_counter()
+    t_start_epoch = time.time()
     band_ctx = problem.make_band(freqs)
 
     t_warm = time.perf_counter()
@@ -216,8 +223,19 @@ def run_frequency_band(
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
+    band_arrays = BandArrays(problem, band_ctx)
+    health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
+
+    def on_log(it):
+        band_arrays(it)
+        row = band_tape.record(it)
+        for w in health(row):
+            print(f"  [health warning] {w}")
+            if warnings is not None:
+                warnings.append(w)
+
     t_opt = time.perf_counter()
-    recovered_wfs, _ = opt.minimise(on_log=band_tape.record)
+    recovered_wfs, _ = opt.minimise(on_log=on_log)
     optimise_s = time.perf_counter() - t_opt
 
     recovered_velocity = recovered_wfs[0].velocity_model
@@ -226,58 +244,39 @@ def run_frequency_band(
     final_metrics = band_tape.final_row
 
     # ---- per-band artifacts --------------------------------------------- #
+    # Written into a hidden directory renamed into place once complete, so a
+    # failed or interrupted band leaves no band directory.
     band_dir = bands_dir / f"band_{band_index:02d}_{label}"
-    band_dir.mkdir(parents=True, exist_ok=True)
-
-    c_full = recovered_velocity.c.detach().cpu().numpy().astype(np.float32)
-    c_path = band_dir / "c_final.npy"
-    _atomic_npy(c_path, c_full)
-
-    write_json(
-        band_dir / "c_final_metadata.json",
-        {
-            "band_index": band_index,
-            "frequencies_hz": freqs,
-            "label": label,
-            "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
-            "shape": list(c_full.shape),
-            "dtype": str(c_full.dtype),
-            "c_min": float(c_full.min()),
-            "c_max": float(c_full.max()),
-            "c_mean": float(c_full.mean()),
-            "grid": grid_summary(problem),
-            "path": "c_final.npy",
-        },
-    )
-
-    _dump_band_config(
-        band_dir / "band_config.yaml",
-        cfg,
-        band_index,
-        freqs,
-        n_iter,
-        band_ctx,
-    )
-
-    wall_s = time.perf_counter() - t0
-    band_summary = {
-        "band_index": band_index,
-        "frequencies_hz": freqs,
-        "label": label,
-        "n_frequencies": int(band_ctx.freq.n_frequencies),
-        "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
-        "n_iter_requested": n_iter,
-        "n_transducers": int(band_ctx.geom.n_transducers),
-        "t_start_epoch_s": t0,
-        "wall_s": wall_s,
-        "warm_start_s": warm_s,
-        "optimise_s": optimise_s,
-        "start_metrics": start_metrics,
-        "final_metrics": final_metrics,
-        "optimiser_result": opt_result,
-        "c_final": "c_final.npy",
-    }
-    write_json(band_dir / "band_summary.json", band_summary)
+    tmp_dir = bands_dir / f".{band_dir.name}.tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    try:
+        band_arrays.save(tmp_dir / "arrays.npz")
+        wall_s = time.perf_counter() - t0
+        write_json(
+            tmp_dir / "band_summary.json",
+            {
+                "band_index": band_index,
+                "frequencies_hz": freqs,
+                "label": label,
+                "n_frequencies": int(band_ctx.freq.n_frequencies),
+                "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
+                "n_iter_requested": n_iter,
+                "n_transducers": int(band_ctx.geom.n_transducers),
+                "t_start_epoch_s": t_start_epoch,
+                "wall_s": wall_s,
+                "warm_start_s": warm_s,
+                "optimise_s": optimise_s,
+                "start_metrics": start_metrics,
+                "final_metrics": final_metrics,
+                "optimiser_result": opt_result,
+                "warnings": list(health.warnings),
+                "worst_fit_shot": band_arrays.worst_fit_shot,
+                "saved_shots": band_arrays.shots,
+            },
+        )
+        tmp_dir.replace(band_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print(
         f"  [band {band_index} {label}] iters {n_iter} "
@@ -295,29 +294,10 @@ def run_frequency_band(
         wall_s=wall_s,
         start_metrics=start_metrics,
         final_metrics=final_metrics,
-        c_final_path=c_path,
+        band_dir=band_dir,
         velocity_model=recovered_velocity,
+        warnings=list(health.warnings),
     )
-
-
-def _atomic_npy(path: Path, arr: np.ndarray) -> None:
-    """Atomically write a numpy array to ``path`` as ``.npy``.
-
-    Parameters
-    ----------
-    path : Path
-        Destination file (written via a temp file then renamed).
-    arr : numpy.ndarray
-        Array to save.
-
-    Returns
-    -------
-    None
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp.npy")
-    np.save(tmp, arr)
-    tmp.replace(path)
 
 
 def _build_regulariser(cfg: RunConfig):
@@ -334,51 +314,6 @@ def _build_regulariser(cfg: RunConfig):
         return None
     reg = cfg.loss.regulariser
     return Regulariser(kind=reg.name, eps=reg.eps)
-
-
-def _dump_band_config(
-    path: Path,
-    cfg: RunConfig,
-    band_index,
-    freqs,
-    n_iter,
-    band_ctx,
-):
-    """Write the effective per-band configuration to ``path`` as YAML.
-
-    Parameters
-    ----------
-    path : Path
-        Destination ``band_config.yaml``.
-    cfg : RunConfig
-        The resolved run config.
-    band_index :
-        Index of this band.
-    freqs :
-        Band frequencies in Hz.
-    n_iter :
-        Effective outer-iteration budget for the band.
-    band_ctx :
-        Per-band context (used for FFT bins / shot count).
-
-    Returns
-    -------
-    None
-    """
-    from .config import _asdict, _dump_yaml  # torch-free helpers
-
-    payload = {
-        "band_index": band_index,
-        "frequencies_hz": freqs,
-        "n_iter_effective": n_iter,
-        "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
-        "n_transducers": int(band_ctx.geom.n_transducers),
-        "space_order": cfg.grid.space_order,
-        "pml": _asdict(cfg.pml),
-        "loss_weights": dict(cfg.loss.weights),
-        "optimiser": _asdict(cfg.optimiser),
-    }
-    _dump_yaml(payload, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -421,6 +356,8 @@ def run_inverse(
     warnings = validate_config(config)
     for w in warnings:
         print(f"  [config warning] {w}")
+    # The run summary's warnings: the config's, then each health warning fired.
+    run_warnings = list(warnings)
 
     run_dir = run_directory.path
     run_id = run_directory.run_id
@@ -461,11 +398,13 @@ def run_inverse(
         tape = MetricTape(
             run_dir / "tape.csv", run_id=run_id, problem=problem, t0=t_run0
         )
+        scored = tape.model_error
+        save_problem(run_dir / "problem.npz", problem, scored.brain, scored.skull)
 
         current = problem.init_velocity
         for bi, band_cfg in enumerate(config.continuation.bands):
             band_res = run_frequency_band(
-                problem, current, band_cfg, tape, bi, bands_dir
+                problem, current, band_cfg, tape, bi, bands_dir, warnings=run_warnings
             )
             result.band_results.append(band_res)
             current = band_res.velocity_model
@@ -487,9 +426,9 @@ def run_inverse(
             "traceback": traceback.format_exc(),
         }
         if isinstance(exc, ConfigError):
-            _write_run_summary(result, warnings, time.perf_counter() - t_run0)
+            _write_run_summary(result, run_warnings, time.perf_counter() - t_run0)
             raise
-    _write_run_summary(result, warnings, time.perf_counter() - t_run0)
+    _write_run_summary(result, run_warnings, time.perf_counter() - t_run0)
     return result
 
 
