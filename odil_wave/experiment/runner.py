@@ -45,8 +45,6 @@ class BandResult:
     frequencies_hz: List[float]
     label: str
     n_iter_requested: int
-    n_iter_run: int
-    termination_reason: str
     wall_s: float
     final_metrics: Dict[str, Any]
     c_final_path: Path
@@ -305,7 +303,6 @@ def run_frequency_band(
             config=loss_config,
             callback=tape,
         )
-    tape.bind_loss(loss)
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
@@ -316,8 +313,6 @@ def run_frequency_band(
 
     recovered_velocity = recovered_wfs[0].velocity_model
     opt_result = dict(getattr(tape, "result", None) or {})
-    n_iter_run = int(opt_result.get("n_outer_iter", n_iter))
-    termination = "budget_exhausted"
 
     recovery = _final_recovery_metrics(problem, recovered_velocity)
     hist = tape.history
@@ -373,8 +368,6 @@ def run_frequency_band(
         "n_frequencies": int(band_ctx.freq.n_frequencies),
         "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
         "n_iter_requested": n_iter,
-        "n_iter_run": n_iter_run,
-        "termination_reason": termination,
         "n_transducers": int(band_ctx.geom.n_transducers),
         "t_start_epoch_s": t0,
         "wall_s": wall_s,
@@ -397,9 +390,9 @@ def run_frequency_band(
         else "n/a"
     )
     print(
-        f"  [band {band_index} {label}] iters {n_iter_run}/{n_iter} "
+        f"  [band {band_index} {label}] iters {n_iter} "
         f"loss={loss_s}  ssim_head_roi={ssim_s}  "
-        f"wall={wall_s:.1f}s ({termination})"
+        f"wall={wall_s:.1f}s"
     )
 
     return BandResult(
@@ -407,8 +400,6 @@ def run_frequency_band(
         frequencies_hz=freqs,
         label=label,
         n_iter_requested=n_iter,
-        n_iter_run=n_iter_run,
-        termination_reason=termination,
         wall_s=wall_s,
         final_metrics=final_metrics,
         c_final_path=c_path,
@@ -609,8 +600,6 @@ def run_inverse(
                     "ssim_head_roi": b.final_metrics.get("ssim_head_roi"),
                     "rel_c_error": b.final_metrics.get("rel_c_error"),
                     "loss": b.final_metrics.get("loss"),
-                    "n_iter_run": b.n_iter_run,
-                    "termination_reason": b.termination_reason,
                 }
                 for b in result.band_results
             ],

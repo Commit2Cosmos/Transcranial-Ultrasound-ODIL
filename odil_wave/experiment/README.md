@@ -257,8 +257,8 @@ experiments are written" above):
     band_00_40khz/
       arrays.npz               # freqs, c (interior), d_obs, d_syn_start,
                                #   d_syn_final (all shots), shots, u, u_star
-      band_summary.json        # frequencies, times, iters, termination, final
-                               #   metrics, costs, warnings, worst-fit shot
+      band_summary.json        # frequencies, times, iters, final metrics,
+                               #   costs, warnings, worst-fit shot
     band_01_50khz/ ...
   run_summary.json         # always written: status, wall time, warnings,
                            #   per-band + final metrics, traceback on failure
@@ -336,7 +336,7 @@ Band and run summaries report exactly these columns at the final iterate.
 | `iter` | outer iteration within the band (`0` = start row) |
 | `iter_total` | cumulative outer iterations across all bands, up to this row |
 | `wall_s` | wall-clock seconds since the run started |
-| `n_evaluations` | cumulative `InverseLoss.evaluate` calls (L-BFGS closures) across the **whole run**; the cost axis for equal-cost comparisons |
+| `n_evaluations` | cumulative joint-optimiser L-BFGS closure calls across the **whole run** (diagnostic evaluations excluded); the cost axis for equal-cost comparisons |
 
 #### Objective (what the optimiser minimises)
 
@@ -345,7 +345,7 @@ Band and run summaries report exactly these columns at the final iterate.
 | `loss_total` | total objective exactly as the solver reports it |
 | `pde_term` | `w_pde · mean(\|r_pde\|²)`, the weighted **PDE term** |
 | `data_term` | `w_data · mean(\|r_data\|²)`, the weighted **Data term** |
-| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser |
+| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser or with `w_reg = 0` |
 
 #### Normalised residuals (comparable across bands and configs)
 
@@ -387,18 +387,17 @@ band's final iterate, from the saved receiver wavefield and observed data.
 - `iter` is the **outer** iteration of the joint solver (one L-BFGS
   `.step` of up to `optimiser.inner_max_iter` iterations over `u` and `c`
   together per `i`). This is what the record is keyed on.
-- `n_evaluations` is the cumulative number of `InverseLoss.evaluate` calls, i.e.
-  L-BFGS **closures / function evaluations** (the line search calls the closure
+- `n_evaluations` is the run-wide cumulative number of joint-optimiser L-BFGS
+  **closures / function evaluations** (the line search calls the closure
   several times per accepted step). It is logged only for diagnostics and is
   **not** an iteration count.
 - Per-band totals — `n_outer_iter`, `n_closure`, `n_evaluations` — are recorded
   once in `band_summary.json` under `optimiser_result`.
 
-Note: `loss_total` (the solver's returned loss for the step) and
-`pde_term + data_term` are evaluated at slightly different points within an
-L-BFGS line search, so they need not sum exactly — this is inherent to the
-solver's own logging, not introduced here. `reg_term` is therefore taken from
-the configured regulariser, never by subtraction.
+Note: `loss_total`, `pde_term`, `data_term` and `reg_term` all come from one
+objective evaluation at the logged (post-step) point, so
+`pde_term + data_term + reg_term == loss_total` up to float rounding. The
+band's `final_metrics.loss` is the objective at the final iterate.
 
 ---
 

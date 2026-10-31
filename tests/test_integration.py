@@ -149,6 +149,12 @@ def test_run_inverse_two_bands_chain_models(tiny_experiment, monkeypatch):
             assert (band_dir / name).exists()
         meta = json.loads((band_dir / "c_final_metadata.json").read_text())
         assert meta["frequencies_hz"] == freqs
+        # no hard-coded fields: the outer loop always runs the full budget.
+        summary = json.loads((band_dir / "band_summary.json").read_text())
+        assert summary["n_iter_requested"] == 3
+        assert not {"n_iter_run", "termination_reason"} & set(summary)
+    for b in result.band_results:
+        assert not hasattr(b, "n_iter_run") and not hasattr(b, "termination_reason")
 
     # --- band 1 starts from the init model, band 2 from band 1's result ----- #
     assert len(band_inputs) == 2
@@ -269,3 +275,84 @@ def test_logged_terms_sum_to_objective(tiny_experiment, weights):
         np.testing.assert_allclose(
             r["data_term"], weights["data"] * r["data_loss"], rtol=1e-12
         )
+
+
+def _records(run_dir):
+    return [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+    ]
+
+
+def _band_summaries(run_dir):
+    return [
+        json.loads((p / "band_summary.json").read_text())
+        for p in sorted((run_dir / "bands").iterdir())
+        if p.is_dir()
+    ]
+
+
+def test_n_evaluations_counts_closures_across_the_run(tiny_experiment):
+    """n_evaluations is the run-wide running total of joint-optimiser closures."""
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "n_eval"},
+            "continuation": {
+                "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
+            },
+            "optimiser": {"n_iter": 2},
+        },
+    )
+    result = run_inverse(resolve_config(user_cfg))
+    rows = _records(result.run_dir)
+    closures = [
+        s["optimiser_result"]["n_closure"] for s in _band_summaries(result.run_dir)
+    ]
+    assert len(closures) == 2 and all(n > 0 for n in closures)
+
+    last = [[r for r in rows if r["band_index"] == b][-1] for b in (0, 1)]
+    assert last[0]["n_evaluations"] == closures[0]
+    assert last[1]["n_evaluations"] == closures[0] + closures[1]
+    counts = [r["n_evaluations"] for r in rows]
+    assert counts == sorted(counts) and counts[0] > 0
+
+
+def test_logged_reg_term_closes_the_objective(tiny_experiment):
+    """With a regulariser, the logged terms (reg_term included) sum to loss_total."""
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "reg_terms"},
+            "loss": {
+                "weights": {"pde": 1.0, "data": 1.0, "reg": 1e-3},
+                "regulariser": {"name": "tikhonov"},
+            },
+            "optimiser": {"n_iter": 3},
+        },
+    )
+    rows = _records(run_inverse(resolve_config(user_cfg)).run_dir)
+    assert rows
+    for r in rows:
+        assert r["reg_term"] is not None and r["reg_term"] > 0
+        assert r["pde_term"] + r["data_term"] + r["reg_term"] == pytest.approx(
+            r["loss_total"], rel=1e-6
+        )
+
+
+def test_optimiser_result_loss_is_at_the_final_iterate(tiny_experiment, monkeypatch):
+    """The result loss is the objective at the returned (u, z), not pre-step."""
+    plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
+    opt = _built_optimiser(tiny_experiment, monkeypatch, "final_loss", plain)
+    result = opt.loss.callback.result
+    s = opt.final_state
+    with torch.no_grad():
+        L = float(opt.objective(s["u_re"], s["u_im"], s["z_m"], record=False))
+    assert result["loss"] == pytest.approx(L, rel=1e-12)
+    assert not {
+        "n_factor",
+        "n_forward_solves",
+        "n_adjoint_solves",
+        "n_outer_budget",
+    } & set(result)
+    assert {"n_outer_iter", "n_closure", "n_evaluations"} <= set(result)
