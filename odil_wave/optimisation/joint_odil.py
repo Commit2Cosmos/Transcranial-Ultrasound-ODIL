@@ -385,11 +385,9 @@ class JointFreqODIL(Optimiser):
         pde_term = mean_real_sq(r_pde / self.pde_scale)
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
-        reg_term = 0.0
         if self.reg_weight != 0.0 and self.loss.config.regulariser is not None:
             c_int = self.latent.c_of_z(z_m)
-            reg_term = self.reg_weight * self.loss.config.regulariser(c_int)
-            L = L + reg_term
+            L = L + self.reg_weight * self.loss.config.regulariser(c_int)
         if L.is_complex():
             L = L.real
         if record:
@@ -399,7 +397,6 @@ class JointFreqODIL(Optimiser):
                     "pde_term": float(pde_term.detach()),
                     "pde_term_weighted": float((self.pde_weight * pde_term).detach()),
                     "data_term": float((self.data_weight * data_term).detach()),
-                    "reg_term": float(reg_term),
                     "pde_loss": float(pde_term.detach()),
                     "data_loss": float(data_term.detach()),
                     "pde_rms_raw": float(rms_abs(r_pde).detach()),
@@ -466,20 +463,7 @@ class JointFreqODIL(Optimiser):
             "grad_u_norm": gu,
             "grad_z_norm": gz,
             "grad_ratio": gz / max(gu, self.eps_grad),
-            "grad_max_abs": max(float(g.abs().max()) for g in (ga, gb, gc)),
         }
-
-    def _stopped_on_tolerance(self, n_iters: int, n_evals: int, max_eval: int) -> bool:
-        """Whether one ``LBFGS.step`` ended on a stopping tolerance.
-
-        A step ends early (fewer than ``inner_max_iter`` iterations, evaluation
-        budget ``max_eval`` not spent) only when ``tolerance_grad`` or
-        ``tolerance_change`` is met; zero iterations means the starting point
-        already met ``tolerance_grad``.
-        """
-        if n_iters == 0:
-            return True
-        return n_iters < self.inner_max_iter and n_evals < max_eval
 
     def minimise(
         self, on_iteration=None, **overrides
@@ -504,36 +488,25 @@ class JointFreqODIL(Optimiser):
             tolerance_change=self.tolerance_change,
         )
 
+        self._n_eval = 0
+
         def closure():
+            self._n_eval += 1
             opt.zero_grad()
             L = self.objective(u_re, u_im, z_of(), record=True)
             L.backward()
             return L
 
-        # L-BFGS keeps its global counters on the first parameter's state.
-        lbfgs_state = opt.state[u_re]
-        max_eval = opt.param_groups[0]["max_eval"]
         loss_value = None
-        termination = "budget_exhausted"
-        n_iter_run = 0
         t0 = time.perf_counter()
         for i in range(self.n_iter):
-            iters0 = lbfgs_state.get("n_iter", 0)
-            evals0 = lbfgs_state.get("func_evals", 0)
-            opt.step(closure)
-            n_iter_run = i + 1
-            stopped = self._stopped_on_tolerance(
-                lbfgs_state["n_iter"] - iters0,
-                lbfgs_state["func_evals"] - evals0,
-                max_eval,
-            )
+            loss_value = opt.step(closure)
 
             # Diagnostic evaluation at the current (post-step) point.
-            should_log = (i % self.log_every == 0) or (i == self.n_iter - 1) or stopped
+            should_log = (i % self.log_every == 0) or (i == self.n_iter - 1)
             if should_log or on_iteration is not None:
                 z_m = z_of().detach()
                 loss_scalar, gnorms = self._diag_grads(u_re, u_im, z_m)
-                loss_value = loss_scalar
                 mstats = self._model_stats(z_m)
                 c_full_now = self.c_full_of_z(z_m)
 
@@ -544,7 +517,7 @@ class JointFreqODIL(Optimiser):
                     "iter": i,
                     "wall_s": time.perf_counter() - t0,
                     "loss": loss_scalar,
-                    "n_eval": lbfgs_state["func_evals"],
+                    "n_eval": self._n_eval,
                     **self._last,
                     **gnorms,
                     **mstats,
@@ -561,8 +534,6 @@ class JointFreqODIL(Optimiser):
                         "pde_term": self._last["pde_term_weighted"],
                         "data_term": self._last["data_term"],
                         "pde_src_ratio": self._last["pde_src_ratio"],
-                        "reg_term": self._last["reg_term"],
-                        "n_evaluations": lbfgs_state["func_evals"],
                     }
                     self.loss.callback.log(
                         loss_scalar,
@@ -592,14 +563,6 @@ class JointFreqODIL(Optimiser):
                             f"|gz|/|gu|={gnorms['grad_ratio']:.3e} | "
                             f"c=[{mstats['c_min']:.1f},{mstats['c_max']:.1f}]"
                         )
-
-            if stopped:
-                termination = (
-                    "tolerance_grad"
-                    if gnorms["grad_max_abs"] <= self.tolerance_grad
-                    else "tolerance_change"
-                )
-                break
 
         wall_s = time.perf_counter() - t0
 
@@ -632,14 +595,17 @@ class JointFreqODIL(Optimiser):
             "c_full_final": c_full_final,
         }
         self.loss.callback.result = {
-            "loss": loss_value,
-            "n_outer_iter": n_iter_run,
-            "n_lbfgs_iter": lbfgs_state.get("n_iter", 0),
-            "n_evaluations": lbfgs_state.get("func_evals", 0),
-            "termination_reason": termination,
+            "loss": (float(loss_value.detach()) if loss_value is not None else None),
+            "n_outer_iter": self.n_iter,
+            "n_outer_budget": self.n_iter,
+            "n_closure": self._n_eval,
+            "n_evaluations": self._n_eval,
             "wall_s": wall_s,
             "method": "joint",
             "data_weight": self.data_weight,
+            "n_factor": 0,
+            "n_forward_solves": 0,
+            "n_adjoint_solves": 0,
             "scale_info": self.scale_info,
         }
         return outputs, self.loss.callback

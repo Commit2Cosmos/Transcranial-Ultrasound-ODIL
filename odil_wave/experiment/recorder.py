@@ -14,8 +14,8 @@ optimiser's ``on_iteration`` hook:
 
 Semantics of one record: it corresponds to a single *logical outer iteration*
 ``i`` of the solver, **not** an L-BFGS closure / function
-evaluation. The cumulative L-BFGS function-evaluation count across the run is
-logged separately as ``n_evaluations``, the cost axis.
+evaluation. The cumulative function-evaluation count is logged separately as
+``n_evaluations`` for diagnostics.
 """
 
 from __future__ import annotations
@@ -106,8 +106,11 @@ class RecordingTape(LossTape):
         self.band_frequencies_hz = [float(f) for f in band_frequencies_hz]
         self._cur_iter: Optional[int] = None
         self._cur_c: Optional[torch.Tensor] = None
-        # The band's L-BFGS function evaluations so far, as last logged.
-        self.n_evaluations = 0
+        self._loss_obj: Any = None
+
+    def bind_loss(self, loss: Any) -> None:
+        """Give the tape the InverseLoss so it can read eval counts / regulariser."""
+        self._loss_obj = loss
 
     # -- optimiser hook (every outer iteration) ---------------------------- #
     def on_iteration(self, i: int, c_full: Optional[torch.Tensor]) -> None:
@@ -202,9 +205,6 @@ class RunRecorder:
         self.metrics_cfg = metrics_cfg
         self.t0 = time.perf_counter() if t0 is None else t0
         self._global_iter = 0
-        # Evaluations of the bands before the current tape's.
-        self._evaluations_before_band = 0
-        self._band_tape: Optional[RecordingTape] = None
 
         # Ground truth (full grid) + interior arrays for error / SSIM.
         if truth_velocity is not None:
@@ -248,16 +248,13 @@ class RunRecorder:
         RecordingTape
             A tape wired to this recorder.
         """
-        if self._band_tape is not None:
-            self._evaluations_before_band += self._band_tape.n_evaluations
-        self._band_tape = RecordingTape(
+        return RecordingTape(
             recorder=self,
             band_index=band_index,
             band_frequencies_hz=frequencies_hz,
             name=name,
             log_every=log_every,
         )
-        return self._band_tape
 
     # -- SSIM on the configured head ROI ----------------------------------- #
     def _ssim_head_roi(self, c_full: torch.Tensor) -> tuple:
@@ -333,16 +330,22 @@ class RunRecorder:
             pde_src_ratio if pde_src_ratio is not None else res.get("pde_src_ratio")
         )
 
-        run_evals = None
-        band_evals = res.get("n_evaluations")
-        if band_evals is not None:
-            tape.n_evaluations = int(band_evals)
-            run_evals = self._evaluations_before_band + tape.n_evaluations
+        n_eval = None
+        has_regulariser = False
+        if tape._loss_obj is not None:
+            n_eval = getattr(tape._loss_obj, "evaluations", None)
+            has_regulariser = (
+                getattr(tape._loss_obj.config, "regulariser", None) is not None
+            )
         # Weighted terms as reported by the optimiser (which applies the
-        # weights), from the same evaluation as ``loss``.
+        # weights), so the log matches what was minimised.
         pde_term = _f(res.get("pde_term"))
         data_term = _f(res.get("data_term"))
-        reg_term = _f(res.get("reg_term"))
+        # Weighted regularisation contribution: 0 without a regulariser, else
+        # null. Not derived as (loss - pde_term - data_term): the solver loss and
+        # the residual terms are evaluated at slightly different points, so that
+        # subtraction would report line-search noise rather than the reg term.
+        reg_term = 0.0 if not has_regulariser else None
 
         # Velocity-field summaries on the non-PML interior.
         c_min = c_max = c_mean = c_std = rel_err = None
@@ -390,7 +393,7 @@ class RunRecorder:
             "rel_c_error": rel_err,
             "ssim_head_roi": ssim_val,
             "ssim_reason": ssim_reason,
-            "n_evaluations": run_evals,
+            "n_evaluations": (None if n_eval is None else int(n_eval)),
         }
         self._append(row)
         return row

@@ -305,8 +305,7 @@ class OptimiserCfg:
     objective weights are not set here: they come from ``loss.weights``.
 
     Params:
-    * ``n_iter``: int >= 1 outer iterations (per band unless ``band.n_iter``); a
-      band ends sooner once an L-BFGS step meets ``tolerance_*``.
+    * ``n_iter``: int >= 1 outer iterations (per band unless ``band.n_iter``).
     * ``log_every``: int >= 1 metric-logging cadence in outers.
     * ``inner_max_iter``: int >= 1 L-BFGS iterations per logged outer step; keep
       >= ~5 for a genuine continuous solve (inner=1 stalls the line search).
