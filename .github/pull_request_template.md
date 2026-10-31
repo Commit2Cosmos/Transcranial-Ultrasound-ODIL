@@ -17,6 +17,7 @@ Checks not run and why:
 ## Project knowledge
 Feature-register changes:
 Decision records:
+Experiment bank (PRs touching `odil_wave/`, `configs/` or `main.py`): <ids checked → unaffected / note>, or "no current records"
 If no knowledge update is needed, why:
 
 ## Review checklist
