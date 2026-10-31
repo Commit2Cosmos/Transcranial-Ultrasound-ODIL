@@ -10,6 +10,7 @@ Examples
         --override optimiser.n_iter=40
     python main.py --config configs/<run-config>.yaml --dry-run
     python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
+    python main.py --live --config configs/<run-config>.yaml     # watch it
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
 needs a clean git tree unless ``--scratch`` is given.
@@ -106,6 +107,11 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         help="Allow uncommitted changes: a scratch run, marked as such and "
         "saving its git diff. No experiment record may cite it.",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Redraw a live view of the run in one window (needs a display).",
+    )
     # The run directory itself, for --reproduce and tests; normally the entry
     # point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
@@ -156,8 +162,14 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    on_log = None
+    if args.live:
+        from odil_wave.experiment.live import LiveVelocityView
+
+        on_log = LiveVelocityView()
+
     try:
-        result = run_inverse(cfg, run_directory)
+        result = run_inverse(cfg, run_directory, on_log=on_log)
     except ConfigError as exc:  # found at startup, once the problem is built
         print(f"config error: {exc}", file=sys.stderr)
         return 2
