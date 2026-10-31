@@ -37,10 +37,10 @@ MPS_AVAILABLE = getattr(torch.backends, "mps", None) is not None and (
         ),
     ],
 )
-def test_cli_tiny_two_band_run_float32(tmp_path, tiny_experiment, device):
+def test_cli_tiny_two_band_run_float32(tmp_path, tiny_run_config, device):
     """A float32 2-band run through the CLI completes and improves the model."""
     user_cfg = deep_merge(
-        tiny_experiment,
+        tiny_run_config,
         {
             "run": {"run_id": f"e2e_{device}"},
             "continuation": {

@@ -1,5 +1,5 @@
-# Experiment config: a low-to-high frequency continuation sweep with
-# isotropic-TV regularisation. Like every experiment config it names only the
+# Run config: a low-to-high frequency continuation sweep with
+# isotropic-TV regularisation. Like every run config it names only the
 # values that differ from the default config; print the default config with
 #   python main.py --print-defaults
 # Field docs live in odil_wave/experiment/config.py.

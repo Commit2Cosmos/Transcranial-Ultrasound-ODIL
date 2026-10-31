@@ -5,13 +5,13 @@ Examples
 --------
     python main.py                                  # the default config
     python main.py --print-defaults                 # print the default config
-    python main.py --config configs/<experiment>.yaml
-    python main.py --config configs/<experiment>.yaml \
+    python main.py --config configs/<run-config>.yaml
+    python main.py --config configs/<run-config>.yaml \
         --override optimiser.n_iter=40
-    python main.py --config configs/<experiment>.yaml --dry-run
+    python main.py --config configs/<run-config>.yaml --dry-run
 
 The default config is defined in code (the ``RunConfig`` dataclass defaults in
-``odil_wave/experiment/config.py``); an experiment config names only the values
+``odil_wave/experiment/config.py``); a run config names only the values
 it changes.
 """
 
@@ -71,7 +71,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--config",
         "-c",
         default=None,
-        help="YAML/JSON experiment config (only the values that differ from the "
+        help="YAML/JSON run config (only the values that differ from the "
         "default config). Omit to run the default config.",
     )
     parser.add_argument(

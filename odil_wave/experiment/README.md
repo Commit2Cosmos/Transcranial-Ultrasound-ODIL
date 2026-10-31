@@ -17,12 +17,12 @@ layer only resolves configuration, orchestrates the run, logs, and saves.
 ```bash
 python main.py                                         # the default config
 python main.py --print-defaults                        # print it as YAML
-python main.py --config configs/example_multiband.yaml # an experiment config
+python main.py --config configs/example_multiband.yaml # a run config
 ```
 
 The **default config** (a single-band joint Shepp-Logan run) is defined only in
 code: the `RunConfig` dataclass defaults in `config.py`, whose docstrings
-document every field. An **experiment config** names only the values that
+document every field. A **run config** names only the values that
 differ from it; `resolve_config` applies it, then any CLI overrides, to the
 defaults. YAML and JSON are both accepted; scientific notation such as `40e3`
 is parsed as a float, matching the notebook's Python literals.
