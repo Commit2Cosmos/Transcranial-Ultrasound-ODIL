@@ -336,7 +336,7 @@ Band and run summaries report exactly these columns at the final iterate.
 | `iter` | outer iteration within the band (`0` = start row) |
 | `iter_total` | cumulative outer iterations across all bands, up to this row |
 | `wall_s` | wall-clock seconds since the run started |
-| `n_evaluations` | cumulative `InverseLoss.evaluate` calls (L-BFGS closures) across the **whole run**; the cost axis for equal-cost comparisons |
+| `n_evaluations` | cumulative L-BFGS function evaluations (closure calls) across the **whole run**; the cost axis for equal-cost comparisons |
 
 #### Objective (what the optimiser minimises)
 
@@ -345,7 +345,7 @@ Band and run summaries report exactly these columns at the final iterate.
 | `loss_total` | total objective exactly as the solver reports it |
 | `pde_term` | `w_pde · mean(\|r_pde\|²)`, the weighted **PDE term** |
 | `data_term` | `w_data · mean(\|r_data\|²)`, the weighted **Data term** |
-| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser |
+| `reg_term` | `w_reg · R(c_interior)`, the weighted regulariser term; `0.0` without a regulariser |
 
 #### Normalised residuals (comparable across bands and configs)
 
@@ -387,18 +387,20 @@ band's final iterate, from the saved receiver wavefield and observed data.
 - `iter` is the **outer** iteration of the joint solver (one L-BFGS
   `.step` of up to `optimiser.inner_max_iter` iterations over `u` and `c`
   together per `i`). This is what the record is keyed on.
-- `n_evaluations` is the cumulative number of `InverseLoss.evaluate` calls, i.e.
-  L-BFGS **closures / function evaluations** (the line search calls the closure
-  several times per accepted step). It is logged only for diagnostics and is
-  **not** an iteration count.
-- Per-band totals — `n_outer_iter`, `n_closure`, `n_evaluations` — are recorded
-  once in `band_summary.json` under `optimiser_result`.
+- `n_evaluations` is the cumulative number of L-BFGS **closures / function
+  evaluations** (the line search calls the closure several times per accepted
+  step). It is the cost axis, **not** an iteration count.
+- A band ends after `n_iter` outer iterations, or earlier when an L-BFGS step
+  ends on a stopping tolerance. `band_summary.json` records `n_iter_run` and
+  `termination_reason`: `budget_exhausted`, `tolerance_grad` (max `|∇L|` ≤
+  `optimiser.tolerance_grad`) or `tolerance_change` (step, loss change or
+  directional derivative below `optimiser.tolerance_change`).
+- Per-band totals — `n_outer_iter`, `n_lbfgs_iter` (inner L-BFGS iterations),
+  `n_evaluations` — are recorded once in `band_summary.json` under
+  `optimiser_result`, with `loss` at the band's final iterate.
 
-Note: `loss_total` (the solver's returned loss for the step) and
-`pde_term + data_term` are evaluated at slightly different points within an
-L-BFGS line search, so they need not sum exactly — this is inherent to the
-solver's own logging, not introduced here. `reg_term` is therefore taken from
-the configured regulariser, never by subtraction.
+`loss_total`, `pde_term`, `data_term` and `reg_term` come from one evaluation at
+the logged point, so `loss_total = pde_term + data_term + reg_term` exactly.
 
 ---
 

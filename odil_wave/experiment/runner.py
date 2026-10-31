@@ -305,7 +305,6 @@ def run_frequency_band(
             config=loss_config,
             callback=tape,
         )
-    tape.bind_loss(loss)
 
     opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
@@ -316,8 +315,8 @@ def run_frequency_band(
 
     recovered_velocity = recovered_wfs[0].velocity_model
     opt_result = dict(getattr(tape, "result", None) or {})
-    n_iter_run = int(opt_result.get("n_outer_iter", n_iter))
-    termination = "budget_exhausted"
+    n_iter_run = int(opt_result["n_outer_iter"])
+    termination = opt_result["termination_reason"]
 
     recovery = _final_recovery_metrics(problem, recovered_velocity)
     hist = tape.history

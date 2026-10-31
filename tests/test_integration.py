@@ -164,6 +164,94 @@ def test_run_inverse_two_bands_chain_models(tiny_experiment, monkeypatch):
     )
 
 
+def _band_outputs(result, band_index=0):
+    """``(band_summary.json, metrics.jsonl rows of that band)`` for one band."""
+    band_dir = sorted(p for p in (result.run_dir / "bands").iterdir() if p.is_dir())[
+        band_index
+    ]
+    summary = json.loads((band_dir / "band_summary.json").read_text())
+    rows = [
+        json.loads(line)
+        for line in (result.run_dir / "metrics.jsonl").read_text().splitlines()
+    ]
+    return summary, [r for r in rows if r["band_index"] == band_index]
+
+
+def test_band_stopped_at_the_start_reports_one_evaluation(tiny_experiment):
+    """When the warm start already meets tolerance_grad, L-BFGS evaluates the
+    objective once and stops: the band reports exactly that."""
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {"run": {"run_id": "grad_tol"}, "optimiser": {"tolerance_grad": 1e30}},
+    )
+    result = run_inverse(resolve_config(user_cfg))
+    band = result.band_results[0]
+    summary, rows = _band_outputs(result)
+
+    assert (band.n_iter_requested, band.n_iter_run) == (10, 1)
+    assert band.termination_reason == "tolerance_grad"
+    assert summary["n_iter_run"] == 1
+    assert summary["termination_reason"] == "tolerance_grad"
+    assert summary["optimiser_result"]["n_evaluations"] == 1
+    assert summary["optimiser_result"]["n_lbfgs_iter"] == 0
+    assert [r["solver_iter"] for r in rows] == [0]
+    assert rows[-1]["n_evaluations"] == 1
+
+
+def test_band_stopped_on_tolerance_change_reports_the_lbfgs_state(tiny_experiment):
+    """An L-BFGS step ending on tolerance_change ends the band early; the band
+    reports the outer iterations, L-BFGS iterations and evaluations it used."""
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "change_tol"},
+            "optimiser": {"inner_max_iter": 5, "tolerance_change": 1e-4},
+        },
+    )
+    result = run_inverse(resolve_config(user_cfg))
+    band = result.band_results[0]
+    summary, rows = _band_outputs(result)
+    opt = summary["optimiser_result"]
+
+    assert (band.n_iter_requested, band.n_iter_run) == (10, 4)
+    assert band.termination_reason == "tolerance_change"
+    assert summary["termination_reason"] == opt["termination_reason"]
+    assert opt["n_outer_iter"] == 4
+    # the last step stopped short of its inner_max_iter = 5 iterations.
+    assert 3 * 5 < opt["n_lbfgs_iter"] < 4 * 5
+    # at least one evaluation per L-BFGS iteration, plus one per step.
+    assert opt["n_evaluations"] >= opt["n_lbfgs_iter"] + 4
+    assert [r["solver_iter"] for r in rows] == [0, 1, 2, 3]
+    evals = [r["n_evaluations"] for r in rows]
+    assert evals == sorted(evals) and evals[-1] == opt["n_evaluations"]
+    legacy = {"n_outer_budget", "n_closure", "n_factor", "n_forward_solves"}
+    assert not legacy & opt.keys()
+
+
+def test_n_evaluations_accumulate_across_bands(tiny_experiment):
+    """The tape's n_evaluations counts the whole run: a band's rows start from
+    the earlier bands' totals."""
+    user_cfg = deep_merge(
+        tiny_experiment,
+        {
+            "run": {"run_id": "evals"},
+            "continuation": {
+                "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
+            },
+            "optimiser": {"n_iter": 2},
+        },
+    )
+    result = run_inverse(resolve_config(user_cfg))
+    (s0, rows0), (s1, rows1) = _band_outputs(result, 0), _band_outputs(result, 1)
+    n0 = s0["optimiser_result"]["n_evaluations"]
+    n1 = s1["optimiser_result"]["n_evaluations"]
+
+    assert n0 > 0 and n1 > 0
+    assert rows0[-1]["n_evaluations"] == n0
+    assert rows1[0]["n_evaluations"] > n0
+    assert rows1[-1]["n_evaluations"] == n0 + n1
+
+
 def _built_optimiser(experiment, monkeypatch, run_id, loss_cfg):
     """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
     the runner built (captured from ``runner._build_optimiser``)."""
@@ -242,15 +330,20 @@ def test_loss_weights_reg_activates_regulariser(tiny_experiment, monkeypatch):
 
 @pytest.mark.parametrize(
     "weights",
-    [{"pde": 1.0, "data": 1.0, "reg": 0.0}, {"pde": 2.0, "data": 10.0, "reg": 0.0}],
+    [
+        {"pde": 1.0, "data": 1.0, "reg": 0.0},
+        {"pde": 2.0, "data": 10.0, "reg": 0.0},
+        {"pde": 1.0, "data": 1.0, "reg": 1e-3},
+    ],
 )
 def test_logged_terms_sum_to_objective(tiny_experiment, weights):
-    """Logged pde_term + data_term (+ reg_term = 0) equal the logged objective."""
+    """Logged pde_term + data_term + reg_term equal the logged objective, with
+    reg_term = 0 exactly when the regulariser is off."""
     user_cfg = deep_merge(
         tiny_experiment,
         {
             "run": {"run_id": "terms"},
-            "loss": {"weights": weights},
+            "loss": {"weights": weights, "regulariser": {"name": "tikhonov"}},
             "optimiser": {"n_iter": 3},
         },
     )
@@ -262,9 +355,10 @@ def test_logged_terms_sum_to_objective(tiny_experiment, weights):
     ]
     assert rows
     for r in rows:
-        assert r["reg_term"] == 0.0
+        assert (r["reg_term"] > 0.0) == (weights["reg"] > 0.0)
+        assert r["reg_term"] >= 0.0
         np.testing.assert_allclose(
-            r["pde_term"] + r["data_term"], r["loss_total"], rtol=1e-10
+            r["pde_term"] + r["data_term"] + r["reg_term"], r["loss_total"], rtol=1e-10
         )
         np.testing.assert_allclose(
             r["data_term"], weights["data"] * r["data_loss"], rtol=1e-12
