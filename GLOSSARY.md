@@ -52,6 +52,10 @@ _Avoid_: test run, dry run
 The run config an experiment varies its one parameter or feature from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.
 _Avoid_: base config, reference config; baseline for the starting model of a run
 
+**Experiment chain**:
+A sequence of experiments in which each one's findings set the next one's baseline.
+_Avoid_: series, campaign
+
 **Start row**:
 The metrics recorded at the start of each frequency band, after the band's warm start and before its first update.
 _Avoid_: baseline row
