@@ -53,17 +53,16 @@ def _default_geometry(problem: Problem) -> AcquisitionGeometry:
 def _resolve_grid_pml(
     run_dir: Union[str, Path], grid: Optional[Grid], pml_c: Optional[float]
 ) -> Tuple[Grid, Optional[float]]:
-    """Fill missing ``grid`` / ``pml_c`` from the run's rebuilt problem.
+    """Fill a missing ``grid`` from the run's rebuilt problem and a missing
+    ``pml_c`` with the run's frozen PML speed (in ``problem.npz``).
 
-    Rebuilds the problem at most once, and only when something is missing.
+    Rebuilds the problem only when the grid is missing.
     """
-    if grid is not None and pml_c is not None:
-        return grid, pml_c
-    problem = rebuild_problem(run_dir)
-    if grid is None:
-        grid = problem.grid
     if pml_c is None:
-        pml_c = problem.truth_velocity.pml_c
+        with np.load(Path(run_dir) / "problem.npz") as saved:
+            pml_c = float(saved["pml_c"])
+    if grid is None:
+        grid = rebuild_problem(run_dir).grid
     return grid, pml_c
 
 
@@ -106,8 +105,8 @@ def load_final_velocity(
     grid: Optional[Grid] = None,
     pml_c: Optional[float] = None,
 ) -> VelocityModel:
-    """Load the last completed band's ``c_final.npy`` (the run's final model)
-    into a :class:`VelocityModel`.
+    """Load the last completed band's final model (the run's final model) into
+    a :class:`VelocityModel`.
 
     ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
     config, so only the run directory is required; pass them to reuse a
@@ -124,50 +123,34 @@ def load_band_velocities(
     grid: Optional[Grid] = None,
     pml_c: Optional[float] = None,
 ) -> List[Tuple[int, str, VelocityModel]]:
-    """Load every ``bands/band_XX/c_final.npy`` in band order.
+    """Load every completed band's final model, in band order.
 
-    Returns ``[(band_index, label, VelocityModel), ...]`` sorted by band index.
-    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
-    config, so only the run directory is required.
+    Each band's ``arrays.npz`` holds the interior ``c``; the full-grid model is
+    it padded with ``pml_c``. Returns ``[(band_index, label, VelocityModel),
+    ...]`` sorted by band index. ``grid`` defaults to the one rebuilt from the
+    run's saved config and ``pml_c`` to the run's frozen PML speed (in
+    ``problem.npz``), so only the run directory is required.
     """
     grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
     bands_dir = Path(run_dir) / "bands"
     if not bands_dir.exists():
         raise FileNotFoundError(f"no bands/ directory under {run_dir!r}")
     out: List[Tuple[int, str, VelocityModel]] = []
-    for c_path in sorted(bands_dir.glob("band_*/c_final.npy")):
-        meta_path = c_path.with_name("c_final_metadata.json")
-        band_index, label = _band_meta(meta_path, fallback_dir=c_path.parent.name)
-        c = torch.from_numpy(np.load(c_path))
-        out.append((band_index, label, VelocityModel.from_field(grid, c, pml_c=pml_c)))
+    for summary_path in sorted(bands_dir.glob("band_*/band_summary.json")):
+        summary = json.loads(summary_path.read_text())
+        with np.load(summary_path.with_name("arrays.npz")) as saved:
+            c = torch.from_numpy(saved["c"]).to(grid.dtype)
+        p = grid.pml_width
+        c_full = torch.nn.functional.pad(c, (p, p, p, p), value=float(pml_c))
+        out.append(
+            (
+                int(summary["band_index"]),
+                str(summary["label"]),
+                VelocityModel.from_field(grid, c_full, pml_c=pml_c),
+            )
+        )
     out.sort(key=lambda t: t[0])
     return out
-
-
-def _band_meta(meta_path: Path, fallback_dir: str) -> Tuple[int, str]:
-    """Read a band's ``(index, label)`` from its metadata JSON.
-
-    Parameters
-    ----------
-    meta_path : Path
-        Path to ``c_final_metadata.json``.
-    fallback_dir : str
-        Band directory name parsed (e.g. ``band_03_60khz``) when metadata is
-        absent.
-
-    Returns
-    -------
-    tuple of (int, str)
-        The band index and label.
-    """
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
-        return int(meta.get("band_index", 0)), str(meta.get("label", fallback_dir))
-    # Fall back to parsing "band_03_60khz".
-    parts = fallback_dir.split("_", 2)
-    band_index = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-    label = parts[2] if len(parts) > 2 else fallback_dir
-    return band_index, label
 
 
 def load_loss_tape(source: RunDirOrRecords, name: str = "loaded run") -> LossTape:
@@ -261,7 +244,7 @@ def plot_velocity_recovery(
     acquisition geometry rebuilt from the run's saved config, so only the run
     directory is required. Pass them explicitly to reuse a live ``Problem``.
 
-    Loads the final band's ``c_final.npy`` and the tape and delegates to
+    Loads the final band's saved model and the tape and delegates to
     :meth:`odil_wave.loss.LossTape.show_velocity_recovery`. Extra ``kwargs``
     (``vmin`` / ``vcenter`` / ``vmax`` / ``norm``) are forwarded to it.
     """
@@ -270,7 +253,7 @@ def plot_velocity_recovery(
         truth = truth if truth is not None else problem.truth_velocity
         geom = geom if geom is not None else _default_geometry(problem)
     grid = grid if grid is not None else truth.grid
-    recovered = load_final_velocity(run_dir, grid, pml_c=truth.pml_c)
+    recovered = load_final_velocity(run_dir, grid)
     tape = load_loss_tape(run_dir)
     tape.show_velocity_recovery(truth, recovered, geom, title=title, **kwargs)
     return recovered

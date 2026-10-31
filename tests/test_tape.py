@@ -175,12 +175,22 @@ def expected_model_error(problem, c_full: np.ndarray) -> dict:
     }
 
 
+def saved_final_model(band_dir: Path, problem) -> np.ndarray:
+    """A band's saved final model (interior, in ``arrays.npz``) padded to the
+    full grid with the frozen PML speed."""
+    with np.load(band_dir / "arrays.npz") as saved:
+        c = saved["c"]
+    return np.pad(
+        c, problem.grid.pml_width, constant_values=problem.init_velocity.pml_c
+    )
+
+
 def band_start_models(run_dir: Path, problem) -> list:
     """Full-grid starting model of each band: the init model, then the saved
     final model of the band before."""
     band_dirs = sorted(p for p in (run_dir / "bands").iterdir() if p.is_dir())
     c0 = problem.init_velocity.c.numpy()
-    return [c0] + [np.load(d / "c_final.npy") for d in band_dirs[:-1]]
+    return [c0] + [saved_final_model(d, problem) for d in band_dirs[:-1]]
 
 
 def final_band_dir(run_dir: Path) -> Path:
@@ -238,7 +248,7 @@ def test_model_errors_match_the_band_models(tiny_two_band_run):
     problem = build_problem(tiny_two_band_run.config)
     _, rows = read_tape(run_dir)
     starts = band_start_models(run_dir, problem)
-    finals = starts[1:] + [np.load(final_band_dir(run_dir) / "c_final.npy")]
+    finals = starts[1:] + [saved_final_model(final_band_dir(run_dir), problem)]
     for b, (c_start, c_final) in enumerate(zip(starts, finals)):
         rows_b = band_rows(rows, b)
         for row, c in ((rows_b[0], c_start), (rows_b[-1], c_final)):
@@ -279,12 +289,12 @@ def test_reg_term_and_model_update_at_each_row(tmp_path, git_repo):
     problem = build_problem(resolve_config(TINY_RUN_CONFIG))
     sl = problem.grid.interior_slice
     c_start = problem.init_velocity.c[sl].double()
-    c_final = torch.as_tensor(np.load(final_band_dir(run_dir) / "c_final.npy"))[
+    c_final = torch.as_tensor(saved_final_model(final_band_dir(run_dir), problem))[
         sl
     ].double()
     reg = Regulariser(kind="tikhonov", eps=1e-8)  # eps is unused by tikhonov
     for row, c in zip(rows, (c_start, c_final)):
-        # c_final.npy is float32: its cell-to-cell differences carry ~1e-4 error.
+        # The saved c is float32: its cell-to-cell differences carry ~1e-4 error.
         assert row["reg_term"] == pytest.approx(w_reg * float(reg(c)), rel=1e-3)
         assert row["pde_term"] + row["data_term"] + row["reg_term"] == pytest.approx(
             row["loss_total"], rel=1e-10

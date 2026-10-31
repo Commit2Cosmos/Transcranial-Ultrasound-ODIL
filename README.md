@@ -95,7 +95,9 @@ Each run writes a self-contained directory
 - `metadata.json` — schema version, commit, scratch flag, `uv.lock` hash, env,
   seed, grid summary.
 - `tape.csv` — the per-iteration metric tape.
-- `bands/band_XX_*/` — recovered `c_final.npy` + per-band summary/metrics.
+- `problem.npz` — truth and starting models, masks, transducer angles.
+- `bands/band_XX_*/` — `arrays.npz` (model, data, saved wavefields) +
+  `band_summary.json` (metrics, costs, health warnings), per completed band.
 - `run_summary.json` — status (`completed | failed | interrupted`), final
   metrics, and the traceback on failure.
 

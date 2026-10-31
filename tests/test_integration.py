@@ -24,6 +24,12 @@ from odil_wave.experiment import (
 from conftest import make_geometry, make_grid, make_model, make_source
 
 
+def _saved_c(band_dir) -> np.ndarray:
+    """A band's saved final model over the interior."""
+    with np.load(band_dir / "arrays.npz") as saved:
+        return saved["c"]
+
+
 def _rel_c_error(c, truth, grid) -> float:
     """Relative L2 error of a full-grid velocity ``c`` on the interior."""
     c = np.asarray(c)[grid.interior_slice].astype(np.float64)
@@ -87,15 +93,16 @@ def test_run_inverse_tiny_problem_recovers(tiny_run_config, new_run):
     start = result.metrics_summary["start_metrics"]
     final = result.metrics_summary["final_metrics"]
     assert final["rmse_brain"] < start["rmse_brain"]
-    c_final = np.load(result.band_results[-1].c_final_path)
-    assert _rel_c_error(c_final, problem.truth_velocity, problem.grid) < _rel_c_error(
-        problem.init_velocity.c, problem.truth_velocity, problem.grid
-    )
+    c_final = _saved_c(result.band_results[-1].band_dir)
+    c_final_full = np.pad(c_final, problem.grid.pml_width)
+    assert _rel_c_error(
+        c_final_full, problem.truth_velocity, problem.grid
+    ) < _rel_c_error(problem.init_velocity.c, problem.truth_velocity, problem.grid)
 
     # --- artifacts ----------------------------------------------------------- #
     run_dir = result.run_dir
     assert (run_dir / "config_resolved.yaml").exists()
-    assert c_final.shape == tuple(problem.grid.shape)
+    assert c_final.shape == (problem.grid.interior_nx, problem.grid.interior_ny)
 
     # --- loss decreased over the run ---------------------------------------- #
     with open(run_dir / "tape.csv", newline="") as f:
@@ -134,18 +141,14 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
     band_dirs = sorted(p for p in (result.run_dir / "bands").iterdir() if p.is_dir())
     assert [p.name[:7] for p in band_dirs] == ["band_00", "band_01"]
     for band_dir, freqs in zip(band_dirs, ([30e3], [40e3])):
-        for name in (
-            "c_final.npy",
-            "c_final_metadata.json",
-            "band_config.yaml",
+        assert sorted(p.name for p in band_dir.iterdir()) == [
+            "arrays.npz",
             "band_summary.json",
-        ):
-            assert (band_dir / name).exists()
-        meta = json.loads((band_dir / "c_final_metadata.json").read_text())
-        assert meta["frequencies_hz"] == freqs
+        ]
         # n_iter_run / termination_reason were hard-coded (the outer loop
         # always runs the full budget), so the summary no longer carries them.
         summary = json.loads((band_dir / "band_summary.json").read_text())
+        assert summary["frequencies_hz"] == freqs
         assert summary["n_iter_requested"] == 3
         assert not {"n_iter_run", "termination_reason"} & set(summary)
     for b in result.band_results:
@@ -155,9 +158,10 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
     assert len(band_inputs) == 2
     assert torch.equal(band_inputs[0].c, init_c)
     assert band_inputs[1] is result.band_results[0].velocity_model
-    band0_c = np.load(band_dirs[0] / "c_final.npy")
+    band0_c = _saved_c(band_dirs[0])
+    sl = band_inputs[1].grid.interior_slice
     np.testing.assert_allclose(
-        band_inputs[1].c.detach().cpu().numpy(), band0_c, rtol=1e-6
+        band_inputs[1].c[sl].detach().cpu().numpy(), band0_c, rtol=1e-6
     )
     # the run's final model is the last band's.
     assert result.final_velocity is result.band_results[1].velocity_model

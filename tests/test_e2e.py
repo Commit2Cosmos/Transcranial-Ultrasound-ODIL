@@ -74,5 +74,6 @@ def test_cli_tiny_two_band_run_float32(tmp_path, git_repo, tiny_run_config, devi
 
     problem = build_problem(cfg)
 
-    c_final = np.load(sorted((run_dir / "bands").iterdir())[-1] / "c_final.npy")
-    assert c_final.shape == tuple(problem.grid.shape)
+    with np.load(sorted((run_dir / "bands").iterdir())[-1] / "arrays.npz") as saved:
+        c_final = saved["c"]
+    assert c_final.shape == (problem.grid.interior_nx, problem.grid.interior_ny)
