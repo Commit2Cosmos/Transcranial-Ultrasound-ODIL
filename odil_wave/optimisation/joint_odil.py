@@ -51,11 +51,9 @@ Formulation
 
 * One persistent ``torch.optim.LBFGS([u_re, u_im, z_m])`` (strong-Wolfe) — a
   single joint optimiser over the full space, no alternation. It is advanced by
-  up to ``n_iter`` outer ``.step`` calls, each running up to ``inner_max_iter``
-  L-BFGS iterations on the shared history (total <= ``n_iter * inner_max_iter``),
-  so the per-step trajectory is logged while the solve stays continuous. A step
-  that ends on ``tolerance_grad`` / ``tolerance_change`` ends the solve; the
-  result's ``termination_reason`` names it (else ``"budget_exhausted"``). (A single
+  ``n_iter`` outer ``.step`` calls, each running up to ``inner_max_iter`` L-BFGS
+  iterations on the shared history (total ~= ``n_iter * inner_max_iter``), so the
+  per-step trajectory is logged while the solve stays continuous. (A single
   iteration per step, ``inner_max_iter=1``, stalls the strong-Wolfe line search
   and is *not* representative of L-BFGS on this problem.) The objective is
   matrix-free (one conv2d Laplacian per evaluation); ``A(c)`` is never factorised
@@ -477,11 +475,7 @@ class JointFreqODIL(Optimiser):
         A step ends early (fewer than ``inner_max_iter`` iterations, evaluation
         budget ``max_eval`` not spent) only when ``tolerance_grad`` or
         ``tolerance_change`` is met; zero iterations means the starting point
-        already met ``tolerance_grad``. Which tolerance is decided afterwards from
-        the gradient at the post-step point, as L-BFGS tests ``tolerance_grad``
-        first. A tolerance met on a step's last allowed iteration is not seen
-        here; the next step then ends early instead (so with ``inner_max_iter=1``
-        only ``tolerance_grad`` can end the solve early).
+        already met ``tolerance_grad``.
         """
         if n_iters == 0:
             return True
@@ -640,8 +634,8 @@ class JointFreqODIL(Optimiser):
         self.loss.callback.result = {
             "loss": loss_value,
             "n_outer_iter": n_iter_run,
-            "n_lbfgs_iter": lbfgs_state["n_iter"],
-            "n_evaluations": lbfgs_state["func_evals"],
+            "n_lbfgs_iter": lbfgs_state.get("n_iter", 0),
+            "n_evaluations": lbfgs_state.get("func_evals", 0),
             "termination_reason": termination,
             "wall_s": wall_s,
             "method": "joint",
