@@ -89,9 +89,9 @@ def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
     return VelocityModel(grid, profile=profile, **kw)
 
 
-# Experiment config for a tiny single-band joint inversion: names only the
+# Run config for a tiny single-band joint inversion: names only the
 # values that differ from the default config (the ``RunConfig`` defaults).
-TINY_EXPERIMENT = {
+TINY_RUN_CONFIG = {
     "runtime": {"dtype": "float64"},
     "grid": {
         "interior_shape": [20, 20],
@@ -113,13 +113,13 @@ TINY_EXPERIMENT = {
 
 
 @pytest.fixture
-def tiny_experiment(tmp_path) -> dict:
-    """The tiny experiment config, writing its run under ``tmp_path``.
+def tiny_run_config(tmp_path) -> dict:
+    """The tiny run config, writing its run under ``tmp_path``.
 
     Tests needing a variant ``deep_merge`` their changes onto it.
     """
     return deep_merge(
-        TINY_EXPERIMENT, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
+        TINY_RUN_CONFIG, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
     )
 
 

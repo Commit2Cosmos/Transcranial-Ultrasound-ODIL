@@ -44,7 +44,7 @@ Formulation
           + w_reg  * R(c_interior)
 
   with ``pde_weight``, ``data_weight`` and ``w_reg = reg_weight`` fixed run-level
-  hyperparameters (never adapted). The experiment runner fills all three from
+  hyperparameters (never adapted). The run layer fills all three from
   ``loss.weights.{pde,data,reg}`` (defaults 1 / 1 / 0); the regulariser is
   applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
   scaled relative residual above, not the raw ``InverseLoss`` mean.
