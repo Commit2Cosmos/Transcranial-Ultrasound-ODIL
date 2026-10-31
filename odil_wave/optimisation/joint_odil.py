@@ -385,7 +385,7 @@ class JointFreqODIL(Optimiser):
         pde_term = mean_real_sq(r_pde / self.pde_scale)
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
-        reg_term = 0.0
+        reg_term = torch.zeros((), dtype=self.dtype, device=self.device)
         if self.reg_weight != 0.0 and self.loss.config.regulariser is not None:
             c_int = self.latent.c_of_z(z_m)
             reg_term = self.reg_weight * self.loss.config.regulariser(c_int)
@@ -399,7 +399,7 @@ class JointFreqODIL(Optimiser):
                     "pde_term": float(pde_term.detach()),
                     "pde_term_weighted": float((self.pde_weight * pde_term).detach()),
                     "data_term": float((self.data_weight * data_term).detach()),
-                    "reg_term": float(torch.as_tensor(reg_term).real.detach()),
+                    "reg_term": float(reg_term.detach()),
                     "pde_loss": float(pde_term.detach()),
                     "data_loss": float(data_term.detach()),
                     "pde_rms_raw": float(rms_abs(r_pde).detach()),

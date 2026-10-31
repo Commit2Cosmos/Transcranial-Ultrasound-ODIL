@@ -149,7 +149,8 @@ def test_run_inverse_two_bands_chain_models(tiny_experiment, monkeypatch):
             assert (band_dir / name).exists()
         meta = json.loads((band_dir / "c_final_metadata.json").read_text())
         assert meta["frequencies_hz"] == freqs
-        # no hard-coded fields: the outer loop always runs the full budget.
+        # n_iter_run / termination_reason were hard-coded (the outer loop
+        # always runs the full budget), so the summary no longer carries them.
         summary = json.loads((band_dir / "band_summary.json").read_text())
         assert summary["n_iter_requested"] == 3
         assert not {"n_iter_run", "termination_reason"} & set(summary)

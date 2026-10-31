@@ -246,9 +246,10 @@ class RunRecorder:
         RecordingTape
             A tape wired to this recorder.
         """
+        # Fold the finished band's closure total in before starting the next.
         if self._last_tape is not None:
             prev = self._last_tape.result or {}
-            self._n_eval_done += int(prev.get("n_closure", 0))
+            self._n_eval_done += int(prev.get("n_evaluations", 0))
         self._last_tape = RecordingTape(
             recorder=self,
             band_index=band_index,
