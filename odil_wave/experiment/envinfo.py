@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import os
 import platform
-import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -87,48 +85,6 @@ def resolve_device(name: str):
     return torch.device("cpu")
 
 
-def _run_git(repo_root: Path, *args: str) -> Optional[str]:
-    """Run ``git -C repo_root <args>`` and return its trimmed stdout.
-
-    Parameters
-    ----------
-    repo_root : Path
-        Repository root passed to ``git -C``.
-    *args : str
-        Git subcommand and arguments.
-
-    Returns
-    -------
-    str or None
-        Trimmed stdout on success; ``None`` on a non-zero exit or any error.
-    """
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_root), *args],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if out.returncode != 0:
-            return None
-        return out.stdout.strip()
-    except Exception:
-        return None
-
-
-def git_info(repo_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Best-effort git SHA / branch / dirty flag for the code under ``repo_root``."""
-    root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parent
-    sha = _run_git(root, "rev-parse", "HEAD")
-    branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
-    status = _run_git(root, "status", "--porcelain")
-    return {
-        "sha": sha,
-        "branch": branch,
-        "dirty": (bool(status) if status is not None else None),
-    }
-
-
 def platform_info() -> Dict[str, Any]:
     """Host / OS / Python info that does not require importing torch."""
     return {
@@ -178,21 +134,21 @@ def _package_versions() -> Dict[str, Any]:
 
 def collect_metadata(
     *,
-    run_id: str,
     optimiser: str,
     device_requested: str,
     device_resolved: Optional[str] = None,
     dtype: str,
     seed: int,
     include_torch: bool = True,
-    repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Assemble the metadata record tying artifacts to code + environment.
+    """Assemble the environment part of the metadata record.
 
-    ``include_torch=False`` (used by ``--dry-run``) skips importing torch.
+    The code's commit and lockfile come from
+    :meth:`~odil_wave.experiment.rundir.RunDirectory.provenance`.
+
+    ``include_torch=False`` skips importing torch.
     """
     meta: Dict[str, Any] = {
-        "run_id": run_id,
         "optimiser": optimiser,
         "timestamp_local": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -203,7 +159,6 @@ def collect_metadata(
         "seed": seed,
         "argv": list(sys.argv),
         "platform": platform_info(),
-        "git": git_info(repo_root),
     }
     if include_torch:
         meta["versions"] = _package_versions()

@@ -36,12 +36,11 @@ MPS_AVAILABLE = getattr(torch.backends, "mps", None) is not None and (
         ),
     ],
 )
-def test_cli_tiny_two_band_run_float32(tmp_path, tiny_run_config, device):
+def test_cli_tiny_two_band_run_float32(tmp_path, git_repo, tiny_run_config, device):
     """A float32 2-band run through the CLI completes and improves the model."""
     user_cfg = deep_merge(
         tiny_run_config,
         {
-            "run": {"run_id": f"e2e_{device}"},
             "continuation": {
                 "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
             },
@@ -51,20 +50,20 @@ def test_cli_tiny_two_band_run_float32(tmp_path, tiny_run_config, device):
     config_path.write_text(yaml.safe_dump(user_cfg))
     overrides = [f"runtime.device={device}", "runtime.dtype=float32"]
 
-    argv = ["--config", str(config_path)]
+    run_dir = tmp_path / "run"
+    argv = ["--config", str(config_path), "--out", str(run_dir)]
     for o in overrides:
         argv += ["--override", o]
-    assert main.main(argv) == 0
+    assert main.main(argv, repo_root=git_repo) == 0
 
     cfg = resolve_config(user_cfg, overrides=overrides)
-    run_dir = cfg.run_dir()
 
     # The run used the requested device and precision (no silent CPU fallback).
     meta = json.loads((run_dir / "metadata.json").read_text())
     assert meta["device_resolved"] == device
     assert meta["dtype"] == "float32"
 
-    summary = json.loads((run_dir / "final" / "run_summary.json").read_text())
+    summary = json.loads((run_dir / "run_summary.json").read_text())
     assert summary["status"] == "completed"
     assert summary["n_bands"] == 2
     metrics = summary["metrics_summary"]
@@ -75,5 +74,5 @@ def test_cli_tiny_two_band_run_float32(tmp_path, tiny_run_config, device):
 
     problem = build_problem(cfg)
 
-    c_final = np.load(run_dir / "final" / "c_final.npy")
+    c_final = np.load(sorted((run_dir / "bands").iterdir())[-1] / "c_final.npy")
     assert c_final.shape == tuple(problem.grid.shape)

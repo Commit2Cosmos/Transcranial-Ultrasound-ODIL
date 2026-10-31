@@ -75,11 +75,11 @@ def test_forward_to_loss_gradient_flows():
     assert float(c.grad.abs().max()) > 0
 
 
-def test_run_inverse_tiny_problem_recovers(tiny_run_config):
+def test_run_inverse_tiny_problem_recovers(tiny_run_config, new_run):
     """A full tiny run_inverse completes, writes artifacts, and improves the model."""
     cfg = resolve_config(tiny_run_config)
     problem = build_problem(cfg)
-    result = run_inverse(cfg)
+    result = run_inverse(cfg, new_run())
 
     # --- run outcome --------------------------------------------------------- #
     assert result.status == "completed"
@@ -87,7 +87,7 @@ def test_run_inverse_tiny_problem_recovers(tiny_run_config):
     start = result.metrics_summary["start_metrics"]
     final = result.metrics_summary["final_metrics"]
     assert final["rmse_brain"] < start["rmse_brain"]
-    c_final = np.load(result.final_c_path)
+    c_final = np.load(result.band_results[-1].c_final_path)
     assert _rel_c_error(c_final, problem.truth_velocity, problem.grid) < _rel_c_error(
         problem.init_velocity.c, problem.truth_velocity, problem.grid
     )
@@ -104,12 +104,11 @@ def test_run_inverse_tiny_problem_recovers(tiny_run_config):
     assert losses[-1] <= losses[0]
 
 
-def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch):
+def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_run):
     """Each band writes its artifacts and band 2 starts from band 1's model."""
     user_cfg = deep_merge(
         tiny_run_config,
         {
-            "run": {"run_id": "two_bands"},
             "continuation": {
                 "bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]
             },
@@ -128,7 +127,7 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch):
         return original(problem, velocity_model, *args, **kwargs)
 
     monkeypatch.setattr(runner, "run_frequency_band", spy)
-    result = run_inverse(cfg)
+    result = run_inverse(cfg, new_run())
     assert result.status == "completed"
 
     # --- one artifact directory per band ------------------------------------ #
@@ -161,18 +160,15 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch):
         band_inputs[1].c.detach().cpu().numpy(), band0_c, rtol=1e-6
     )
     # the run's final model is the last band's.
-    np.testing.assert_array_equal(
-        np.load(result.final_c_path), np.load(band_dirs[1] / "c_final.npy")
-    )
+    assert result.final_velocity is result.band_results[1].velocity_model
 
 
-def _built_optimiser(run_config, monkeypatch, run_id, loss_cfg):
+def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
     """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
     the runner built (captured from ``runner._build_optimiser``)."""
     user_cfg = deep_merge(
         run_config,
         {
-            "run": {"run_id": run_id},
             "loss": loss_cfg,
             "optimiser": {"n_iter": 1, "inner_max_iter": 2},
         },
@@ -185,7 +181,7 @@ def _built_optimiser(run_config, monkeypatch, run_id, loss_cfg):
         return built[-1]
 
     monkeypatch.setattr(runner, "_build_optimiser", spy)
-    assert run_inverse(resolve_config(user_cfg)).status == "completed"
+    assert run_inverse(resolve_config(user_cfg), run_directory).status == "completed"
     return built[0]
 
 
@@ -198,28 +194,28 @@ def _objective_off_truth(opt):
     return L, opt._last["pde_loss"], opt._last["data_loss"]
 
 
-def test_loss_weights_scale_the_joint_objective(tiny_run_config, monkeypatch):
+def test_loss_weights_scale_the_joint_objective(tiny_run_config, monkeypatch, new_run):
     """loss.weights.pde / .data set through the run config scale the objective."""
     base = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
     L1, p, d = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "w1", base)
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("w1"), base)
     )
     assert p > 0 and d > 0
 
     pde3 = {"weights": {"pde": 3.0, "data": 1.0, "reg": 0.0}}
     L_pde, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "w2", pde3)
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("w2"), pde3)
     )
     np.testing.assert_allclose(L_pde, L1 + 2.0 * p, rtol=1e-10)
 
     data5 = {"weights": {"pde": 1.0, "data": 5.0, "reg": 0.0}}
     L_dat, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "w3", data5)
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("w3"), data5)
     )
     np.testing.assert_allclose(L_dat, L1 + 4.0 * d, rtol=1e-10)
 
 
-def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch):
+def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch, new_run):
     """The regulariser contributes only when loss.weights.reg > 0."""
 
     def loss_cfg(reg):
@@ -230,22 +226,24 @@ def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch):
 
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
     L_plain, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "r0", plain)
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("r0"), plain)
     )
     L_off, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "r1", loss_cfg(0.0))
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("r1"), loss_cfg(0.0))
     )
     L_on, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, "r2", loss_cfg(1e-3))
+        _built_optimiser(tiny_run_config, monkeypatch, new_run("r2"), loss_cfg(1e-3))
     )
     assert L_off == L_plain
     assert L_on > L_plain
 
 
-def test_optimiser_result_loss_is_at_the_final_iterate(tiny_run_config, monkeypatch):
+def test_optimiser_result_loss_is_at_the_final_iterate(
+    tiny_run_config, monkeypatch, new_run
+):
     """The result loss is the objective at the returned (u, z), not pre-step."""
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
-    opt = _built_optimiser(tiny_run_config, monkeypatch, "final_loss", plain)
+    opt = _built_optimiser(tiny_run_config, monkeypatch, new_run("final_loss"), plain)
     result = opt.loss.callback.result
     s = opt.final_state
     with torch.no_grad():

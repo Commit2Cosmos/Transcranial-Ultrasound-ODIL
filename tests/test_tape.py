@@ -123,7 +123,7 @@ def test_summaries_report_the_tape_at_the_final_iterate(tiny_two_band_run):
     for b, summary in enumerate(summaries):
         assert summary["start_metrics"] == pytest.approx(band_rows(rows, b)[0])
         assert summary["final_metrics"] == pytest.approx(band_rows(rows, b)[-1])
-    run_summary = json.loads((run_dir / "final" / "run_summary.json").read_text())
+    run_summary = json.loads((run_dir / "run_summary.json").read_text())
     metrics = run_summary["metrics_summary"]
     assert metrics["start_metrics"] == pytest.approx(rows[0])
     assert metrics["final_metrics"] == pytest.approx(rows[-1])
@@ -183,6 +183,11 @@ def band_start_models(run_dir: Path, problem) -> list:
     return [c0] + [np.load(d / "c_final.npy") for d in band_dirs[:-1]]
 
 
+def final_band_dir(run_dir: Path) -> Path:
+    """The last band's directory, holding the run's final model."""
+    return sorted(p for p in (run_dir / "bands").iterdir() if p.is_dir())[-1]
+
+
 def rms(x: torch.Tensor) -> float:
     return float(x.abs().square().mean().sqrt())
 
@@ -233,7 +238,7 @@ def test_model_errors_match_the_band_models(tiny_two_band_run):
     problem = build_problem(tiny_two_band_run.config)
     _, rows = read_tape(run_dir)
     starts = band_start_models(run_dir, problem)
-    finals = starts[1:] + [np.load(run_dir / "final" / "c_final.npy")]
+    finals = starts[1:] + [np.load(final_band_dir(run_dir) / "c_final.npy")]
     for b, (c_start, c_final) in enumerate(zip(starts, finals)):
         rows_b = band_rows(rows, b)
         for row, c in ((rows_b[0], c_start), (rows_b[-1], c_final)):
@@ -241,21 +246,23 @@ def test_model_errors_match_the_band_models(tiny_two_band_run):
                 assert row[key] == pytest.approx(value, rel=1e-5, abs=1e-6), (b, key)
 
 
-def run_cli(tmp_path: Path, user: dict) -> Path:
+def run_cli(tmp_path: Path, repo: Path, user: dict, expect: int = 0) -> Path:
     """Run ``user`` (a run config) through the CLI; return its run directory."""
-    user = deep_merge(user, {"run": {"output_root": str(tmp_path), "run_id": "run"}})
     path = tmp_path / "run_config.yaml"
     path.write_text(yaml.safe_dump(user))
-    assert main.main(["--config", str(path)]) == 0
-    return resolve_config(user).run_dir()
+    run_dir = tmp_path / "run"
+    argv = ["--config", str(path), "--out", str(run_dir)]
+    assert main.main(argv, repo_root=repo) == expect
+    return run_dir
 
 
-def test_reg_term_and_model_update_at_each_row(tmp_path):
+def test_reg_term_and_model_update_at_each_row(tmp_path, git_repo):
     """reg_term is w_reg * R(c) at the logged model; rel_model_update compares
     with the previous row (here the start row: log_every > n_iter)."""
     w_reg = 1e-3
     run_dir = run_cli(
         tmp_path,
+        git_repo,
         deep_merge(
             TINY_RUN_CONFIG,
             {
@@ -272,7 +279,9 @@ def test_reg_term_and_model_update_at_each_row(tmp_path):
     problem = build_problem(resolve_config(TINY_RUN_CONFIG))
     sl = problem.grid.interior_slice
     c_start = problem.init_velocity.c[sl].double()
-    c_final = torch.as_tensor(np.load(run_dir / "final" / "c_final.npy"))[sl].double()
+    c_final = torch.as_tensor(np.load(final_band_dir(run_dir) / "c_final.npy"))[
+        sl
+    ].double()
     reg = Regulariser(kind="tikhonov", eps=1e-8)  # eps is unused by tikhonov
     for row, c in zip(rows, (c_start, c_final)):
         # c_final.npy is float32: its cell-to-cell differences carry ~1e-4 error.
@@ -312,13 +321,7 @@ def test_reg_term_is_zero_without_a_regulariser(tiny_two_band_run):
         {"truth": {"profile": "shepp_logan_skull"}},
     ],
 )
-def test_nothing_to_score_is_a_config_error(tmp_path, capsys, change):
-    user = deep_merge(
-        deep_merge(TINY_RUN_CONFIG, change),
-        {"run": {"output_root": str(tmp_path), "run_id": "bad"}},
-    )
-    path = tmp_path / "run_config.yaml"
-    path.write_text(yaml.safe_dump(user))
-    assert main.main(["--config", str(path)]) == 2
+def test_nothing_to_score_is_a_config_error(tmp_path, git_repo, capsys, change):
+    run_dir = run_cli(tmp_path, git_repo, deep_merge(TINY_RUN_CONFIG, change), 2)
     assert "config error:" in capsys.readouterr().err
-    assert not (tmp_path / "bad" / "tape.csv").exists()
+    assert not (run_dir / "tape.csv").exists()

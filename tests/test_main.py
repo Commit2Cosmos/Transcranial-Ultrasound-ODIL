@@ -55,10 +55,7 @@ def test_print_defaults_prints_the_default_config(tmp_path, capsys):
     printed.write_text(capsys.readouterr().out)
 
     resolved = resolve_config(load_config_file(printed)).to_dict()
-    defaults = resolve_config({}).to_dict()
-    resolved["run"].pop("run_id")
-    defaults["run"].pop("run_id")
-    assert resolved == defaults
+    assert resolved == resolve_config({}).to_dict()
 
 
 def test_dry_run_default_config(capsys):
@@ -93,16 +90,15 @@ def test_override_applies(run_config_file, capsys):
     assert "n_iter=40" in out
 
 
-def test_no_config_runs_the_default_config(tmp_path):
+def test_no_config_runs_the_default_config(tmp_path, git_repo):
     """Without --config a run starts from the default config (overrides keep it
     tiny)."""
-    run = {"output_root": str(tmp_path), "run_id": "no_config"}
-    overrides = _dotted_overrides({**TINY_RUN_CONFIG, "run": run})
+    overrides = _dotted_overrides(TINY_RUN_CONFIG)
     overrides.append("optimiser.n_iter=2")
-    argv = []
+    argv = ["--out", str(tmp_path / "no_config")]
     for o in overrides:
         argv += ["--override", o]
-    assert main.main(argv) == 0
+    assert main.main(argv, repo_root=git_repo) == 0
 
     resolved = load_config_file(tmp_path / "no_config" / "config_resolved.yaml")
     assert resolved == resolve_config({}, overrides=overrides).to_dict()

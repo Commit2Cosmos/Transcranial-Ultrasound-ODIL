@@ -9,6 +9,10 @@ Examples
     python main.py --config configs/<run-config>.yaml \
         --override optimiser.n_iter=40
     python main.py --config configs/<run-config>.yaml --dry-run
+    python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
+
+A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
+needs a clean git tree unless ``--scratch`` is given.
 
 The default config is defined in code (the ``RunConfig`` dataclass defaults in
 ``odil_wave/experiment/config.py``); a run config names only the values
@@ -19,13 +23,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
 def _summarise(cfg) -> str:
     lines: List[str] = []
-    lines.append(f"run.run_id      : {cfg.run.run_id}")
-    lines.append(f"output dir      : {cfg.run_dir()}")
     lines.append(
         "optimiser       : joint  "
         f"(n_iter={cfg.optimiser.n_iter}, log_every={cfg.optimiser.log_every})"
@@ -60,7 +63,15 @@ def _summarise(cfg) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) -> int:
+    """Run the CLI; return the exit code.
+
+    Exit codes: ``0`` the run completed (or a dry run / ``--print-defaults``),
+    ``1`` it failed or was interrupted, ``2`` it could not start (a config
+    error, a dirty tree without ``--scratch``, an existing ``--out``).
+    ``repo_root`` is the code's git repository, checked for a clean tree;
+    it defaults to the one holding this file.
+    """
     parser = argparse.ArgumentParser(
         description="Reproducible frequency-domain FWI runner."
     )
@@ -89,6 +100,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Resolve+validate the config, print a summary, write nothing.",
     )
+    parser.add_argument(
+        "--scratch",
+        action="store_true",
+        help="Allow uncommitted changes: a scratch run, marked as such and "
+        "saving its git diff. No experiment record may cite it.",
+    )
+    # The run directory itself, for --reproduce and tests; normally the entry
+    # point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
+    parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     # config resolution is torch-free; import lazily so --help stays instant.
@@ -125,10 +145,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\n[dry-run] configuration is valid; no artifacts written.")
         return 0
 
+    from odil_wave.experiment.rundir import RunStartError, new_run_directory
     from odil_wave.experiment.runner import run_inverse
 
     try:
-        result = run_inverse(cfg, input_config=user_dict)
+        run_directory = new_run_directory(
+            scratch=args.scratch, out=args.out, repo_root=repo_root
+        )
+    except RunStartError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        result = run_inverse(cfg, run_directory)
     except ConfigError as exc:  # found at startup, once the problem is built
         print(f"config error: {exc}", file=sys.stderr)
         return 2

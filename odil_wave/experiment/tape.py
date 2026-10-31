@@ -60,6 +60,23 @@ TAPE_COLUMNS: List[str] = [
     "grad_z_norm",
 ]
 
+# A non-finite loss, gradient or velocity in any of these fails the run.
+FINITE_COLUMNS: List[str] = [
+    "loss_total",
+    "pde_term",
+    "data_term",
+    "reg_term",
+    "grad_u_norm",
+    "grad_z_norm",
+    "c_min",
+    "c_max",
+]
+
+
+class NonFiniteError(RuntimeError):
+    """A tape row with a non-finite loss, gradient or velocity: the run has
+    blown up. The row is written before this is raised."""
+
 
 class ModelError:
     """Error of an interior velocity against the truth, by region.
@@ -232,7 +249,14 @@ class BandTape:
         self.final_row: Optional[Dict[str, Any]] = None
 
     def record(self, it: Iterate) -> Dict[str, Any]:
-        """Write the row for iterate ``it`` and return it."""
+        """Write the row for iterate ``it`` and return it.
+
+        Raises
+        ------
+        NonFiniteError
+            After writing the row, if a loss, gradient or velocity column in it
+            is non-finite (:data:`FINITE_COLUMNS`).
+        """
         sl = self._interior
         c = _np(it.c_full[sl])
         u = it.u[:, :, sl[0], sl[1]]
@@ -271,6 +295,14 @@ class BandTape:
             self.start_row = row
         self.final_row = row
         self.tape.append(row)
+        bad = [
+            k for k in FINITE_COLUMNS if row[k] is not None and not np.isfinite(row[k])
+        ]
+        if bad:
+            raise NonFiniteError(
+                f"non-finite {', '.join(bad)} at band {self.band_index}, "
+                f"iter {row['iter']}"
+            )
         return row
 
 
