@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,7 @@ from odil_wave.experiment import (
 
 # The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
 EXPECTED_SHAPE = {
-    "run": ["run_id", "output_root", "seed", "tags", "notes"],
+    "run": ["seed", "tags", "notes"],
     "runtime": ["device", "dtype", "torch_num_threads", "deterministic", "verbose"],
     "grid": ["interior_shape", "interior_extent", "c_min", "c_max", "space_order"],
     "pml": ["width", "power", "R0", "damping_scale", "observation_width"],
@@ -92,13 +91,6 @@ def test_resolve_empty_config_gives_the_default_values():
     assert cfg.acquisition.n_transducers == 64
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[60e3]]
     assert cfg.pml.observation_width is None
-    assert cfg.run.run_id  # auto-minted, non-empty
-
-
-def test_default_run_id_has_no_optimiser_token():
-    """Auto-minted run_id is <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>."""
-    run_id = resolve_config({}).run.run_id
-    assert re.fullmatch(r"\d{6}_\d{6}_shepp-logan_125x125_80_60", run_id), run_id
 
 
 def test_resolve_config_overlays_user_fields():

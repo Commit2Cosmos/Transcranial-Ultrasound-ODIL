@@ -18,7 +18,13 @@ layer only resolves configuration, orchestrates the run, logs, and saves.
 python main.py                                         # the default config
 python main.py --print-defaults                        # print it as YAML
 python main.py --config configs/example_multiband.yaml # a run config
+python main.py --scratch -c configs/example_multiband.yaml  # dirty tree
 ```
+
+A run is written to `outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/` and needs
+a clean git tree unless `--scratch` is given (see "Standalone and scratch
+runs"). Exit codes: `0` completed, `1` failed or interrupted, `2` could not
+start (config error, dirty tree, existing `--out`).
 
 The **default config** (a single-band joint Shepp-Logan run) is defined only in
 code: the `RunConfig` dataclass defaults in `config.py`, whose docstrings
@@ -30,10 +36,13 @@ is parsed as a float, matching the notebook's Python literals.
 Programmatic use:
 
 ```python
-from odil_wave.experiment import resolve_config, run_inverse, load_config_file
+from odil_wave.experiment import (
+    load_config_file, new_run_directory, resolve_config, run_inverse,
+)
 
 cfg = resolve_config(load_config_file("configs/example_multiband.yaml"))
-result = run_inverse(cfg)                 # -> RunResult
+# new_run_directory applies the clean-tree policy; scratch=True allows a dirty one
+result = run_inverse(cfg, new_run_directory())   # -> RunResult
 print(result.metrics_summary["final_metrics"]["ssim_brain"])
 ```
 
@@ -41,7 +50,7 @@ print(result.metrics_summary["final_metrics"]["ssim_brain"])
 
 All figures come from the library, so a saved run reproduces without
 re-solving. These helpers read the artifacts below (`tape.csv`,
-`bands/*/c_final.npy`, `final/c_final.npy`):
+`bands/*/c_final.npy`; the last band's is the run's final model):
 
 ```python
 from odil_wave.experiment import (
@@ -71,10 +80,12 @@ band, so a stalled run is obvious and can be interrupted:
 from odil_wave.experiment import LiveVelocityView
 
 live = LiveVelocityView(problem.truth_velocity)
-result = run_inverse(cfg, on_band_end=live)
+result = run_inverse(cfg, new_run_directory(scratch=True), on_band_end=live)
 ```
 
-A callback exception is caught and reported, never aborting the run.
+A callback exception is caught and reported, never aborting the run. Ctrl-C (a
+`KeyboardInterrupt`) ends the run as `interrupted`, keeping the tape and the
+completed bands.
 
 ## Override settings from the CLI
 
@@ -105,7 +116,9 @@ and writes **no** artifacts.
 
 > **Spec ahead of code.** This section is the design decided in "Experiment
 > spec format and reproduce command" (#56). The implementation issue lands the
-> code and removes this note.
+> code and removes this note. Already implemented: standalone runs
+> (`outputs/runs/`, `--scratch`, the hidden `--out`, and run directories
+> chosen by the entry point rather than the Run config).
 
 An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
 **baseline** run config. Its **experiment spec** is run by one entry point into
@@ -238,9 +251,13 @@ path, never rewrites old directories. The flags `--experiment`, `--out`,
 
 ## Where each artifact is written
 
-> **Spec ahead of code.** This layout is the one decided in "Contents of a
-> saved run" (#54). The implementation issue lands the code and removes this
-> note.
+> **Spec ahead of code (in part).** This layout is the one decided in
+> "Contents of a saved run" (#54). Not written yet: `problem.npz`, the band
+> `arrays.npz` and the band-summary contents listed below (#64 lands them and
+> removes this note); until then each band directory holds the recovered
+> full-grid `c_final.npy` beside its `band_summary.json`. Everything else here
+> (location, `metadata.json`, `git.diff`, `tape.csv`, `run_summary.json`,
+> atomic writes) is implemented.
 
 One self-contained directory per run (located as in "Where runs and
 experiments are written" above):

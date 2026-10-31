@@ -3,14 +3,13 @@ per frequency band, and write a self-contained artifact directory per run.
 
 Public entry points
 --------------------
-``run_inverse(config) -> RunResult``            run every continuation band
-``run_frequency_band(...) -> BandResult``        one continuation stage
-``build_problem(config) -> Problem``             (re-exported from problem.py)
+``run_inverse(config, run_directory) -> RunResult``  run every continuation band
+``run_frequency_band(...) -> BandResult``            one continuation stage
+``build_problem(config) -> Problem``                 (re-exported from problem.py)
 """
 
 from __future__ import annotations
 
-import json
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -24,8 +23,9 @@ from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from . import envinfo
-from .config import BandCfg, RunConfig, validate_config
+from .config import BandCfg, ConfigError, RunConfig, validate_config
 from .problem import Problem, build_problem, grid_summary
+from .rundir import RunDirectory, write_json
 from .tape import MetricTape
 
 # Name of the (only) solver, recorded in run metadata and loss-tape names.
@@ -60,56 +60,13 @@ class RunResult:
     status: str
     band_results: List[BandResult] = field(default_factory=list)
     final_velocity: Any = None
-    final_c_path: Optional[Path] = None
     metrics_summary: Dict[str, Any] = field(default_factory=dict)
     error: Optional[Dict[str, Any]] = None
 
 
 # --------------------------------------------------------------------------- #
-# Small IO helpers
+# Small helpers
 # --------------------------------------------------------------------------- #
-def _atomic_json(path: Path, obj: Any) -> None:
-    """Atomically write ``obj`` to ``path`` as indented JSON.
-
-    Parameters
-    ----------
-    path : Path
-        Destination file (written via a temp file then renamed).
-    obj : Any
-        JSON-serialisable object (non-standard types via :func:`_json_default`).
-
-    Returns
-    -------
-    None
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, default=_json_default))
-    tmp.replace(path)
-
-
-def _json_default(o: Any) -> Any:
-    """JSON fallback serialiser for numpy scalars and ``Path`` objects.
-
-    Parameters
-    ----------
-    o : Any
-        Object json cannot natively serialise.
-
-    Returns
-    -------
-    Any
-        A JSON-friendly value (float / int / str).
-    """
-    if isinstance(o, (np.floating,)):
-        return float(o)
-    if isinstance(o, (np.integer,)):
-        return int(o)
-    if isinstance(o, Path):
-        return str(o)
-    return str(o)
-
-
 def _band_label(frequencies_hz: List[float]) -> str:
     """Human-readable kHz label for a band's frequencies.
 
@@ -276,7 +233,7 @@ def run_frequency_band(
     c_path = band_dir / "c_final.npy"
     _atomic_npy(c_path, c_full)
 
-    _atomic_json(
+    write_json(
         band_dir / "c_final_metadata.json",
         {
             "band_index": band_index,
@@ -320,7 +277,7 @@ def run_frequency_band(
         "optimiser_result": opt_result,
         "c_final": "c_final.npy",
     }
-    _atomic_json(band_dir / "band_summary.json", band_summary)
+    write_json(band_dir / "band_summary.json", band_summary)
 
     print(
         f"  [band {band_index} {label}] iters {n_iter} "
@@ -429,32 +386,46 @@ def _dump_band_config(
 # --------------------------------------------------------------------------- #
 def run_inverse(
     config: RunConfig,
+    run_directory: RunDirectory,
     *,
-    input_config: Optional[Dict[str, Any]] = None,
     on_band_end: Optional[Callable[["BandResult", "RunResult"], None]] = None,
 ) -> RunResult:
-    """Run the full (single- or multi-band) inversion and write all artifacts.
+    """Run the full (single- or multi-band) inversion into ``run_directory``.
 
-    ``input_config`` (the raw user dict before resolution) is accepted for
-    backwards-compatible call sites but is no longer written to disk; the fully
-    resolved ``config_resolved.yaml`` is the sole recorded configuration.
+    ``run_summary.json`` is always written, with ``status``: ``completed``,
+    ``failed`` (any exception, including a non-finite loss, gradient or
+    velocity; the traceback is saved) or ``interrupted`` (a
+    ``KeyboardInterrupt``, e.g. Ctrl-C). A failed or interrupted run keeps its
+    tape rows and completed bands and is returned, not raised; only a
+    :class:`ConfigError` found at startup is re-raised, after the summary.
 
-    ``on_band_end(band_result, run_result)`` is called after every completed
-    frequency band, with the freshly recovered model already recorded in
-    ``run_result.band_results``. Use it to monitor progress live and stop a
-    stalled run early (e.g. :class:`odil_wave.experiment.LiveVelocityView`). A
-    callback error is caught and reported, never aborting the run.
+    Parameters
+    ----------
+    config : RunConfig
+        The resolved Run config.
+    run_directory : RunDirectory
+        Where the run is written, from
+        :func:`~odil_wave.experiment.rundir.new_run_directory`.
+    on_band_end : callable, optional
+        ``on_band_end(band_result, run_result)``, called after every completed
+        band with the recovered model already in ``run_result.band_results``
+        (e.g. :class:`odil_wave.experiment.LiveVelocityView`). An exception from
+        it is reported, never aborting the run; a ``KeyboardInterrupt`` ends the
+        run as ``interrupted``.
+
+    Returns
+    -------
+    RunResult
+        The run's status, band results and metrics summary.
     """
     warnings = validate_config(config)
     for w in warnings:
         print(f"  [config warning] {w}")
 
-    run_dir = config.run_dir()
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = run_directory.path
+    run_id = run_directory.run_id
     bands_dir = run_dir / "bands"
-    final_dir = run_dir / "final"
-    bands_dir.mkdir(exist_ok=True)
-    final_dir.mkdir(exist_ok=True)
+    bands_dir.mkdir(parents=True, exist_ok=True)
 
     # Config first, so a crash still leaves the run reproducible. The fully
     # resolved config records every effective value, so it is the single source
@@ -465,45 +436,34 @@ def run_inverse(
         config.run.seed, deterministic=config.runtime.deterministic
     )
     device = envinfo.resolve_device(config.runtime.device)
-    meta = envinfo.collect_metadata(
-        run_id=config.run.run_id,
-        optimiser=SOLVER_NAME,
-        device_requested=config.runtime.device,
-        device_resolved=str(device),
-        dtype=config.runtime.dtype,
-        seed=config.run.seed,
-        repo_root=Path(__file__).resolve().parents[2],
-    )
-    band_stages = list(config.continuation.bands)
-    meta["seed_record"] = seed_record
-    meta["n_bands"] = len(band_stages)
-    meta["n_config_bands"] = len(config.continuation.bands)
-    meta["config_warnings"] = warnings
+    meta = {
+        **run_directory.provenance(),
+        **envinfo.collect_metadata(
+            optimiser=SOLVER_NAME,
+            device_requested=config.runtime.device,
+            device_resolved=str(device),
+            dtype=config.runtime.dtype,
+            seed=config.run.seed,
+        ),
+        "seed_record": seed_record,
+        "n_bands": len(config.continuation.bands),
+        "config_warnings": warnings,
+    }
 
     t_run0 = time.perf_counter()
-    result = RunResult(
-        run_id=config.run.run_id,
-        run_dir=run_dir,
-        config=config,
-        status="running",
-    )
-    last_band_index = -1
+    result = RunResult(run_id=run_id, run_dir=run_dir, config=config, status="running")
     try:
         problem = build_problem(config)
         meta["grid"] = grid_summary(problem)
-        _atomic_json(run_dir / "metadata.json", meta)
+        write_json(run_dir / "metadata.json", meta)
 
         # Raises ConfigError, before any band, if the truth gives nothing to score.
         tape = MetricTape(
-            run_dir / "tape.csv",
-            run_id=config.run.run_id,
-            problem=problem,
-            t0=t_run0,
+            run_dir / "tape.csv", run_id=run_id, problem=problem, t0=t_run0
         )
 
         current = problem.init_velocity
-        for bi, band_cfg in enumerate(band_stages):
-            last_band_index = bi
+        for bi, band_cfg in enumerate(config.continuation.bands):
             band_res = run_frequency_band(
                 problem, current, band_cfg, tape, bi, bands_dir
             )
@@ -515,58 +475,59 @@ def run_inverse(
                     on_band_end(band_res, result)
                 except Exception as cb_exc:  # never let a monitor kill a run
                     print(f"  [on_band_end warning] {type(cb_exc).__name__}: {cb_exc}")
-
-        # ---- final artifacts -------------------------------------------- #
-        final_c = current.c.detach().cpu().numpy().astype(np.float32)
-        final_path = final_dir / "c_final.npy"
-        _atomic_npy(final_path, final_c)
         result.final_velocity = current
-        result.final_c_path = final_path
-
-        # Tape rows: the run's first start row, its final iterate, and each
-        # band's final iterate.
-        final_metrics = result.band_results[-1].final_metrics
-        result.metrics_summary = {
-            "n_bands": len(result.band_results),
-            "start_metrics": result.band_results[0].start_metrics,
-            "final_metrics": final_metrics,
-            "per_band": [b.final_metrics for b in result.band_results],
-        }
         result.status = "completed"
-        run_summary = {
-            "run_id": config.run.run_id,
-            "optimiser": SOLVER_NAME,
-            "status": result.status,
-            "wall_s": time.perf_counter() - t_run0,
-            "n_bands": len(result.band_results),
-            "final_c": "c_final.npy",
-            "metrics_summary": result.metrics_summary,
-            "grid": grid_summary(problem),
-        }
-        _atomic_json(final_dir / "run_summary.json", run_summary)
-        print(
-            f"[run {config.run.run_id}] completed: "
-            f"final rmse_brain={final_metrics['rmse_brain']:.2f} m/s, "
-            f"ssim_brain={final_metrics['ssim_brain']:.4f}"
-        )
-        return result
-
-    except Exception as exc:  # noqa: BLE001 - we want to record any failure
+    except KeyboardInterrupt:
+        result.status = "interrupted"
+    except Exception as exc:  # noqa: BLE001 - every failure is recorded
         result.status = "failed"
-        # iter_total of the last tape row written, if any.
-        last_row = getattr(locals().get("tape"), "last_row", None)
-        last_completed_iter = None if last_row is None else last_row["iter_total"]
-        err = {
-            "run_id": config.run.run_id,
-            "status": "failed",
+        result.error = {
             "exception_type": type(exc).__name__,
             "message": str(exc),
             "traceback": traceback.format_exc(),
-            "last_band_index": last_band_index,
-            "last_completed_logical_iteration": last_completed_iter,
-            "wall_s": time.perf_counter() - t_run0,
         }
-        result.error = err
-        _atomic_json(run_dir / "failure.json", err)
-        print(f"[run {config.run.run_id}] FAILED: {type(exc).__name__}: {exc}")
-        raise
+        if isinstance(exc, ConfigError):
+            _write_run_summary(result, warnings, time.perf_counter() - t_run0)
+            raise
+    _write_run_summary(result, warnings, time.perf_counter() - t_run0)
+    return result
+
+
+def _write_run_summary(result: RunResult, warnings: List[str], wall_s: float) -> None:
+    """Fill ``result.metrics_summary`` from the completed bands, write
+    ``run_summary.json`` and print the outcome.
+
+    The metrics are tape rows: the run's first start row, the final iterate of
+    its last completed band (the run's final iterate when it completed) and
+    each completed band's final row.
+    """
+    bands = result.band_results
+    result.metrics_summary = {
+        "n_bands": len(bands),
+        "start_metrics": bands[0].start_metrics if bands else None,
+        "final_metrics": bands[-1].final_metrics if bands else None,
+        "per_band": [b.final_metrics for b in bands],
+    }
+    write_json(
+        result.run_dir / "run_summary.json",
+        {
+            "run_id": result.run_id,
+            "optimiser": SOLVER_NAME,
+            "status": result.status,
+            "wall_s": wall_s,
+            "warnings": list(warnings),
+            "n_bands": len(result.config.continuation.bands),
+            "metrics_summary": result.metrics_summary,
+            "error": result.error,
+        },
+    )
+    line = f"[run {result.run_id}] {result.status}"
+    final = result.metrics_summary["final_metrics"]
+    if result.error is not None:
+        line += f": {result.error['exception_type']}: {result.error['message']}"
+    elif final is not None:
+        line += (
+            f": final rmse_brain={final['rmse_brain']:.2f} m/s, "
+            f"ssim_brain={final['ssim_brain']:.4f}"
+        )
+    print(line)

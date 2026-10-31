@@ -64,6 +64,9 @@ python main.py --config configs/example_multiband.yaml --dry-run
 python main.py --config configs/example_multiband.yaml \
     --override optimiser.n_iter=40 \
     --override runtime.device=mps
+
+# A run needs a clean git tree; --scratch allows uncommitted changes
+python main.py --scratch --config configs/example_multiband.yaml
 ```
 
 Config resolution is lazy and torch-free, so `--help` and `--dry-run` are
@@ -72,22 +75,29 @@ instant; the numerical stack is only imported once a real run starts.
 ### Programmatic use
 
 ```python
-from odil_wave.experiment import resolve_config, load_config_file, run_inverse
+from odil_wave.experiment import (
+    load_config_file, new_run_directory, resolve_config, run_inverse,
+)
 
 cfg = resolve_config(load_config_file("configs/example_multiband.yaml"),
                      overrides=["optimiser.n_iter=40"])
-result = run_inverse(cfg)          # -> RunResult with per-band metrics
+result = run_inverse(cfg, new_run_directory())  # -> RunResult with per-band metrics
 print(result.metrics_summary)
 ```
 
 ### Outputs
 
-Each run writes a self-contained directory under `outputs/<run_id>/`:
+Each run writes a self-contained directory
+`outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/` (layout in
+`odil_wave/experiment/README.md`):
 
 - `config_resolved.yaml` — every effective value (single source of truth).
-- `metadata.json` — env, seed, git, grid summary.
+- `metadata.json` — schema version, commit, scratch flag, `uv.lock` hash, env,
+  seed, grid summary.
+- `tape.csv` — the per-iteration metric tape.
 - `bands/band_XX_*/` — recovered `c_final.npy` + per-band summary/metrics.
-- `final/c_final.npy`, `final/run_summary.json` — final model + SSIM / rel-c-error.
+- `run_summary.json` — status (`completed | failed | interrupted`), final
+  metrics, and the traceback on failure.
 
 ---
 
@@ -145,9 +155,9 @@ per-band source rotation or scheduling.
 - **Non-dimensional physics.** The grid rescales length/velocity/time so the
   discrete residual is dimensionless; physical `dx, dt, …` are retained only for
   plotting/indexing.
-- **Reproducible by construction.** Seeds, device, git state, and the fully
-  resolved config are recorded per run; a crash still leaves a reproducible
-  `config_resolved.yaml` and a `failure.json`.
+- **Reproducible by construction.** Seeds, device, commit, `uv.lock` hash and
+  the fully resolved config are recorded per run; a crash still leaves a
+  reproducible `config_resolved.yaml` and a `run_summary.json` saying why.
 - **dtype matters.** `float64` reaches much lower loss floors (useful for
   verification); `float32` is the fast path on GPU/MPS.
 

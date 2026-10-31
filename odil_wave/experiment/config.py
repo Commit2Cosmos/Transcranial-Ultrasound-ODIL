@@ -18,7 +18,6 @@ from __future__ import annotations
 import copy
 import json
 import re
-import time
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import (
@@ -44,21 +43,15 @@ class ConfigError(ValueError):
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class RunMetaCfg:
-    """Run identity and output location.
+    """Run seed and free-form labels. The run's directory is not a config value:
+    the entry point picks it (see ``odil_wave.experiment.rundir``).
 
     Params:
-    * ``run_id``: run directory name; blank -> auto-minted from the resolved
-      config at :func:`resolve_config` time as
-      ``<DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>`` (see
-      :func:`_make_run_id`). Set to pin a name.
-    * ``output_root``: output directory; run dir = ``<output_root>/<run_id>``.
     * ``seed``: int RNG seed for reproducibility.
     * ``tags``: list[str] free-form labels recorded in the config.
     * ``notes``: str free-form description.
     """
 
-    run_id: str = ""
-    output_root: str = "outputs"
     seed: int = 0
     tags: List[str] = field(default_factory=list)
     notes: str = ""
@@ -407,10 +400,6 @@ class RunConfig:
         _atomic_write(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
         return p
 
-    def run_dir(self) -> Path:
-        """Return the run output directory ``<output_root>/<run_id>``."""
-        return Path(self.run.output_root) / self.run.run_id
-
 
 # --------------------------------------------------------------------------- #
 # Reflective (de)serialisation over the frozen dataclasses
@@ -614,66 +603,7 @@ def resolve_config(
     the default config into a complete :class:`RunConfig`."""
     merged = deep_merge(default_config_dict(), user_config or {})
     merged = apply_overrides(merged, overrides)
-
-    # Mint a run_id if none was supplied.
-    run = merged.setdefault("run", {})
-    if not run.get("run_id"):
-        run["run_id"] = _make_run_id(merged)
-
     return RunConfig.from_dict(merged)
-
-
-def _make_run_id(merged: Dict[str, Any]) -> str:
-    """Build a descriptive run directory name from a merged config dict.
-
-    Format::
-
-        <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>
-
-    e.g. ``280726_133521_shepp-logan_125x125_80_40-50-60-70`` — where
-    ``problem`` is the truth profile, ``grid`` the interior shape, ``f0`` and
-    ``bands`` are frequencies in kHz (bands joined by ``-``; multiple
-    frequencies within one continuation stage joined by ``+``).
-    """
-    ts = time.strftime("%d%m%y_%H%M%S", time.localtime())
-
-    problem = _slug(str((merged.get("truth", {}) or {}).get("profile", "model")))
-
-    shape = (merged.get("grid", {}) or {}).get("interior_shape", []) or []
-    grid_size = "x".join(str(int(n)) for n in shape) or "grid"
-
-    f0 = _khz_token((merged.get("source", {}) or {}).get("f0"))
-    bands = _bands_token((merged.get("continuation", {}) or {}).get("bands", []) or [])
-
-    parts = [ts, problem, grid_size, f0, bands]
-    return "_".join(p for p in parts if p)
-
-
-def _slug(text: str) -> str:
-    """Lowercase slug with runs of non-alphanumerics collapsed to ``-``."""
-    return re.sub(r"[^0-9a-zA-Z]+", "-", str(text)).strip("-").lower() or "x"
-
-
-def _khz_token(hz: Any) -> str:
-    """Render a frequency in Hz as a kHz token (``80e3`` -> ``80``, ``1.5e3``
-    -> ``1p5``); ``na`` when unparseable."""
-    try:
-        khz = float(hz) / 1e3
-    except (TypeError, ValueError):
-        return "na"
-    if abs(khz - round(khz)) < 1e-9:
-        return str(int(round(khz)))
-    return ("%g" % khz).replace(".", "p")
-
-
-def _bands_token(bands: List[Any]) -> str:
-    """Join per-stage kHz tokens: stages by ``-``, frequencies within one
-    stage by ``+`` (``[[40e3], [70e3, 80e3]]`` -> ``40-70+80``)."""
-    stage_tokens = []
-    for b in bands:
-        freqs = (b or {}).get("frequencies_hz", []) or []
-        stage_tokens.append("+".join(_khz_token(f) for f in freqs) if freqs else "na")
-    return "-".join(stage_tokens) or "na"
 
 
 def validate_config(cfg: "RunConfig") -> List[str]:

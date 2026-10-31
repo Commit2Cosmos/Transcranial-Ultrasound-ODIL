@@ -21,7 +21,8 @@ from .plots import (
     rebuild_problem,
 )
 from .problem import BandContext, Problem, build_problem, grid_summary
-from .tape import TAPE_COLUMNS, BandTape, MetricTape
+from .rundir import RunDirectory, RunStartError, new_run_directory
+from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
 from .runner import (
     BandResult,
     RunResult,
@@ -44,10 +45,15 @@ __all__ = [
     "BandContext",
     "build_problem",
     "grid_summary",
+    # run directory
+    "RunDirectory",
+    "RunStartError",
+    "new_run_directory",
     # metric tape
     "MetricTape",
     "BandTape",
     "TAPE_COLUMNS",
+    "NonFiniteError",
     # plots / analysis
     "LiveVelocityView",
     "animate_bands",

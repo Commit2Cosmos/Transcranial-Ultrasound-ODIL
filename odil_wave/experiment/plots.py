@@ -106,18 +106,17 @@ def load_final_velocity(
     grid: Optional[Grid] = None,
     pml_c: Optional[float] = None,
 ) -> VelocityModel:
-    """Load ``final/c_final.npy`` into a :class:`VelocityModel`.
+    """Load the last completed band's ``c_final.npy`` (the run's final model)
+    into a :class:`VelocityModel`.
 
     ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
     config, so only the run directory is required; pass them to reuse a
     ``Problem`` you already hold.
     """
-    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
-    path = Path(run_dir) / "final" / "c_final.npy"
-    if not path.exists():
-        raise FileNotFoundError(f"no final velocity at {path}")
-    c = torch.from_numpy(np.load(path))
-    return VelocityModel.from_field(grid, c, pml_c=pml_c)
+    bands = load_band_velocities(run_dir, grid, pml_c)
+    if not bands:
+        raise FileNotFoundError(f"no completed band under {run_dir!r}")
+    return bands[-1][2]
 
 
 def load_band_velocities(
@@ -262,7 +261,7 @@ def plot_velocity_recovery(
     acquisition geometry rebuilt from the run's saved config, so only the run
     directory is required. Pass them explicitly to reuse a live ``Problem``.
 
-    Loads ``final/c_final.npy`` and the tape and delegates to
+    Loads the final band's ``c_final.npy`` and the tape and delegates to
     :meth:`odil_wave.loss.LossTape.show_velocity_recovery`. Extra ``kwargs``
     (``vmin`` / ``vcenter`` / ``vmax`` / ``norm``) are forwarded to it.
     """

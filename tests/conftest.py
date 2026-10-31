@@ -1,5 +1,6 @@
 """Shared fixtures for the odil_wave test-suite."""
 
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,15 +124,59 @@ TINY_RUN_CONFIG = {
 }
 
 
-@pytest.fixture
-def tiny_run_config(tmp_path) -> dict:
-    """The tiny run config, writing its run under ``tmp_path``.
-
-    Tests needing a variant ``deep_merge`` their changes onto it.
-    """
-    return deep_merge(
-        TINY_RUN_CONFIG, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
+def git(repo: Path, *args: str) -> str:
+    """Run ``git -C repo <args>`` and return its trimmed stdout."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
     )
+    return out.stdout.strip()
+
+
+def make_git_repo(path: Path) -> Path:
+    """A throwaway git repo at ``path`` with one commit: a ``uv.lock`` and a
+    ``.gitignore`` that ignores ``outputs/``, as in the real repo."""
+    path.mkdir(parents=True, exist_ok=True)
+    git(path, "init", "-q")
+    (path / ".gitignore").write_text("outputs/\n")
+    (path / "uv.lock").write_text("# a stand-in lockfile\n")
+    (path / "tracked.txt").write_text("committed\n")
+    git(path, "add", ".")
+    git(
+        path,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "init",
+    )
+    return path
+
+
+@pytest.fixture
+def git_repo(tmp_path) -> Path:
+    """A clean throwaway git repo standing in for the code's repository."""
+    return make_git_repo(tmp_path / "repo")
+
+
+@pytest.fixture
+def new_run(tmp_path, git_repo):
+    """``new_run(name)`` -> a fresh :class:`RunDirectory` at ``tmp_path/name``,
+    for calling ``run_inverse`` directly."""
+    from odil_wave.experiment import new_run_directory
+
+    return lambda name="run": new_run_directory(out=tmp_path / name, repo_root=git_repo)
+
+
+@pytest.fixture
+def tiny_run_config() -> dict:
+    """The tiny run config. Tests needing a variant ``deep_merge`` their changes
+    onto it."""
+    return deep_merge(TINY_RUN_CONFIG, {})
 
 
 # Two bands of 3 outer iterations logged every 2: ``log_every`` doesn't divide
@@ -151,15 +196,13 @@ def tiny_two_band_run(tmp_path_factory) -> SimpleNamespace:
     import main
 
     root = tmp_path_factory.mktemp("tiny_two_band_run")
-    user = deep_merge(
-        deep_merge(TINY_RUN_CONFIG, TINY_TWO_BAND_RUN),
-        {"run": {"output_root": str(root), "run_id": "two_band"}},
-    )
+    user = deep_merge(TINY_RUN_CONFIG, TINY_TWO_BAND_RUN)
     config_path = root / "run_config.yaml"
     config_path.write_text(yaml.safe_dump(user))
-    assert main.main(["--config", str(config_path)]) == 0
-    config = resolve_config(user)
-    return SimpleNamespace(run_dir=config.run_dir(), config=config)
+    run_dir = root / "two_band"
+    argv = ["--config", str(config_path), "--out", str(run_dir)]
+    assert main.main(argv, repo_root=make_git_repo(root / "repo")) == 0
+    return SimpleNamespace(run_dir=run_dir, config=resolve_config(user))
 
 
 @pytest.fixture
