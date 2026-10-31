@@ -385,9 +385,11 @@ class JointFreqODIL(Optimiser):
         pde_term = mean_real_sq(r_pde / self.pde_scale)
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
+        reg_term = torch.zeros((), dtype=self.dtype, device=self.device)
         if self.reg_weight != 0.0 and self.loss.config.regulariser is not None:
             c_int = self.latent.c_of_z(z_m)
-            L = L + self.reg_weight * self.loss.config.regulariser(c_int)
+            reg_term = self.reg_weight * self.loss.config.regulariser(c_int)
+            L = L + reg_term
         if L.is_complex():
             L = L.real
         if record:
@@ -397,6 +399,7 @@ class JointFreqODIL(Optimiser):
                     "pde_term": float(pde_term.detach()),
                     "pde_term_weighted": float((self.pde_weight * pde_term).detach()),
                     "data_term": float((self.data_weight * data_term).detach()),
+                    "reg_term": float(reg_term.detach()),
                     "pde_loss": float(pde_term.detach()),
                     "data_loss": float(data_term.detach()),
                     "pde_rms_raw": float(rms_abs(r_pde).detach()),
@@ -497,10 +500,9 @@ class JointFreqODIL(Optimiser):
             L.backward()
             return L
 
-        loss_value = None
         t0 = time.perf_counter()
         for i in range(self.n_iter):
-            loss_value = opt.step(closure)
+            opt.step(closure)
 
             # Diagnostic evaluation at the current (post-step) point.
             should_log = (i % self.log_every == 0) or (i == self.n_iter - 1)
@@ -533,7 +535,10 @@ class JointFreqODIL(Optimiser):
                         # Weighted terms as minimised (weights applied here).
                         "pde_term": self._last["pde_term_weighted"],
                         "data_term": self._last["data_term"],
+                        "reg_term": self._last["reg_term"],
                         "pde_src_ratio": self._last["pde_src_ratio"],
+                        # Closures so far in this solve (diagnostics excluded).
+                        "n_evaluations": self._n_eval,
                     }
                     self.loss.callback.log(
                         loss_scalar,
@@ -576,6 +581,11 @@ class JointFreqODIL(Optimiser):
                 pml_c=self.vm_in.pml_c,
             )
             u_final = self.physical_u(u_re.detach(), u_im.detach())
+            # ``LBFGS.step`` returns the loss at the *start* of the step; report
+            # the objective at the final iterate instead (not counted as a closure).
+            loss_final = float(
+                self.objective(u_re.detach(), u_im.detach(), z_final, record=False)
+            )
 
         outputs: List[Wavefield] = []
         for s in range(self.n_shots):
@@ -595,17 +605,13 @@ class JointFreqODIL(Optimiser):
             "c_full_final": c_full_final,
         }
         self.loss.callback.result = {
-            "loss": (float(loss_value.detach()) if loss_value is not None else None),
+            "loss": loss_final,
             "n_outer_iter": self.n_iter,
-            "n_outer_budget": self.n_iter,
             "n_closure": self._n_eval,
             "n_evaluations": self._n_eval,
             "wall_s": wall_s,
             "method": "joint",
             "data_weight": self.data_weight,
-            "n_factor": 0,
-            "n_forward_solves": 0,
-            "n_adjoint_solves": 0,
             "scale_info": self.scale_info,
         }
         return outputs, self.loss.callback

@@ -14,8 +14,8 @@ optimiser's ``on_iteration`` hook:
 
 Semantics of one record: it corresponds to a single *logical outer iteration*
 ``i`` of the solver, **not** an L-BFGS closure / function
-evaluation. The cumulative function-evaluation count is logged separately as
-``n_evaluations`` for diagnostics.
+evaluation. The run-wide cumulative closure count of the joint optimiser is
+logged separately as ``n_evaluations`` for diagnostics.
 """
 
 from __future__ import annotations
@@ -35,7 +35,8 @@ from odil_wave.metrics import ssim as _ssim
 from .config import MetricsCfg
 
 
-# Ordered CSV columns == JSONL keys. Documented in experiment/README.md.
+# Ordered CSV columns == JSONL keys, as written today. The README's tape
+# table is the planned replacement (#62), not these columns.
 FIELDNAMES: List[str] = [
     "run_id",
     "solver",
@@ -106,11 +107,6 @@ class RecordingTape(LossTape):
         self.band_frequencies_hz = [float(f) for f in band_frequencies_hz]
         self._cur_iter: Optional[int] = None
         self._cur_c: Optional[torch.Tensor] = None
-        self._loss_obj: Any = None
-
-    def bind_loss(self, loss: Any) -> None:
-        """Give the tape the InverseLoss so it can read eval counts / regulariser."""
-        self._loss_obj = loss
 
     # -- optimiser hook (every outer iteration) ---------------------------- #
     def on_iteration(self, i: int, c_full: Optional[torch.Tensor]) -> None:
@@ -205,6 +201,9 @@ class RunRecorder:
         self.metrics_cfg = metrics_cfg
         self.t0 = time.perf_counter() if t0 is None else t0
         self._global_iter = 0
+        # Closures of finished bands, so ``n_evaluations`` spans the whole run.
+        self._n_eval_done = 0
+        self._last_tape: Optional[RecordingTape] = None
 
         # Ground truth (full grid) + interior arrays for error / SSIM.
         if truth_velocity is not None:
@@ -248,13 +247,18 @@ class RunRecorder:
         RecordingTape
             A tape wired to this recorder.
         """
-        return RecordingTape(
+        # Fold the finished band's closure total in before starting the next.
+        if self._last_tape is not None:
+            prev = self._last_tape.result or {}
+            self._n_eval_done += int(prev.get("n_evaluations", 0))
+        self._last_tape = RecordingTape(
             recorder=self,
             band_index=band_index,
             band_frequencies_hz=frequencies_hz,
             name=name,
             log_every=log_every,
         )
+        return self._last_tape
 
     # -- SSIM on the configured head ROI ----------------------------------- #
     def _ssim_head_roi(self, c_full: torch.Tensor) -> tuple:
@@ -330,22 +334,14 @@ class RunRecorder:
             pde_src_ratio if pde_src_ratio is not None else res.get("pde_src_ratio")
         )
 
-        n_eval = None
-        has_regulariser = False
-        if tape._loss_obj is not None:
-            n_eval = getattr(tape._loss_obj, "evaluations", None)
-            has_regulariser = (
-                getattr(tape._loss_obj.config, "regulariser", None) is not None
-            )
+        band_n_eval = res.get("n_evaluations")
+        n_eval = None if band_n_eval is None else self._n_eval_done + int(band_n_eval)
         # Weighted terms as reported by the optimiser (which applies the
-        # weights), so the log matches what was minimised.
+        # weights), from the same objective evaluation as ``loss``, so
+        # pde_term + data_term + reg_term == loss_total.
         pde_term = _f(res.get("pde_term"))
         data_term = _f(res.get("data_term"))
-        # Weighted regularisation contribution: 0 without a regulariser, else
-        # null. Not derived as (loss - pde_term - data_term): the solver loss and
-        # the residual terms are evaluated at slightly different points, so that
-        # subtraction would report line-search noise rather than the reg term.
-        reg_term = 0.0 if not has_regulariser else None
+        reg_term = _f(res.get("reg_term"))
 
         # Velocity-field summaries on the non-PML interior.
         c_min = c_max = c_mean = c_std = rel_err = None
@@ -393,7 +389,7 @@ class RunRecorder:
             "rel_c_error": rel_err,
             "ssim_head_roi": ssim_val,
             "ssim_reason": ssim_reason,
-            "n_evaluations": (None if n_eval is None else int(n_eval)),
+            "n_evaluations": n_eval,
         }
         self._append(row)
         return row
