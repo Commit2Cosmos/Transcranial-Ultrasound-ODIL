@@ -35,7 +35,8 @@ from odil_wave.metrics import ssim as _ssim
 from .config import MetricsCfg
 
 
-# Ordered CSV columns == JSONL keys. Documented in experiment/README.md.
+# Ordered CSV columns == JSONL keys, as written today. The README's tape
+# table is the planned replacement (#62), not these columns.
 FIELDNAMES: List[str] = [
     "run_id",
     "solver",

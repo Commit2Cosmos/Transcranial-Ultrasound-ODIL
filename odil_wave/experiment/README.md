@@ -311,12 +311,13 @@ fires every outer iteration and stamps the outer index + current velocity field;
 the inherited `log(...)` fires only at `log_every` and carries the exact loss the
 solver reports. This needs **zero changes to the optimiser**.
 
-Fields (`tape.csv` columns), see `recorder.FIELDNAMES`.
+Fields (`tape.csv` columns):
 
-> **Spec ahead of code.** This table is the column set decided in
+> **Planned (#62).** This table is the column set decided in
 > "Review reconstruction metrics" (#42), amended by "Standard post-processing
-> and plot set" (#53). The implementation issue lands the
-> code and removes this note. Regions follow `GLOSSARY.md` (**Brain region**,
+> and plot set" (#53); "Metric tape" (#62) lands the code and removes this
+> note. Until then a run writes `metrics.csv` / `metrics.jsonl` with the
+> columns in `recorder.FIELDNAMES`. Regions follow `GLOSSARY.md` (**Brain region**,
 > **Skull region**, **Interior**); `c*`, `u*`, `d_obs` are the truth model, the
 > true wavefield and the observed traces.
 
