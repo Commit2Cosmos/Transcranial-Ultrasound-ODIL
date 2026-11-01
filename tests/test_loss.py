@@ -111,15 +111,16 @@ def test_loss_tape_c_history_cadence():
 
 
 def test_loss_tape_from_records():
-    """from_records rebuilds the scalar series present in metric rows."""
+    """from_records rebuilds the scalar series present in tape rows."""
     records = [
-        {"loss_total": 2.0, "pde_rms": 0.4, "data_rms": 0.2},
-        {"loss_total": 1.0, "pde_rms": 0.3, "data_rms": 0.1},
+        {"loss_total": 2.0, "rmse_brain": 40.0, "ssim_brain": None},
+        {"loss_total": 1.0, "rmse_brain": 30.0, "ssim_brain": None},
     ]
     tape = LossTape.from_records(records, name="loaded")
     assert tape.name == "loaded"
     assert tape.history["loss"] == [2.0, 1.0]
-    assert tape.history["pde_rms"] == [0.4, 0.3]
+    assert tape.history["rmse_brain"] == [40.0, 30.0]
+    assert "ssim_brain" not in tape.history
 
 
 def test_loss_tape_result_property():

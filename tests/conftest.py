@@ -1,11 +1,15 @@
 """Shared fixtures for the odil_wave test-suite."""
 
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import matplotlib
 
 import pytest
 import torch
+import yaml
 
 from odil_wave import (
     AcquisitionGeometry,
@@ -17,9 +21,13 @@ from odil_wave import (
     WaveEquation,
     Wavefield,
 )
-from odil_wave.experiment import deep_merge
+from odil_wave.experiment import deep_merge, resolve_config
 
 matplotlib.use("Agg")
+
+# The repo-root ``main.py`` CLI, importable as ``main``.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 # Small, shared problem parameters.
 INTERIOR = (20, 20)
@@ -89,9 +97,9 @@ def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
     return VelocityModel(grid, profile=profile, **kw)
 
 
-# Experiment config for a tiny single-band joint inversion: names only the
+# Run config for a tiny single-band joint inversion: names only the
 # values that differ from the default config (the ``RunConfig`` defaults).
-TINY_EXPERIMENT = {
+TINY_RUN_CONFIG = {
     "runtime": {"dtype": "float64"},
     "grid": {
         "interior_shape": [20, 20],
@@ -103,24 +111,98 @@ TINY_EXPERIMENT = {
     "time": {"t_max": 6e-5, "init_nt": 200},
     "source": {"f0": 40e3, "n_cycles": 2.0},
     "acquisition": {"n_transducers": 8, "source_spatial": "point"},
-    "truth": {"profile": "overdensity", "contrast": 150.0, "extra": {"radius": 0.012}},
+    # Shepp-Logan has the brain and skull regions the tape scores. A slow skull
+    # keeps the truth inside the grid's velocity bounds; a small head keeps the
+    # transducers in water and is recovered within the tiny budget.
+    "truth": {"profile": "shepp_logan", "scale": 0.6, "extra": {"c_skull": 1700.0}},
     "init": {"profile": "homogeneous"},
     "continuation": {"bands": [{"frequencies_hz": [40e3]}]},
     "loss": {"weights": {"data": 10.0}},
     "optimiser": {"n_iter": 10, "log_every": 1},
-    "metrics": {"ssim": {"mask": "none"}},
+    # A 5-cell SSIM window leaves part of the tiny brain region after erosion.
+    "metrics": {"ssim": {"sigma": 0.5}},
 }
 
 
-@pytest.fixture
-def tiny_experiment(tmp_path) -> dict:
-    """The tiny experiment config, writing its run under ``tmp_path``.
-
-    Tests needing a variant ``deep_merge`` their changes onto it.
-    """
-    return deep_merge(
-        TINY_EXPERIMENT, {"run": {"output_root": str(tmp_path), "run_id": "tiny"}}
+def git(repo: Path, *args: str) -> str:
+    """Run ``git -C repo <args>`` and return its trimmed stdout."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
     )
+    return out.stdout.strip()
+
+
+def make_git_repo(path: Path) -> Path:
+    """A throwaway git repo at ``path`` with one commit: a ``uv.lock`` and a
+    ``.gitignore`` that ignores ``outputs/``, as in the real repo."""
+    path.mkdir(parents=True, exist_ok=True)
+    git(path, "init", "-q")
+    (path / ".gitignore").write_text("outputs/\n")
+    (path / "uv.lock").write_text("# a stand-in lockfile\n")
+    (path / "tracked.txt").write_text("committed\n")
+    git(path, "add", ".")
+    git(
+        path,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "init",
+    )
+    return path
+
+
+@pytest.fixture
+def git_repo(tmp_path) -> Path:
+    """A clean throwaway git repo standing in for the code's repository."""
+    return make_git_repo(tmp_path / "repo")
+
+
+@pytest.fixture
+def new_run(tmp_path, git_repo):
+    """``new_run(name)`` -> a fresh :class:`RunDirectory` at ``tmp_path/name``,
+    for calling ``run_inverse`` directly."""
+    from odil_wave.experiment import new_run_directory
+
+    return lambda name="run": new_run_directory(out=tmp_path / name, repo_root=git_repo)
+
+
+@pytest.fixture
+def tiny_run_config() -> dict:
+    """The tiny run config. Tests needing a variant ``deep_merge`` their changes
+    onto it."""
+    return deep_merge(TINY_RUN_CONFIG, {})
+
+
+# Two bands of 3 outer iterations logged every 2: ``log_every`` doesn't divide
+# ``n_iter``, so each band's final iterate is logged off the cadence.
+TINY_TWO_BAND_RUN = {
+    "continuation": {"bands": [{"frequencies_hz": [30e3]}, {"frequencies_hz": [40e3]}]},
+    "optimiser": {"n_iter": 3, "log_every": 2},
+}
+
+
+@pytest.fixture(scope="session")
+def tiny_two_band_run(tmp_path_factory) -> SimpleNamespace:
+    """One tiny two-band run through the CLI, shared by tests that only read it.
+
+    Returns ``run_dir`` and the resolved ``config``.
+    """
+    import main
+
+    root = tmp_path_factory.mktemp("tiny_two_band_run")
+    user = deep_merge(TINY_RUN_CONFIG, TINY_TWO_BAND_RUN)
+    config_path = root / "run_config.yaml"
+    config_path.write_text(yaml.safe_dump(user))
+    run_dir = root / "two_band"
+    argv = ["--config", str(config_path), "--out", str(run_dir)]
+    assert main.main(argv, repo_root=make_git_repo(root / "repo")) == 0
+    return SimpleNamespace(run_dir=run_dir, config=resolve_config(user))
 
 
 @pytest.fixture

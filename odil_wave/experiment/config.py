@@ -1,11 +1,11 @@
-"""Typed, serialisable experiment configuration for frequency-domain FWI runs.
+"""Typed, serialisable run configuration for frequency-domain FWI runs.
 
 Dependency-light (standard library + PyYAML only, no ``torch`` / ``odil_wave``
 imports) so a config can be resolved and validated without importing the
 numerical stack.
 
 The dataclass defaults below are the **default config**, the only one: there is
-no default YAML file (ADR 0001). An experiment config names only the values it
+no default YAML file (ADR 0001). A run config names only the values it
 changes; :func:`resolve_config` applies it (and any CLI overrides) to these
 defaults, and the resolved config written to ``config_resolved.yaml`` records
 every value. ``python main.py --print-defaults`` prints the default config.
@@ -18,7 +18,6 @@ from __future__ import annotations
 import copy
 import json
 import re
-import time
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import (
@@ -34,6 +33,8 @@ from typing import (
 
 import yaml
 
+from .atomic import write_text_atomic
+
 
 class ConfigError(ValueError):
     """Raised for malformed / unknown configuration entries."""
@@ -44,21 +45,15 @@ class ConfigError(ValueError):
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class RunMetaCfg:
-    """Run identity and output location.
+    """Run seed and free-form labels. The run's directory is not a config value:
+    the entry point picks it (see ``odil_wave.experiment.rundir``).
 
     Params:
-    * ``run_id``: run directory name; blank -> auto-minted from the resolved
-      config at :func:`resolve_config` time as
-      ``<DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>`` (see
-      :func:`_make_run_id`). Set to pin a name.
-    * ``output_root``: output directory; run dir = ``<output_root>/<run_id>``.
     * ``seed``: int RNG seed for reproducibility.
     * ``tags``: list[str] free-form labels recorded in the config.
     * ``notes``: str free-form description.
     """
 
-    run_id: str = ""
-    output_root: str = "outputs"
     seed: int = 0
     tags: List[str] = field(default_factory=list)
     notes: str = ""
@@ -327,22 +322,32 @@ class OptimiserCfg:
 
 @dataclass(frozen=True)
 class SSIMCfg:
-    """Masked SSIM settings for the ``ssim_head_roi`` metric.
+    """Settings of the tape's ``ssim_brain`` metric.
+
+    The scoring rule is fixed (Gaussian window, ``use_sample_covariance=False``,
+    data range = peak-to-peak of the truth over the brain region, map averaged
+    over the brain region eroded by the window radius).
 
     Params:
-    * ``mask``: ``"head_roi"`` (intracranial mask) | ``"interior"`` (whole
-      non-PML interior) | ``"none"``.
-    * ``data_range``: ``"auto"`` (peak-to-peak of truth in mask) | float.
-    * ``win_size``: odd int >= 3; SSIM window size.
-    * ``gaussian_weights``: Gaussian vs uniform SSIM window.
-    * ``sigma``: Gaussian window std (used when ``gaussian_weights``).
+    * ``sigma``: > 0 Gaussian window std in cells. The window spans
+      ``2 * round(3.5 * sigma) + 1`` cells (``sigma = 1.5``: 11, Wang 2004)
+      and must fit in the interior.
     """
 
-    mask: str = "head_roi"
-    data_range: Union[str, float] = "auto"
-    win_size: int = 7
-    gaussian_weights: bool = False
     sigma: float = 1.5
+
+
+def ssim_window_size(sigma: float) -> int:
+    """Width in cells of the Gaussian SSIM window of std ``sigma``.
+
+    Matches ``skimage.metrics.structural_similarity``, which truncates the
+    Gaussian at 3.5 standard deviations either side of the centre cell.
+    """
+    return 2 * int(3.5 * float(sigma) + 0.5) + 1
+
+
+# Truth profiles that define a brain and a skull region.
+_REGION_PROFILES = ("shepp_logan", "shepp_logan_skull")
 
 
 @dataclass(frozen=True)
@@ -376,6 +381,10 @@ class RunConfig:
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
 
+    def band_n_iter(self, band: BandCfg) -> int:
+        """``band``'s outer iterations: its ``n_iter``, else ``optimiser.n_iter``."""
+        return int(band.n_iter if band.n_iter is not None else self.optimiser.n_iter)
+
     # -- serialisation ----------------------------------------------------- #
     def to_dict(self) -> Dict[str, Any]:
         """Return the config as a nested plain-dict tree."""
@@ -393,13 +402,8 @@ class RunConfig:
     def to_json(self, path: Union[str, Path]) -> Path:
         """Write the config to ``path`` as JSON; return the path."""
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
+        write_text_atomic(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
         return p
-
-    def run_dir(self) -> Path:
-        """Return the run output directory ``<output_root>/<run_id>``."""
-        return Path(self.run.output_root) / self.run.run_id
 
 
 # --------------------------------------------------------------------------- #
@@ -512,18 +516,9 @@ def load_config_file(path: Union[str, Path]) -> Dict[str, Any]:
 def _dump_yaml(obj: Dict[str, Any], path: Union[str, Path]) -> Path:
     """Atomically write ``obj`` to ``path`` as block-style YAML."""
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(obj, sort_keys=False, default_flow_style=False, width=100)
-    _atomic_write(p, text)
+    write_text_atomic(p, text)
     return p
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically (write tmp then rename)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
 
 
 # --------------------------------------------------------------------------- #
@@ -600,70 +595,11 @@ def resolve_config(
     user_config: Optional[Dict[str, Any]] = None,
     overrides: Optional[List[str]] = None,
 ) -> RunConfig:
-    """Resolve an experiment config ``user_config`` and dotted ``overrides`` onto
+    """Resolve a run config ``user_config`` and dotted ``overrides`` onto
     the default config into a complete :class:`RunConfig`."""
     merged = deep_merge(default_config_dict(), user_config or {})
     merged = apply_overrides(merged, overrides)
-
-    # Mint a run_id if none was supplied.
-    run = merged.setdefault("run", {})
-    if not run.get("run_id"):
-        run["run_id"] = _make_run_id(merged)
-
     return RunConfig.from_dict(merged)
-
-
-def _make_run_id(merged: Dict[str, Any]) -> str:
-    """Build a descriptive run directory name from a merged config dict.
-
-    Format::
-
-        <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>
-
-    e.g. ``280726_133521_shepp-logan_125x125_80_40-50-60-70`` — where
-    ``problem`` is the truth profile, ``grid`` the interior shape, ``f0`` and
-    ``bands`` are frequencies in kHz (bands joined by ``-``; multiple
-    frequencies within one continuation stage joined by ``+``).
-    """
-    ts = time.strftime("%d%m%y_%H%M%S", time.localtime())
-
-    problem = _slug(str((merged.get("truth", {}) or {}).get("profile", "model")))
-
-    shape = (merged.get("grid", {}) or {}).get("interior_shape", []) or []
-    grid_size = "x".join(str(int(n)) for n in shape) or "grid"
-
-    f0 = _khz_token((merged.get("source", {}) or {}).get("f0"))
-    bands = _bands_token((merged.get("continuation", {}) or {}).get("bands", []) or [])
-
-    parts = [ts, problem, grid_size, f0, bands]
-    return "_".join(p for p in parts if p)
-
-
-def _slug(text: str) -> str:
-    """Lowercase slug with runs of non-alphanumerics collapsed to ``-``."""
-    return re.sub(r"[^0-9a-zA-Z]+", "-", str(text)).strip("-").lower() or "x"
-
-
-def _khz_token(hz: Any) -> str:
-    """Render a frequency in Hz as a kHz token (``80e3`` -> ``80``, ``1.5e3``
-    -> ``1p5``); ``na`` when unparseable."""
-    try:
-        khz = float(hz) / 1e3
-    except (TypeError, ValueError):
-        return "na"
-    if abs(khz - round(khz)) < 1e-9:
-        return str(int(round(khz)))
-    return ("%g" % khz).replace(".", "p")
-
-
-def _bands_token(bands: List[Any]) -> str:
-    """Join per-stage kHz tokens: stages by ``-``, frequencies within one
-    stage by ``+`` (``[[40e3], [70e3, 80e3]]`` -> ``40-70+80``)."""
-    stage_tokens = []
-    for b in bands:
-        freqs = (b or {}).get("frequencies_hz", []) or []
-        stage_tokens.append("+".join(_khz_token(f) for f in freqs) if freqs else "na")
-    return "-".join(stage_tokens) or "na"
 
 
 def validate_config(cfg: "RunConfig") -> List[str]:
@@ -744,22 +680,20 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"got {loss.regulariser.name!r}"
         )
 
-    ws = cfg.metrics.ssim.win_size
-    if ws < 3 or ws % 2 == 0:
-        raise ConfigError(f"metrics.ssim.win_size must be odd and >= 3, got {ws}")
-    if cfg.metrics.ssim.mask not in ("head_roi", "interior", "none"):
+    # The tape scores the brain and skull regions of the truth model.
+    if cfg.truth.profile not in _REGION_PROFILES:
         raise ConfigError(
-            f"metrics.ssim.mask must be head_roi/interior/none, "
-            f"got {cfg.metrics.ssim.mask!r}"
+            f"truth.profile {cfg.truth.profile!r} has no brain or skull region "
+            f"for the tape's model-error metrics; use one of {list(_REGION_PROFILES)}"
         )
-
-    if (
-        cfg.truth.profile not in ("shepp_logan", "shepp_logan_skull")
-        and cfg.metrics.ssim.mask == "head_roi"
-    ):
-        warnings.append(
-            f"truth profile {cfg.truth.profile!r} has no head mask; "
-            "ssim_head_roi will be recorded as null."
+    sigma = float(cfg.metrics.ssim.sigma)
+    if sigma <= 0:
+        raise ConfigError(f"metrics.ssim.sigma must be > 0, got {sigma}")
+    win = ssim_window_size(sigma)
+    if win > min(cfg.grid.interior_shape):
+        raise ConfigError(
+            f"metrics.ssim.sigma={sigma} gives a {win}-cell SSIM window, larger "
+            f"than the interior {list(cfg.grid.interior_shape)}"
         )
 
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):

@@ -37,7 +37,7 @@ Everything importable lives under the `odil_wave` package:
 
 Top-level `main.py` is the CLI entry point. The **default config** is defined in
 code — the `RunConfig` dataclass defaults in `odil_wave/experiment/config.py`,
-whose docstrings document every field — and `configs/` holds **experiment
+whose docstrings document every field — and `configs/` holds **run
 configs** that name only the values they change (see
 [ADR 0001](docs/adr/0001-config-defaults-single-owner.md)).
 
@@ -54,7 +54,7 @@ python main.py
 # Print the full default config as YAML
 python main.py --print-defaults
 
-# An experiment config (only the values that differ from the defaults)
+# A run config (only the values that differ from the defaults)
 python main.py --config configs/example_multiband.yaml
 
 # Validate + print a summary, write nothing
@@ -64,6 +64,9 @@ python main.py --config configs/example_multiband.yaml --dry-run
 python main.py --config configs/example_multiband.yaml \
     --override optimiser.n_iter=40 \
     --override runtime.device=mps
+
+# A run needs a clean git tree; --scratch allows uncommitted changes
+python main.py --scratch --config configs/example_multiband.yaml
 ```
 
 Config resolution is lazy and torch-free, so `--help` and `--dry-run` are
@@ -72,22 +75,31 @@ instant; the numerical stack is only imported once a real run starts.
 ### Programmatic use
 
 ```python
-from odil_wave.experiment import resolve_config, load_config_file, run_inverse
+from odil_wave.experiment import (
+    load_config_file, new_run_directory, resolve_config, run_inverse,
+)
 
 cfg = resolve_config(load_config_file("configs/example_multiband.yaml"),
                      overrides=["optimiser.n_iter=40"])
-result = run_inverse(cfg)          # -> RunResult with per-band metrics
+result = run_inverse(cfg, new_run_directory())  # -> RunResult with per-band metrics
 print(result.metrics_summary)
 ```
 
 ### Outputs
 
-Each run writes a self-contained directory under `outputs/<run_id>/`:
+Each run writes a self-contained directory
+`outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/` (layout in
+`odil_wave/experiment/README.md`):
 
 - `config_resolved.yaml` — every effective value (single source of truth).
-- `metadata.json` — env, seed, git, grid summary.
-- `bands/band_XX_*/` — recovered `c_final.npy` + per-band summary/metrics.
-- `final/c_final.npy`, `final/run_summary.json` — final model + SSIM / rel-c-error.
+- `metadata.json` — schema version, commit, scratch flag, `uv.lock` hash, env,
+  seed, grid summary.
+- `tape.csv` — the per-iteration metric tape.
+- `problem.npz` — truth and starting models, masks, transducer angles.
+- `bands/band_XX_*/` — `arrays.npz` (model, data, saved wavefields) +
+  `band_summary.json` (metrics, costs, health warnings), per completed band.
+- `run_summary.json` — status (`completed | failed | interrupted`), final
+  metrics, and the traceback on failure.
 
 ---
 
@@ -110,7 +122,7 @@ or removed keys are rejected.
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
 | `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
-| `metrics`      | `ssim.mask` (`head_roi`/`interior`/`none`), `ssim.win_size` | Scoring region and window. |
+| `metrics`      | `ssim.sigma` | Gaussian window of the tape's `ssim_brain`; the truth must have brain and skull regions (`shepp_logan`/`shepp_logan_skull`). |
 
 ### Optimiser
 
@@ -145,9 +157,9 @@ per-band source rotation or scheduling.
 - **Non-dimensional physics.** The grid rescales length/velocity/time so the
   discrete residual is dimensionless; physical `dx, dt, …` are retained only for
   plotting/indexing.
-- **Reproducible by construction.** Seeds, device, git state, and the fully
-  resolved config are recorded per run; a crash still leaves a reproducible
-  `config_resolved.yaml` and a `failure.json`.
+- **Reproducible by construction.** Seeds, device, commit, `uv.lock` hash and
+  the fully resolved config are recorded per run; a crash still leaves a
+  reproducible `config_resolved.yaml` and a `run_summary.json` saying why.
 - **dtype matters.** `float64` reaches much lower loss floors (useful for
   verification); `float32` is the fast path on GPU/MPS.
 
@@ -174,7 +186,7 @@ physics operators (`test_operator.py`), the `Wavefield` container
 (`test_grid.py`), source wavelets (`test_source.py`), velocity model profiles
 (`test_models.py`), acquisition geometry and trace extraction
 (`test_geometry.py`), the loss/regulariser/loss-tape assembly (`test_loss.py`),
-the experiment config/problem-building layer (`test_experiments.py`), the
+the run-config/problem-building layer (`test_experiments.py`), the
 one-owner-per-parameter rule for library constructors
 (`test_parameter_ownership.py`), and end-to-end forward-to-loss and tiny-inversion runs (`test_integration.py`).
 

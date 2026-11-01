@@ -5,13 +5,24 @@ Examples
 --------
     python main.py                                  # the default config
     python main.py --print-defaults                 # print the default config
-    python main.py --config configs/<experiment>.yaml
-    python main.py --config configs/<experiment>.yaml \
+    python main.py --config configs/<run-config>.yaml
+    python main.py --config configs/<run-config>.yaml \
         --override optimiser.n_iter=40
-    python main.py --config configs/<experiment>.yaml --dry-run
+    python main.py --config configs/<run-config>.yaml --dry-run
+    python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
+    python main.py --live --config configs/<run-config>.yaml     # watch it
+    python main.py --postprocess outputs/runs/<run>  # redraw its figures
+    python main.py --postprocess outputs/experiments/<experiment>  # every run's
+    python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
+    python main.py --experiment configs/experiments/NNNN-slug.yaml --probe
+    python main.py --reproduce NNNN-slug [-o runtime.device=cuda]  # regenerate
+
+A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
+needs a clean git tree unless ``--scratch`` is given. An experiment spec runs
+from a clean tree into ``outputs/experiments/NNNN-slug[_cuda|_mps]/``.
 
 The default config is defined in code (the ``RunConfig`` dataclass defaults in
-``odil_wave/experiment/config.py``); an experiment config names only the values
+``odil_wave/experiment/config.py``); a run config names only the values
 it changes.
 """
 
@@ -19,13 +30,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _summarise(cfg) -> str:
     lines: List[str] = []
-    lines.append(f"run.run_id      : {cfg.run.run_id}")
-    lines.append(f"output dir      : {cfg.run_dir()}")
     lines.append(
         "optimiser       : joint  "
         f"(n_iter={cfg.optimiser.n_iter}, log_every={cfg.optimiser.log_every})"
@@ -50,20 +60,57 @@ def _summarise(cfg) -> str:
         f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
-    lines.append(
-        f"ssim metric     : mask={cfg.metrics.ssim.mask}, win={cfg.metrics.ssim.win_size}, "
-        f"data_range={cfg.metrics.ssim.data_range}"
-    )
+    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma}")
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        lines.append(
-            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})"
-        )
+        lines.append(f"  band {i:02d}: {khz} kHz  (n_iter={cfg.band_n_iter(b)})")
     return "\n".join(lines)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def _postprocess(path: Path) -> int:
+    """``--postprocess``: draw a run directory's figures, or, for an experiment
+    directory (one holding ``experiment.json``), every run's and the
+    experiment's own. Exit 2 if ``path`` is neither or of a format this code
+    can't read, 1 if a run of an experiment couldn't be drawn."""
+    from odil_wave.experiment.postprocess import draw_reported, postprocess_run
+    from odil_wave.experiment.rundir import SchemaVersionError
+
+    if (path / "experiment.json").is_file():
+        from odil_wave.experiment.launch import postprocess_experiment
+
+        failed = []
+
+        def redraw(run_dir: Path) -> None:  # the other runs still redraw
+            if not draw_reported(postprocess_run, run_dir):
+                failed.append(run_dir.name)
+
+        try:
+            postprocess_experiment(path, postprocess_run=redraw)
+        except SchemaVersionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"summary: {path / 'summary.csv'}")
+        return 1 if failed else 0
+
+    try:
+        written = postprocess_run(path)
+    except (FileNotFoundError, SchemaVersionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"figures: {path / 'figures'} ({len(written)} files)")
+    return 0
+
+
+def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) -> int:
+    """Run the CLI; return the exit code.
+
+    Exit codes: ``0`` the run completed (or a dry run / ``--print-defaults``),
+    ``1`` it failed or was interrupted, ``2`` it could not start (a config
+    error, a dirty tree without ``--scratch``, an existing ``--out``).
+    ``repo_root`` is the code's git repository, checked for a clean tree;
+    it defaults to the one holding this file.
+    """
     parser = argparse.ArgumentParser(
         description="Reproducible frequency-domain FWI runner."
     )
@@ -71,7 +118,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--config",
         "-c",
         default=None,
-        help="YAML/JSON experiment config (only the values that differ from the "
+        help="YAML/JSON run config (only the values that differ from the "
         "default config). Omit to run the default config.",
     )
     parser.add_argument(
@@ -92,7 +139,64 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Resolve+validate the config, print a summary, write nothing.",
     )
+    parser.add_argument(
+        "--scratch",
+        action="store_true",
+        help="Allow uncommitted changes: a scratch run, marked as such and "
+        "saving its git diff. No experiment record may cite it.",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Redraw a live view of the run in one window (needs a display).",
+    )
+    parser.add_argument(
+        "--experiment",
+        default=None,
+        metavar="SPEC",
+        help="Run an experiment spec (configs/experiments/NNNN-slug.yaml) into "
+        "outputs/experiments/; re-running resumes it. Needs a clean tree.",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="With --experiment: run 3 iterations of the baseline's first band "
+        "into outputs/probes/ and print each run's runtime estimate. Allowed "
+        "on a dirty tree.",
+    )
+    parser.add_argument(
+        "--reproduce",
+        default=None,
+        metavar="ID",
+        help="Regenerate experiment NNNN-slug's runs at its recorded commit "
+        "into outputs/experiments/; compares nothing. Only "
+        "-o runtime.device=<device> may be given with it.",
+    )
+    # The run (or experiment) directory itself, for --reproduce and tests;
+    # normally the entry point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
+    parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--postprocess",
+        metavar="DIR",
+        default=None,
+        help="Redraw a saved run's figures and CSVs into <DIR>/figures/ and "
+        "exit; for an experiment directory, every run's and its summary.csv. "
+        "Reads only the directory; never re-runs a solve.",
+    )
     args = parser.parse_args(argv)
+
+    if args.postprocess is not None:
+        return _postprocess(Path(args.postprocess))
+    if args.reproduce is not None:
+        return _reproduce(args, repo_root)
+    if args.probe and args.experiment is None:
+        print(
+            "error: --probe estimates an experiment: pass --experiment <spec>",
+            file=sys.stderr,
+        )
+        return 2
+    if args.experiment is not None:
+        return _experiment(args, repo_root)
 
     # config resolution is torch-free; import lazily so --help stays instant.
     import yaml
@@ -128,11 +232,112 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\n[dry-run] configuration is valid; no artifacts written.")
         return 0
 
+    from odil_wave.experiment.rundir import RunStartError, new_run_directory
     from odil_wave.experiment.runner import run_inverse
 
-    result = run_inverse(cfg, input_config=user_dict)
+    try:
+        run_directory = new_run_directory(
+            scratch=args.scratch, out=args.out, repo_root=repo_root
+        )
+    except RunStartError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    on_log = None
+    if args.live:
+        from odil_wave.experiment.live import LiveVelocityView
+
+        on_log = LiveVelocityView()
+
+    try:
+        result = run_inverse(cfg, run_directory, on_log=on_log)
+    except ConfigError as exc:  # found at startup, once the problem is built
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
     print(f"\nartifacts: {result.run_dir}")
     return 0 if result.status == "completed" else 1
+
+
+def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
+    """``--experiment``: the committed spec alone defines the runs."""
+    if _clash(
+        "--experiment",
+        "the committed spec alone defines the runs",
+        ("--config", args.config is not None),
+        ("--scratch", args.scratch),
+    ):
+        return 2
+    from odil_wave.experiment.config import ConfigError
+    from odil_wave.experiment.spec import device_override
+
+    try:  # -o runtime.device=<device> only, as --reproduce passes it
+        device = device_override(args.override)
+    except ConfigError as exc:
+        print(f"error: with --experiment, {exc}", file=sys.stderr)
+        return 2
+    if args.live:
+        print(
+            "error: --live watches a single run; it can't be used with --experiment",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.probe:
+        if _clash(
+            "--probe",
+            "a probe always runs, into outputs/probes/",
+            ("--dry-run", args.dry_run),
+            ("--out", args.out),
+        ):
+            return 2
+        from odil_wave.experiment.probe import probe
+
+        return probe(args.experiment, repo_root=repo_root, device=device)
+
+    from odil_wave.experiment.launch import launch
+
+    # No postprocess_run hook: run_inverse already post-processes every run it
+    # returns (completed, failed or interrupted), so passing one would draw
+    # each run's figures twice.
+    return launch(
+        args.experiment,
+        dry_run=args.dry_run,
+        out=args.out,
+        repo_root=repo_root,
+        device=device,
+    )
+
+
+def _reproduce(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
+    """``--reproduce``: the record's commit and spec alone define the runs."""
+    if _clash(
+        "--reproduce",
+        "the record's commit and spec alone define the runs",
+        ("--config", args.config is not None),
+        ("--experiment", args.experiment is not None),
+        ("--scratch", args.scratch),
+        ("--dry-run", args.dry_run),
+        ("--probe", args.probe),
+        ("--live", args.live),
+        ("--out", args.out is not None),
+    ):
+        return 2
+    from odil_wave.experiment.reproduce import reproduce
+
+    return reproduce(args.reproduce, overrides=args.override, repo_root=repo_root)
+
+
+def _clash(mode: str, reason: str, *flags: Tuple[str, Any]) -> bool:
+    """Print an error naming every ``(flag, used)`` of ``flags`` that is used,
+    since it can't be combined with ``mode`` for ``reason``; return whether
+    any was."""
+    given = [flag for flag, used in flags if used]
+    if given:
+        print(
+            f"error: {', '.join(given)} can't be used with {mode}: {reason}",
+            file=sys.stderr,
+        )
+    return bool(given)
 
 
 if __name__ == "__main__":

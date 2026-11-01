@@ -44,7 +44,7 @@ Formulation
           + w_reg  * R(c_interior)
 
   with ``pde_weight``, ``data_weight`` and ``w_reg = reg_weight`` fixed run-level
-  hyperparameters (never adapted). The experiment runner fills all three from
+  hyperparameters (never adapted). The run layer fills all three from
   ``loss.weights.{pde,data,reg}`` (defaults 1 / 1 / 0); the regulariser is
   applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
   scaled relative residual above, not the raw ``InverseLoss`` mean.
@@ -149,6 +149,32 @@ class SlownessLatent:
 
     def z_of_c(self, c: torch.Tensor) -> torch.Tensor:
         return self.z_of_m(c.clamp_min(1e-30) ** -2)
+
+
+@dataclass(frozen=True)
+class Iterate:
+    """The joint solve at one logged point: what ``minimise(on_log=...)`` gets.
+
+    Logged points are the start (``iter == 0``, the warm start before any
+    update), every ``log_every``-th outer iteration and the final iterate.
+    The objective terms come from one evaluation at this point, so
+    ``pde_term + data_term + reg_term == loss``; ``reg_term`` is
+    ``w_reg * R(c_interior)``, ``0.0`` without a regulariser.
+    """
+
+    iter: int  # outer iterations done in this solve
+    n_evaluations: int  # L-BFGS closures so far in this solve
+    loss: float
+    pde_term: float
+    data_term: float
+    reg_term: float
+    pde_src_ratio: float  # RMS(r_pde) / RMS(source), interior + PML
+    rel_data_residual: float  # ||d_syn - d_obs|| / ||d_obs||
+    grad_u_norm: float
+    grad_z_norm: float
+    sat_frac: float  # cells whose sigmoid is within 1e-3 of 0 or 1
+    c_full: torch.Tensor  # full-grid velocity, detached
+    u: torch.Tensor  # (n_shots, nf, Nx, Ny) complex wavefield, detached
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +300,8 @@ class JointFreqODIL(Optimiser):
         self.pde_scale = pde_scale.view(self.n_shots, self.nf, 1, 1)
         data_scale = rms_abs(self._obs_traces, dim=(2,)).clamp_min(eps_data)
         self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
+        # ||d_obs||_2 over shots x frequencies x receivers, for rel_data_residual.
+        self.obs_norm = float(torch.linalg.vector_norm(self._obs_traces))
         # Fixed model reference for reporting: c_ref = homogeneous background.
         c0_int = self.vm_in.c[self._interior_slice].detach()
         self.c_ref = float(c0_int.mean().item())
@@ -410,6 +438,8 @@ class JointFreqODIL(Optimiser):
                     ),
                     "pde_src_ratio": float(rms_abs(r_pde).detach())
                     / max(self.src_rms, 1e-30),
+                    "rel_data_residual": float(torch.linalg.vector_norm(r_data))
+                    / max(self.obs_norm, 1e-30),
                 }
         return L
 
@@ -468,9 +498,40 @@ class JointFreqODIL(Optimiser):
             "grad_ratio": gz / max(gu, self.eps_grad),
         }
 
-    def minimise(
-        self, on_iteration=None, **overrides
-    ) -> Tuple[List[Wavefield], LossTape]:
+    def _snapshot(self, n_done: int, u_re, u_im, z_m):
+        """``(Iterate, grad norms, model stats)`` after ``n_done`` outer
+        iterations; the evaluation is not counted as a closure."""
+        z_m = z_m.detach()
+        loss_scalar, gnorms = self._diag_grads(u_re, u_im, z_m)
+        mstats = self._model_stats(z_m)
+        with torch.no_grad():
+            c_full = self.c_full_of_z(z_m)
+            u = self.physical_u(u_re.detach(), u_im.detach())
+        last = self._last
+        it = Iterate(
+            iter=n_done,
+            n_evaluations=self._n_eval,
+            loss=loss_scalar,
+            pde_term=last["pde_term_weighted"],
+            data_term=last["data_term"],
+            reg_term=last["reg_term"],
+            pde_src_ratio=last["pde_src_ratio"],
+            rel_data_residual=last["rel_data_residual"],
+            grad_u_norm=gnorms["grad_u_norm"],
+            grad_z_norm=gnorms["grad_z_norm"],
+            sat_frac=mstats["sat_frac"],
+            c_full=c_full,
+            u=u,
+        )
+        return it, gnorms, mstats
+
+    def minimise(self, on_log=None, **overrides) -> Tuple[List[Wavefield], LossTape]:
+        """Run ``n_iter`` outer L-BFGS steps.
+
+        ``on_log(iterate)`` receives an :class:`Iterate` at the start (before
+        any update) and at every logged point: each ``log_every``-th outer
+        iteration and always the final iterate.
+        """
         for k, v in overrides.items():
             setattr(self, k, v)
         u_re0, u_im0, z0 = self.init_params()
@@ -501,22 +562,20 @@ class JointFreqODIL(Optimiser):
             return L
 
         t0 = time.perf_counter()
+        if on_log is not None:
+            on_log(self._snapshot(0, u_re, u_im, z_of())[0])
         for i in range(self.n_iter):
             opt.step(closure)
 
             # Diagnostic evaluation at the current (post-step) point.
-            should_log = (i % self.log_every == 0) or (i == self.n_iter - 1)
-            if should_log or on_iteration is not None:
-                z_m = z_of().detach()
-                loss_scalar, gnorms = self._diag_grads(u_re, u_im, z_m)
-                mstats = self._model_stats(z_m)
-                c_full_now = self.c_full_of_z(z_m)
-
-                if on_iteration is not None:
-                    on_iteration(i, c_full_now)
-
-                row = {
-                    "iter": i,
+            n_done = i + 1
+            if n_done % self.log_every != 0 and n_done != self.n_iter:
+                continue
+            it, gnorms, mstats = self._snapshot(n_done, u_re, u_im, z_of())
+            loss_scalar = it.loss
+            self.diag_rows.append(
+                {
+                    "iter": n_done,
                     "wall_s": time.perf_counter() - t0,
                     "loss": loss_scalar,
                     "n_eval": self._n_eval,
@@ -524,50 +583,42 @@ class JointFreqODIL(Optimiser):
                     **gnorms,
                     **mstats,
                 }
-                self.diag_rows.append(row)
-
-                if should_log:
-                    self.loss._last_residuals = {
-                        "pde_rms": self._last["pde_rms_raw"],
-                        "data_rms": self._last["data_rms_raw"],
-                        "pde_loss": self._last["pde_loss"],
-                        "data_loss": self._last["data_loss"],
-                        # Weighted terms as minimised (weights applied here).
-                        "pde_term": self._last["pde_term_weighted"],
-                        "data_term": self._last["data_term"],
-                        "reg_term": self._last["reg_term"],
-                        "pde_src_ratio": self._last["pde_src_ratio"],
-                        # Closures so far in this solve (diagnostics excluded).
-                        "n_evaluations": self._n_eval,
-                    }
-                    self.loss.callback.log(
-                        loss_scalar,
-                        self.loss._last_residuals,
-                        pde_src_ratio=self._last["pde_src_ratio"],
-                    )
-                    hist = self.loss.callback.history
-                    for key in (
-                        "grad_u_norm",
-                        "grad_z_norm",
-                        "grad_ratio",
-                    ):
-                        hist.setdefault(key, []).append(gnorms[key])
-                    hist.setdefault("sat_frac", []).append(mstats["sat_frac"])
-                    hist.setdefault("pde_rms_scaled", []).append(
-                        self._last["pde_rms_scaled"]
-                    )
-                    hist.setdefault("data_rms_scaled", []).append(
-                        self._last["data_rms_scaled"]
-                    )
-                    if self.loss.callback.store_c_history:
-                        self.loss.callback.log_c(c_full_now.detach().cpu().numpy())
-                    if self.verbose:
-                        print(
-                            f"[joint] iter {i:4d} | Phi={loss_scalar:.6e} | "
-                            f"|r_pde|/|src|={self._last['pde_src_ratio']:.3e} | "
-                            f"|gz|/|gu|={gnorms['grad_ratio']:.3e} | "
-                            f"c=[{mstats['c_min']:.1f},{mstats['c_max']:.1f}]"
-                        )
+            )
+            self.loss._last_residuals = {
+                "pde_rms": self._last["pde_rms_raw"],
+                "data_rms": self._last["data_rms_raw"],
+                "pde_loss": self._last["pde_loss"],
+                "data_loss": self._last["data_loss"],
+                # Weighted terms as minimised (weights applied here).
+                "pde_term": self._last["pde_term_weighted"],
+                "data_term": self._last["data_term"],
+                "reg_term": self._last["reg_term"],
+                "pde_src_ratio": self._last["pde_src_ratio"],
+                # Closures so far in this solve (diagnostics excluded).
+                "n_evaluations": self._n_eval,
+            }
+            self.loss.callback.log(
+                loss_scalar,
+                self.loss._last_residuals,
+                pde_src_ratio=self._last["pde_src_ratio"],
+            )
+            hist = self.loss.callback.history
+            for key in ("grad_u_norm", "grad_z_norm", "grad_ratio"):
+                hist.setdefault(key, []).append(gnorms[key])
+            hist.setdefault("sat_frac", []).append(mstats["sat_frac"])
+            hist.setdefault("pde_rms_scaled", []).append(self._last["pde_rms_scaled"])
+            hist.setdefault("data_rms_scaled", []).append(self._last["data_rms_scaled"])
+            if self.loss.callback.store_c_history:
+                self.loss.callback.log_c(it.c_full.cpu().numpy())
+            if self.verbose:
+                print(
+                    f"[joint] iter {n_done:4d} | Phi={loss_scalar:.6e} | "
+                    f"|r_pde|/|src|={self._last['pde_src_ratio']:.3e} | "
+                    f"|gz|/|gu|={gnorms['grad_ratio']:.3e} | "
+                    f"c=[{mstats['c_min']:.1f},{mstats['c_max']:.1f}]"
+                )
+            if on_log is not None:
+                on_log(it)
 
         wall_s = time.perf_counter() - t0
 

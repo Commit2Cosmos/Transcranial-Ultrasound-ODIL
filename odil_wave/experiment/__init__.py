@@ -8,22 +8,30 @@ from .config import (
     resolve_config,
     validate_config,
 )
+from .live import LiveVelocityView
+from .on_demand import (
+    optimiser_health,
+    pde_residual_map,
+    shot_data_fit,
+    source_spectrum,
+    wavefield_comparison,
+)
 from .plots import (
-    LiveVelocityView,
-    animate_bands,
     load_band_velocities,
     load_config,
     load_final_velocity,
     load_loss_tape,
-    load_metrics,
-    plot_run_history,
-    plot_velocity_recovery,
     rebuild_problem,
 )
+from .postprocess import ColourScales, SavedRun, load_tape, postprocess_run
 from .problem import BandContext, Problem, build_problem, grid_summary
-from .recorder import FIELDNAMES, RecordingTape, RunRecorder
+from .rundir import RunDirectory, RunStartError, new_run_directory
+from .spec import ExperimentSpec, SweepRun, load_spec
+from .launch import postprocess_experiment
+from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
 from .runner import (
     BandResult,
+    LoggedRow,
     RunResult,
     run_frequency_band,
     run_inverse,
@@ -44,24 +52,43 @@ __all__ = [
     "BandContext",
     "build_problem",
     "grid_summary",
-    # recorder
-    "RunRecorder",
-    "RecordingTape",
-    "FIELDNAMES",
-    # plots / analysis
+    # run directory
+    "RunDirectory",
+    "RunStartError",
+    "new_run_directory",
+    # experiments
+    "ExperimentSpec",
+    "SweepRun",
+    "load_spec",
+    "postprocess_experiment",
+    # metric tape
+    "MetricTape",
+    "BandTape",
+    "TAPE_COLUMNS",
+    "NonFiniteError",
+    # post-processing
+    "ColourScales",
+    "SavedRun",
+    "postprocess_run",
+    # on-demand plots
+    "source_spectrum",
+    "optimiser_health",
+    "wavefield_comparison",
+    "shot_data_fit",
+    "pde_residual_map",
+    # live view
     "LiveVelocityView",
-    "animate_bands",
+    # plots / analysis
     "load_band_velocities",
     "load_config",
     "load_final_velocity",
     "load_loss_tape",
-    "load_metrics",
-    "plot_run_history",
-    "plot_velocity_recovery",
+    "load_tape",
     "rebuild_problem",
     # runner
     "RunResult",
     "BandResult",
+    "LoggedRow",
     "run_inverse",
     "run_frequency_band",
 ]

@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,7 @@ from odil_wave.experiment import (
 
 # The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
 EXPECTED_SHAPE = {
-    "run": ["run_id", "output_root", "seed", "tags", "notes"],
+    "run": ["seed", "tags", "notes"],
     "runtime": ["device", "dtype", "torch_num_threads", "deterministic", "verbose"],
     "grid": ["interior_shape", "interior_extent", "c_min", "c_max", "space_order"],
     "pml": ["width", "power", "R0", "damping_scale", "observation_width"],
@@ -82,13 +81,7 @@ def test_default_config_matches_the_documented_shape():
     assert list(d["continuation"]["bands"][0]) == ["frequencies_hz", "n_iter"]
     assert list(d["loss"]["weights"]) == ["pde", "data", "reg"]
     assert list(d["loss"]["regulariser"]) == ["name", "eps"]
-    assert list(d["metrics"]["ssim"]) == [
-        "mask",
-        "data_range",
-        "win_size",
-        "gaussian_weights",
-        "sigma",
-    ]
+    assert list(d["metrics"]["ssim"]) == ["sigma"]
 
 
 def test_resolve_empty_config_gives_the_default_values():
@@ -98,13 +91,6 @@ def test_resolve_empty_config_gives_the_default_values():
     assert cfg.acquisition.n_transducers == 64
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[60e3]]
     assert cfg.pml.observation_width is None
-    assert cfg.run.run_id  # auto-minted, non-empty
-
-
-def test_default_run_id_has_no_optimiser_token():
-    """Auto-minted run_id is <DDMMYY_HHMMSS>_<problem>_<grid>_<f0>_<bands>."""
-    run_id = resolve_config({}).run.run_id
-    assert re.fullmatch(r"\d{6}_\d{6}_shepp-logan_125x125_80_60", run_id), run_id
 
 
 def test_resolve_config_overlays_user_fields():
@@ -125,9 +111,9 @@ def test_default_runconfig_yaml_roundtrip(tmp_path):
     assert RunConfig.from_dict(load_config_file(path)) == RunConfig()
 
 
-def test_resolved_config_yaml_roundtrip(tmp_path, tiny_experiment):
-    """A resolved experiment config written to YAML reloads to the same config."""
-    cfg = resolve_config(tiny_experiment)
+def test_resolved_config_yaml_roundtrip(tmp_path, tiny_run_config):
+    """A resolved config written to YAML reloads to the same config."""
+    cfg = resolve_config(tiny_run_config)
     path = cfg.to_yaml(tmp_path / "cfg.yaml")
     assert resolve_config(load_config_file(path)) == cfg
 
@@ -238,7 +224,8 @@ def test_supported_space_orders_validate(order):
         {"optimiser": {"line_search_fn": "backtracking"}},
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
-        {"metrics": {"ssim": {"win_size": 4}}},
+        {"metrics": {"ssim": {"sigma": 0.0}}},
+        {"metrics": {"ssim": {"win_size": 7}}},
         {"runtime": {"dtype": "float16"}},
         {"grid": {"space_order": 3}},
         {"grid": {"space_order": 12}},
@@ -284,20 +271,20 @@ def test_removed_settings_are_rejected(removed):
 # --------------------------------------------------------------------------- #
 # Problem construction
 # --------------------------------------------------------------------------- #
-def test_build_problem_assembles_pieces(tiny_experiment):
+def test_build_problem_assembles_pieces(tiny_run_config):
     """build_problem constructs the grid, source and truth/init velocity models."""
-    problem = build_problem(resolve_config(tiny_experiment))
+    problem = build_problem(resolve_config(tiny_run_config))
     assert problem.grid.interior_shape == (20, 20)
     assert problem.grid.pml_width == 6
-    assert problem.truth_velocity.c_max == pytest.approx(1650.0)  # base + contrast
+    assert problem.truth_velocity.c_max == pytest.approx(1700.0)  # the skull
     assert problem.init_velocity.c_max == pytest.approx(1500.0)  # homogeneous
-    # overdensity truth has no head mask.
-    assert problem.head_mask is None
+    # the Shepp-Logan truth has a head mask on the interior.
+    assert problem.head_mask.shape == (20, 20) and problem.head_mask.any()
 
 
-def test_make_band_produces_observed_data(tiny_experiment):
+def test_make_band_produces_observed_data(tiny_run_config):
     """make_band builds the frequency selection, geometry and observed wavefields."""
-    problem = build_problem(resolve_config(tiny_experiment))
+    problem = build_problem(resolve_config(tiny_run_config))
     band = problem.make_band([40e3])
     assert band.freq.n_frequencies == 1
     assert len(band.observed_wfs) == problem.cfg.acquisition.n_transducers
@@ -305,19 +292,19 @@ def test_make_band_produces_observed_data(tiny_experiment):
     assert band.observed_traces is None
 
 
-def test_pml_split_traces_skip_the_transmitting_transducer(tiny_experiment):
+def test_pml_split_traces_skip_the_transmitting_transducer(tiny_run_config):
     """Reduced observations hold N - 1 traces per shot, one per other transducer."""
-    split = deep_merge(tiny_experiment, {"pml": {"observation_width": 12}})
+    split = deep_merge(tiny_run_config, {"pml": {"observation_width": 12}})
     problem = build_problem(resolve_config(split))
     band = problem.make_band([40e3])
     n = problem.cfg.acquisition.n_transducers
     assert band.observed_traces.shape == (n, 1, n - 1)
 
 
-def test_observed_data_satisfy_inverse_operator_on_truth(tiny_experiment):
+def test_observed_data_satisfy_inverse_operator_on_truth(tiny_run_config):
     """Observations are a Helmholtz solve on the truth model (inverse crime): the
     inversion's own PDE residual vanishes at (observed u, truth c)."""
-    problem = build_problem(resolve_config(tiny_experiment))
+    problem = build_problem(resolve_config(tiny_run_config))
     band = problem.make_band([40e3])
     wf = Wavefield(problem.grid, band.freq, velocity_model=problem.truth_velocity)
     loss = InverseLoss(
@@ -344,9 +331,9 @@ def _amplitudes(wavefields) -> torch.Tensor:
     return torch.stack([w.amplitude for w in wavefields])
 
 
-def test_observed_data_are_reciprocal(tiny_experiment):
+def test_observed_data_are_reciprocal(tiny_run_config):
     """d[s -> r] ~= d[r -> s]: guards the per-shot receiver bookkeeping."""
-    problem = build_problem(resolve_config(tiny_experiment))
+    problem = build_problem(resolve_config(tiny_run_config))
     band = problem.make_band([40e3])
     traces = band.geom.extract_observations(_amplitudes(band.observed_wfs))
     n = band.geom.n_transducers
@@ -359,10 +346,10 @@ def test_observed_data_are_reciprocal(tiny_experiment):
     assert float(rel) < 1e-10
 
 
-def _data_misfit_at_truth(experiment) -> float:
+def _data_misfit_at_truth(run_config) -> float:
     """Relative receiver misfit between the observations and a Helmholtz solve
     on the true model on the inversion grid."""
-    problem = build_problem(resolve_config(experiment))
+    problem = build_problem(resolve_config(run_config))
     band = problem.make_band([40e3])
     observed = band.observed_traces
     if observed is None:
@@ -373,20 +360,20 @@ def _data_misfit_at_truth(experiment) -> float:
     return float((predicted - observed).abs().norm() / observed.abs().norm())
 
 
-def test_default_observation_width_commits_the_inverse_crime(tiny_experiment):
+def test_default_observation_width_commits_the_inverse_crime(tiny_run_config):
     """With the default pml.observation_width the true model fits the data."""
-    assert _data_misfit_at_truth(tiny_experiment) < 1e-10
+    assert _data_misfit_at_truth(tiny_run_config) < 1e-10
 
 
-def test_different_observation_width_is_a_modelling_error(tiny_experiment):
+def test_different_observation_width_is_a_modelling_error(tiny_run_config):
     """A different observation PML width means the true model no longer fits."""
-    split = deep_merge(tiny_experiment, {"pml": {"observation_width": 12}})
+    split = deep_merge(tiny_run_config, {"pml": {"observation_width": 12}})
     assert _data_misfit_at_truth(split) > 1e-6
 
 
-def test_warm_start_solves_one_wavefield_per_shot(tiny_experiment):
+def test_warm_start_solves_one_wavefield_per_shot(tiny_run_config):
     """warm_start always solves Helmholtz wavefields, one per shot."""
-    problem = build_problem(resolve_config(tiny_experiment))
+    problem = build_problem(resolve_config(tiny_run_config))
     band = problem.make_band([40e3])
     wfs = problem.warm_start(problem.init_velocity, band)
     assert len(wfs) == problem.cfg.acquisition.n_transducers
@@ -443,6 +430,6 @@ def test_regulariser_choice_never_warns(reg):
     sorted((Path(__file__).resolve().parent.parent / "configs").glob("*.yaml")),
     ids=lambda p: p.name,
 )
-def test_shipped_experiment_configs_validate(path):
-    """Every experiment config in configs/ resolves and validates cleanly."""
+def test_shipped_run_configs_validate(path):
+    """Every run config in configs/ resolves and validates cleanly."""
     assert validate_config(resolve_config(load_config_file(path))) == []
