@@ -1,0 +1,18 @@
+# Baseline for the balance check (issue #32, ADR-0002):
+#   python -m odil_wave.experiment.balance -c configs/checks/balance.yaml --cases 1 2 3 1:2
+# The default problem with an overdensity truth: a disc whose size is fixed in
+# metres, so every grid case sees the same physical model (the Shepp-Logan
+# skull rim is a whole number of cells). Names only the values that differ
+# from the default config. Not a run config: an overdensity truth has no brain
+# or skull region for the tape, so it lives outside configs/*.yaml.
+
+acquisition:
+  sigma_s: 3.5e-3   # pinned in metres: the source of the #32 before/after tables
+
+truth:
+  profile: overdensity
+  contrast: 150.0   # m/s above base
+  extra: {radius: 0.04}
+
+init:
+  profile: homogeneous

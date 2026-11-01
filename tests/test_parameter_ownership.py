@@ -45,7 +45,7 @@ SOURCE_KW = dict(
 )
 GEOMETRY_KW = dict(
     n_transducers=8,
-    sigma_s=None,
+    sigma_s=4e-3,
     a_frac=0.9,
     b_frac=0.9,
     ring_center=None,

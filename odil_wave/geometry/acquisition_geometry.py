@@ -49,7 +49,7 @@ class AcquisitionGeometry:
         frequency_selection: FrequencySelection,
         *,
         n_transducers: int,
-        sigma_s: Optional[float],
+        sigma_s: float,
         a_frac: float,
         b_frac: float,
         ring_center: Optional[Tuple[float, float]],
@@ -63,21 +63,17 @@ class AcquisitionGeometry:
             Spatial/temporal grid the geometry is placed on; also supplies
             the device and dtype used for the geometry's tensors.
         source : SourceSignal
-            Temporal source wavelet, used both for its waveform/spectrum and
-            (when `sigma_s` is not given) to pick a default Gaussian width
-            from its centre frequency `f0`.
+            Temporal source wavelet, used for its waveform/spectrum.
         frequency_selection : FrequencySelection
             Frequency bins used by `source_field` for the frequency-domain
             source, and by the complex dtype it produces.
         n_transducers : int
             Number of transducers placed on the ellipse (>= 2); also the
             number of shots.
-        sigma_s : float or None
-            Width in metres of the Gaussian source profile
-            ``exp(-r**2 / sigma_s**2)`` (standard deviation
+        sigma_s : float
+            Width in metres of the Gaussian source density
+            ``exp(-r**2 / sigma_s**2) / (pi * sigma_s**2)`` (standard deviation
             ``sigma_s / sqrt(2)``; ignored when `source_spatial="point"`).
-            ``None`` -> derived from the grid spacing and the source's
-            dominant wavelength.
         a_frac, b_frac : float
             Semi-axes of the transducer ellipse as a fraction of the half-width
             / half-height of the grid's interior region.
@@ -85,9 +81,9 @@ class AcquisitionGeometry:
             Physical-coordinate centre of the transducer ellipse; ``None`` ->
             the centre of the grid's interior region.
         source_spatial : {"gaussian", "point"}
-            Spatial injection profile: ``"gaussian"`` is a Gaussian blob of
-            width `sigma_s`; ``"point"`` is a unit Kronecker delta at the
-            source grid node.
+            Spatial injection profile, a density per m² that integrates to 1
+            on any grid: ``"gaussian"`` is a Gaussian blob of width `sigma_s`;
+            ``"point"`` is ``1 / (dx * dy)`` at the source grid node.
         """
         self.grid = grid
         self.source = source
@@ -101,9 +97,7 @@ class AcquisitionGeometry:
                 f"got {n_transducers}."
             )
         self.n_transducers = int(n_transducers)
-        self.sigma_s = (
-            self._default_sigma_s(grid, source) if sigma_s is None else sigma_s
-        )
+        self.sigma_s = float(sigma_s)
         self.a_frac = a_frac
         self.b_frac = b_frac
         self.ring_center = grid.interior_center if ring_center is None else ring_center
@@ -123,16 +117,6 @@ class AcquisitionGeometry:
     def n_shots(self) -> int:
         """One shot per transducer."""
         return self.n_transducers
-
-    @staticmethod
-    def _default_sigma_s(grid: Grid, source: SourceSignal) -> float:
-        """Default Gaussian source width, derived from grid spacing and the
-        source's shortest resolved wavelength."""
-        h = max(grid.dx, grid.dy)
-        c_ref = grid.c_min if grid.c_min is not None else grid.c_max
-        f_max = 2.5 * source.f0
-        lambda_min = c_ref / f_max
-        return max(1.5 * h, lambda_min / (2.0 * math.pi))
 
     def _place_ellipse(self, n: int) -> torch.Tensor:
         """Return (n, 2) integer full-grid indices for n points evenly spaced
@@ -158,22 +142,20 @@ class AcquisitionGeometry:
         return float(self.grid.x[i]), float(self.grid.y[j])
 
     def _spatial_profile(self, src_idx: int) -> torch.Tensor:
-        """Spatial injection profile for source `src_idx`, as a full-grid
-        tensor of shape `grid.shape`. Selects between a Gaussian blob and a
-        point (Kronecker delta) source based on `self.source_spatial`."""
+        """Spatial injection density (per m²) for source `src_idx`, as a
+        full-grid tensor of shape `grid.shape`: a Gaussian blob or a point
+        source per `self.source_spatial`. Its sum times ``dx * dy`` is 1 (the
+        Gaussian's up to ``4 exp(-pi² sigma_s² / h²)``), so the injected
+        amplitude does not depend on the grid spacing."""
         if self.source_spatial == "point":
             i = int(self.transducer_ij[src_idx, 0])
             j = int(self.transducer_ij[src_idx, 1])
             spatial = torch.zeros(self.grid.shape, dtype=self.dtype, device=self.device)
-            spatial[i, j] = 1.0
+            spatial[i, j] = 1.0 / (self.grid.dx * self.grid.dy)
             return spatial
         x_src, y_src = self.src_position(src_idx)
-        return torch.exp(
-            -(
-                ((self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2)
-                / self.sigma_s**2
-            )
-        )
+        r2 = (self.grid.X - x_src) ** 2 + (self.grid.Y - y_src) ** 2
+        return torch.exp(-r2 / self.sigma_s**2) / (math.pi * self.sigma_s**2)
 
     def source_field_time(self, src_idx: int) -> torch.Tensor:
         """Time-domain source field for `src_idx`, used by `plot_source_field`.

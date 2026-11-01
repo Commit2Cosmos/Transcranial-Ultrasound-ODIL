@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -184,18 +185,23 @@ class AcquisitionCfg:
       interior half-extent in x / y.
     * ``ring_center``: ``"grid_center"`` (centre of the interior extent) |
       ``[x, y]`` in metres.
-    * ``sigma_s``: ``None`` -> derived from the grid spacing and ``f0``, else
-      > 0 metres; width of the Gaussian source profile
-      ``exp(-r**2 / sigma_s**2)``, i.e. a Gaussian with standard deviation
-      ``sigma_s / sqrt(2)`` (used when ``source_spatial == "gaussian"``).
-    * ``source_spatial``: ``"gaussian"`` | ``"point"``.
+    * ``sigma_s``: > 0 metres; width of the Gaussian source density
+      ``exp(-r**2 / sigma_s**2) / (pi sigma_s**2)``, i.e. a Gaussian with
+      standard deviation ``sigma_s / sqrt(2)`` (used when
+      ``source_spatial == "gaussian"``). The default 3.4 mm is just under
+      ``1 / k_max`` = 3.45 mm at 60 kHz in 1300 m/s (1.69 h on the default grid). The
+      config warns when ``sigma_s < 1.5 h`` (under-resolved), when
+      ``k_max * sigma_s > 1`` for the top band frequency (the source low-pass
+      filters it) and when the ring is within ``3 sigma_s`` of the PML.
+    * ``source_spatial``: ``"gaussian"`` | ``"point"``; either is a density
+      that integrates to 1 (the point source is ``1 / (dx dy)``).
     """
 
     n_transducers: int = 64
     a_frac: float = 0.9
     b_frac: float = 0.9
     ring_center: Union[str, List[float]] = "grid_center"
-    sigma_s: Optional[float] = None
+    sigma_s: float = 3.4e-3
     source_spatial: str = "gaussian"
 
 
@@ -633,6 +639,14 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"got {cfg.acquisition.n_transducers}"
         )
 
+    sigma = cfg.acquisition.sigma_s
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)) or sigma <= 0:
+        raise ConfigError(
+            f"acquisition.sigma_s must be a length > 0 in metres, got {sigma!r}"
+        )
+    if cfg.acquisition.source_spatial == "gaussian":
+        warnings.extend(_source_width_warnings(cfg))
+
     if cfg.grid.space_order not in _SPACE_ORDERS:
         raise ConfigError(
             f"grid.space_order must be one of {list(_SPACE_ORDERS)}, "
@@ -700,6 +714,47 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         _validate_model_cfg(label, model, warnings)
 
     return warnings
+
+
+def _source_width_warnings(cfg: "RunConfig") -> List[str]:
+    """Warnings for a Gaussian ``acquisition.sigma_s`` that is under-resolved,
+    low-pass filters the top band frequency, or reaches into the PML; each
+    names ``sigma/h``, ``k_max sigma`` and the ring's clearance to the PML."""
+    sigma = float(cfg.acquisition.sigma_s)
+    (x0, x1), (y0, y1) = cfg.grid.interior_extent
+    nx, ny = cfg.grid.interior_shape
+    h = max((x1 - x0) / (nx - 1), (y1 - y0) / (ny - 1))
+    f_max = max(float(f) for b in cfg.continuation.bands for f in b.frequencies_hz)
+    k_max = 2.0 * math.pi * f_max / float(cfg.grid.c_min)
+    rc = cfg.acquisition.ring_center
+    cx, cy = ((x0 + x1) / 2, (y0 + y1) / 2) if isinstance(rc, str) else map(float, rc)
+    a = cfg.acquisition.a_frac * (x1 - x0) / 2
+    b = cfg.acquisition.b_frac * (y1 - y0) / 2
+    clearance = min(cx - a - x0, x1 - cx - a, cy - b - y0, y1 - cy - b)
+    facts = (
+        f"(sigma_s/h = {sigma / h:.2f}, k_max*sigma_s = {k_max * sigma:.2f} at "
+        f"{f_max / 1e3:g} kHz, ring clearance to the PML = {clearance * 1e3:.1f} mm "
+        f"= {clearance / sigma:.1f} sigma_s)"
+    )
+    out = []
+    if sigma < 1.5 * h:
+        err = 4.0 * math.exp(-((math.pi * sigma / h) ** 2))
+        out.append(
+            f"acquisition.sigma_s={sigma:g} m is under-resolved (< 1.5 h): the "
+            f"source's normalisation is off by ~{err:.0e} {facts}"
+        )
+    if k_max * sigma > 1.0:
+        out.append(
+            f"acquisition.sigma_s={sigma:g} m low-pass filters the top frequency "
+            f"(k_max*sigma_s > 1, amplitude factor "
+            f"{math.exp(-((k_max * sigma) ** 2) / 4):.2f}) {facts}"
+        )
+    if clearance < 3.0 * sigma:
+        out.append(
+            f"acquisition.sigma_s={sigma:g} m: the transducer ring is within "
+            f"3 sigma_s of the PML {facts}"
+        )
+    return out
 
 
 def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> None:

@@ -33,15 +33,20 @@ Formulation
   where ``P_s`` samples the ``n_transducers - 1`` transducers recording shot
   ``s`` (never its own), so ``data_scale`` below excludes the self-trace too.
 
-  fixed scales ``pde_scale[s, w] = max(RMS_active|q[s, w]|, eps_p)`` (source
-  based; NOT the near-zero warm-start PDE residual) and
-  ``data_scale[s, w] = max(RMS|d_obs[s, w]|, eps_d)``.
+  fixed scales ``pde_scale[s, w] = max(|lambda_tt[w]| * u_ref[s, w], eps_p)``
+  (the wave term's magnitude, ADR-0002: independent of the source
+  normalisation, grid spacing and PML width; NOT the near-zero warm-start PDE
+  residual) and ``data_scale[s, w] = max(RMS|d_obs[s, w]|, eps_d)``.
 
-* Objective (means over the count of **real** scalar residual entries):
+* Objective:
 
-      Phi = pde_weight  * mean|r_pde  / pde_scale |^2
+      Phi = pde_weight  * sum|r_pde / pde_scale|^2 / (2 N_int n_s n_f)
           + data_weight * mean|r_data / data_scale|^2
           + w_reg  * R(c_interior)
+
+  The PDE sum runs over interior **and** PML nodes but is normalised by the
+  interior node count ``N_int``, so a thicker PML does not dilute it; the data
+  term is a mean over the count of **real** scalar entries (``2x`` complex).
 
   with ``pde_weight``, ``data_weight`` and ``w_reg = reg_weight`` fixed run-level
   hyperparameters (never adapted). The run layer fills all three from
@@ -168,7 +173,7 @@ class Iterate:
     pde_term: float
     data_term: float
     reg_term: float
-    pde_src_ratio: float  # RMS(r_pde) / RMS(source), interior + PML
+    pde_rel_residual: float  # RMS(r_pde / pde_scale), interior + PML over N_int
     rel_data_residual: float  # ||d_syn - d_obs|| / ||d_obs||
     grad_u_norm: float
     grad_z_norm: float
@@ -295,9 +300,18 @@ class JointFreqODIL(Optimiser):
         u_ref = rms_abs(u_int, dim=(2, 3)).clamp_min(eps_u)  # (n_shots, nf)
         self.u_ref = u_ref.view(self.n_shots, self.nf, 1, 1)
 
-        q_int = self.sources[:, :, self._interior_slice[0], self._interior_slice[1]]
-        pde_scale = rms_abs(q_int, dim=(2, 3)).clamp_min(eps_pde)  # (n_shots, nf)
+        # |lambda_tt| * u_ref: the symbol the residual uses (ADR-0002).
+        _, lambda_tt = wavefield.frequency_selection.symbols_broadcast()
+        lam_tt = lambda_tt.abs().to(
+            dtype=self.dtype, device=self.device
+        )  # (1, nf, 1, 1)
+        pde_scale = (lam_tt.view(1, self.nf) * u_ref).clamp_min(
+            eps_pde
+        )  # (n_shots, nf)
         self.pde_scale = pde_scale.view(self.n_shots, self.nf, 1, 1)
+        # Full-grid mean -> sum over interior + PML / N_int.
+        n_int = u_int.shape[-2] * u_int.shape[-1]
+        self.pde_node_factor = (self.Nx * self.Ny) / n_int
         data_scale = rms_abs(self._obs_traces, dim=(2,)).clamp_min(eps_data)
         self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
         # ||d_obs||_2 over shots x frequencies x receivers, for rel_data_residual.
@@ -306,9 +320,6 @@ class JointFreqODIL(Optimiser):
         c0_int = self.vm_in.c[self._interior_slice].detach()
         self.c_ref = float(c0_int.mean().item())
         self.m_ref = 1.0 / self.c_ref**2
-
-        # Source RMS for pde/src ratio reporting.
-        self.src_rms = float(rms_abs(self.sources).item())
 
         # Diagnostics buffers.
         self.diag_rows: List[Dict[str, float]] = []
@@ -355,12 +366,12 @@ class JointFreqODIL(Optimiser):
             "pde_scale_min": float(pde_scale.min()),
             "pde_scale_max": float(pde_scale.max()),
             "pde_scale_mean": float(pde_scale.mean()),
-            "pde_scale_rule": "RMS_active(|q|)  (source based, fixed)",
+            "pde_scale_rule": "|lambda_tt| * u_ref per (shot, freq), fixed",
+            "pde_node_factor": self.pde_node_factor,
             "data_scale_min": float(data_scale.min()),
             "data_scale_max": float(data_scale.max()),
             "data_scale_mean": float(data_scale.mean()),
             "data_scale_rule": "RMS(|d_obs|) per (shot, freq), fixed",
-            "src_rms": self.src_rms,
         }
 
     # ------------------------------------------------------------------ #
@@ -387,6 +398,11 @@ class JointFreqODIL(Optimiser):
     def c_full_of_z(self, z_m: torch.Tensor) -> torch.Tensor:
         return self.vm_in.build_full_c(self.latent.c_of_z(z_m))
 
+    @property
+    def last_record(self) -> Dict[str, float]:
+        """Diagnostics of the latest ``objective(..., record=True)`` call."""
+        return dict(self._last)
+
     # ------------------------------------------------------------------ #
     # Residuals and objective (the production code path).
     # ------------------------------------------------------------------ #
@@ -410,7 +426,7 @@ class JointFreqODIL(Optimiser):
         record: bool = True,
     ) -> torch.Tensor:
         r_pde, r_data = self.residuals(u_re, u_im, z_m)
-        pde_term = mean_real_sq(r_pde / self.pde_scale)
+        pde_term = self.pde_node_factor * mean_real_sq(r_pde / self.pde_scale)
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
         reg_term = torch.zeros((), dtype=self.dtype, device=self.device)
@@ -436,8 +452,7 @@ class JointFreqODIL(Optimiser):
                     "data_rms_scaled": float(
                         rms_abs(r_data / self.data_scale).detach()
                     ),
-                    "pde_src_ratio": float(rms_abs(r_pde).detach())
-                    / max(self.src_rms, 1e-30),
+                    "pde_rel_residual": math.sqrt(2.0 * float(pde_term.detach())),
                     "rel_data_residual": float(torch.linalg.vector_norm(r_data))
                     / max(self.obs_norm, 1e-30),
                 }
@@ -515,7 +530,7 @@ class JointFreqODIL(Optimiser):
             pde_term=last["pde_term_weighted"],
             data_term=last["data_term"],
             reg_term=last["reg_term"],
-            pde_src_ratio=last["pde_src_ratio"],
+            pde_rel_residual=last["pde_rel_residual"],
             rel_data_residual=last["rel_data_residual"],
             grad_u_norm=gnorms["grad_u_norm"],
             grad_z_norm=gnorms["grad_z_norm"],
@@ -593,14 +608,14 @@ class JointFreqODIL(Optimiser):
                 "pde_term": self._last["pde_term_weighted"],
                 "data_term": self._last["data_term"],
                 "reg_term": self._last["reg_term"],
-                "pde_src_ratio": self._last["pde_src_ratio"],
+                "pde_rel_residual": self._last["pde_rel_residual"],
                 # Closures so far in this solve (diagnostics excluded).
                 "n_evaluations": self._n_eval,
             }
             self.loss.callback.log(
                 loss_scalar,
                 self.loss.last_residuals,
-                pde_src_ratio=self._last["pde_src_ratio"],
+                pde_rel_residual=self._last["pde_rel_residual"],
             )
             hist = self.loss.callback.history
             for key in ("grad_u_norm", "grad_z_norm", "grad_ratio"):
@@ -613,7 +628,7 @@ class JointFreqODIL(Optimiser):
             if self.verbose:
                 print(
                     f"[joint] iter {n_done:4d} | Phi={loss_scalar:.6e} | "
-                    f"|r_pde|/|src|={self._last['pde_src_ratio']:.3e} | "
+                    f"pde_rel={self._last['pde_rel_residual']:.3e} | "
                     f"|gz|/|gu|={gnorms['grad_ratio']:.3e} | "
                     f"c=[{mstats['c_min']:.1f},{mstats['c_max']:.1f}]"
                 )

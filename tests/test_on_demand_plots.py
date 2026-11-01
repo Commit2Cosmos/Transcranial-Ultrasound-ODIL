@@ -165,8 +165,8 @@ def with_helmholtz_wavefields(run_dir: Path, tmp_path: Path, config) -> Path:
 def test_pde_residual_map_vanishes_for_a_wavefield_that_solves_the_pde(
     tiny_two_band_run, tmp_path
 ):
-    """|r_pde| / RMS(q) over the full grid (the PML too), the per-cell form of
-    the tape's pde_src_ratio. The optimiser's iterate trades PDE residual for
+    """|r_pde| / pde_scale over the full grid (the PML too), the per-cell form of
+    the tape's pde_rel_residual. The optimiser's iterate trades PDE residual for
     data fit; a Helmholtz solve on the same model has none, up to single
     precision."""
     run_dir = tiny_two_band_run.run_dir
@@ -177,8 +177,8 @@ def test_pde_residual_map_vanishes_for_a_wavefield_that_solves_the_pde(
     (exact,) = shown(on_demand.pde_residual_map(solved, shot=2))
 
     assert iterate.shape == exact.shape == (20 + 2 * 6, 20 + 2 * 6)
-    assert np.sqrt(np.mean(iterate**2)) > 0.1 * final_row["pde_src_ratio"]
-    assert np.sqrt(np.mean(exact**2)) < 1e-3 * final_row["pde_src_ratio"]
+    assert np.sqrt(np.mean(iterate**2)) > 0.1 * final_row["pde_rel_residual"]
+    assert np.sqrt(np.mean(exact**2)) < 1e-3 * final_row["pde_rel_residual"]
 
 
 ON_DEMAND_PLOTS = [

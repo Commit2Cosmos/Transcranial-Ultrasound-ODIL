@@ -110,7 +110,7 @@ def test_a_run_of_a_newer_schema_version_is_not_postprocessed(
 # --------------------------------------------------------------------------- #
 CONVERGENCE_PANELS = [
     ({"pde_term", "data_term", "reg_term"}, "log"),
-    ({"rel_data_residual", "pde_src_ratio", "rel_wavefield_error"}, "log"),
+    ({"rel_data_residual", "pde_rel_residual", "rel_wavefield_error"}, "log"),
     ({"rmse_brain", "rmse_skull", "bias_brain", "bias_skull"}, "linear"),
     ({"ssim_brain"}, "linear"),
 ]

@@ -208,6 +208,42 @@ def test_validate_config_accepts_default():
     assert validate_config(resolve_config({})) == []
 
 
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        # sigma_s / h = 0.50 on the default grid (h = 2.016 mm)
+        (["acquisition.sigma_s=1e-3"], ["under-resolved"]),
+        # k_max sigma_s = 1.45 at 60 kHz in 1300 m/s; a small ring keeps clear
+        (
+            [
+                "acquisition.sigma_s=5e-3",
+                "acquisition.a_frac=0.5",
+                "acquisition.b_frac=0.5",
+            ],
+            ["low-pass"],
+        ),
+        # ring 6.25 mm from the PML < 3 sigma_s = 10.2 mm
+        (["acquisition.a_frac=0.95"], ["within 3 sigma_s"]),
+        # a point source has no width
+        (["acquisition.sigma_s=1e-3", "acquisition.source_spatial=point"], []),
+    ],
+)
+def test_source_width_warnings(overrides, expected):
+    """Each Gaussian source-width warning fires in its condition only, naming
+    sigma_s/h, k_max*sigma_s and the ring clearance."""
+    warnings = validate_config(resolve_config({}, overrides))
+    assert len(warnings) == len(expected)
+    for w, phrase in zip(warnings, expected):
+        assert phrase in w
+        assert "sigma_s/h =" in w and "k_max*sigma_s =" in w and "clearance" in w
+
+
+@pytest.mark.parametrize("value", ["null", "0", "-1e-3"])
+def test_sigma_s_must_be_a_positive_length(value):
+    with pytest.raises(ConfigError, match="sigma_s"):
+        validate_config(resolve_config({}, [f"acquisition.sigma_s={value}"]))
+
+
 @pytest.mark.parametrize("order", [2, 4, 6, 8, 10])
 def test_supported_space_orders_validate(order):
     """Every supported stencil order (including 10) is accepted."""

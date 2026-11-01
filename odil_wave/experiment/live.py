@@ -3,7 +3,7 @@
 :class:`LiveVelocityView` is the ``run_inverse(on_log=...)`` callback behind
 ``python main.py --live`` and the notebook, as decided under "Live view" in
 "Standard post-processing and plot set" (#53). Its panels are c − c*, the
-truth-free stopping pair (``rel_data_residual``, ``pde_src_ratio``) and
+truth-free stopping pair (``rel_data_residual``, ``pde_rel_residual``) and
 ``rmse_brain`` / ``ssim_brain``, all from the run's tape rows.
 """
 
@@ -19,7 +19,7 @@ import numpy as np
 # Seconds between redraws; each band's final row is drawn regardless.
 REDRAW_INTERVAL_S = 5.0
 
-_TREND_COLUMNS = ("rel_data_residual", "pde_src_ratio", "rmse_brain", "ssim_brain")
+_TREND_COLUMNS = ("rel_data_residual", "pde_rel_residual", "rmse_brain", "ssim_brain")
 
 
 def has_display() -> bool:
@@ -115,7 +115,7 @@ class LiveVelocityView:
         ]
 
         ax_fit.semilogy(x, col["rel_data_residual"], "o-", label="rel_data_residual")
-        ax_fit.semilogy(x, col["pde_src_ratio"], "s-", label="pde_src_ratio")
+        ax_fit.semilogy(x, col["pde_rel_residual"], "s-", label="pde_rel_residual")
         ax_fit.set_title("stopping pair (truth-free)")
         ax_fit.legend(loc="best", fontsize="small")
 

@@ -69,7 +69,7 @@ The set is fixed in code; the run config has no post-processing section.
 
 | file | content |
 |---|---|
-| `convergence.png` | against `iter_total`, band starts marked: `pde_term`, `data_term`, `reg_term` (log); `rel_data_residual`, `pde_src_ratio`, `rel_wavefield_error` (log); `rmse_*` solid and `bias_*` dashed (m/s); `ssim_brain` |
+| `convergence.png` | against `iter_total`, band starts marked: `pde_term`, `data_term`, `reg_term` (log); `rel_data_residual`, `pde_rel_residual`, `rel_wavefield_error` (log); `rmse_*` solid and `bias_*` dashed (m/s); `ssim_brain` |
 | `velocity.png` | truth \| recovered (last completed band) \| recovered − truth over the interior, brain and skull outlines |
 | `per_band_error.png` | `c_band − c*` after each band (more than one band only) |
 | `profiles.png`, `profiles.csv` | truth, start and recovered `c` along the horizontal and vertical lines through the head region's centroid |
@@ -111,7 +111,7 @@ worst-fit shot) and `frequency` an index into the band's solved frequencies.
 | `optimiser_health(rd)` | `c_min` / `c_max` against `grid.c_min` / `grid.c_max`, `sat_frac`, `grad_u_norm` / `grad_z_norm` (log), against `iter_total` |
 | `wavefield_comparison(rd, band=, shot=, frequency=)` | u \| u* \| u − u* over the interior, real part and magnitude; `shot` must be a saved one |
 | `shot_data_fit(rd, band=, shot=, frequency=)` | amplitude and unwrapped phase of `d_obs` and `d_syn` (final iterate; start row dotted) against receiver angle; any shot |
-| `pde_residual_map(rd, band=, shot=, frequency=)` | `\|r_pde\| / RMS(q)` over the full grid (log), the per-cell `pde_src_ratio`: the operator evaluated on the saved `u` and `c`; `shot` must be a saved one |
+| `pde_residual_map(rd, band=, shot=, frequency=)` | `\|r_pde\| / (\|λ_tt\|·u_ref)` over the full grid (log), the per-cell `pde_rel_residual`: the operator evaluated on the saved `u` and `c`, divided by the band's saved `pde_scale`; `shot` must be a saved one |
 
 ```python
 from odil_wave.experiment import pde_residual_map
@@ -132,7 +132,7 @@ python main.py --live -c configs/example_multiband.yaml
 
 `--live` (CLI) and `LiveVelocityView` (notebook) redraw one matplotlib window
 during the run with three panels: c − c*; the truth-free stopping pair
-`rel_data_residual` and `pde_src_ratio` (the run is done when the PDE residual
+`rel_data_residual` and `pde_rel_residual` (the run is done when the PDE residual
 is at its floor *and* the data residual is as low as it goes); and
 `rmse_brain` / `ssim_brain`. It redraws at logged tape rows, at most once every
 5 s and always on each band's final row, and prints nothing to the terminal.
@@ -356,7 +356,8 @@ experiments are written" above):
   bands/
     band_00_40khz/
       arrays.npz               # freqs, c (interior), d_obs, d_syn_start,
-                               #   d_syn_final (all shots), shots, u, u_star
+                               #   d_syn_final (all shots), pde_scale, shots,
+                               #   u, u_star
       band_summary.json        # frequencies, times, iters, start/final
                                #   metrics, costs, warnings, worst-fit shot
     band_01_50khz/ ...
@@ -388,7 +389,8 @@ experiments are written" above):
   solved at, nearest the requested frequencies), `c` (interior), `d_obs`,
   `d_syn_start` (the start row's warm start) and `d_syn_final`, all shots, each
   `(n_shots, n_freq, n_transducers - 1)` with shot `s`'s receivers in ascending
-  transducer order without `s`; `shots`, `u` and `u_star` as below.
+  transducer order without `s`; `pde_scale` (`(n_shots, n_freq)`, the band's
+  fixed `|λ_tt|·u_ref`); `shots`, `u` and `u_star` as below.
 - **`band_summary.json`**: `frequencies_hz`, `fft_bins`, `t_start_epoch_s`,
   `wall_s` / `warm_start_s` / `optimise_s`, `n_iter_requested`,
   `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
@@ -461,8 +463,8 @@ each band's final row (`per_band`).
 | column | meaning / calculation |
 |---|---|
 | `loss_total` | total objective exactly as the solver reports it |
-| `pde_term` | `w_pde · mean(\|r_pde\|²)`, the weighted **PDE term** |
-| `data_term` | `w_data · mean(\|r_data\|²)`, the weighted **Data term** |
+| `pde_term` | `w_pde · Σ\|r_pde / (\|λ_tt\|·u_ref)\|² / (2 · N_int · n_shots · n_freq)`: the weighted **PDE term**, summed over interior + PML and normalised by the interior node count `N_int`; `\|λ_tt\|·u_ref` is fixed per (shot, frequency) at the band's warm start (ADR-0002) |
+| `data_term` | `w_data · Σ\|r_data / RMS(d_obs)\|² / (2 · n_shots · n_freq · n_receivers)`, the weighted **Data term**: a mean over traces, so independent of `n_transducers`, with `RMS(d_obs)` per (shot, frequency) and no noise model (the inverse crime) |
 | `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser or with `w_reg = 0` |
 
 #### Normalised residuals (comparable across bands and configs)
@@ -470,7 +472,7 @@ each band's final row (`per_band`).
 | column | meaning / calculation |
 |---|---|
 | `rel_data_residual` | `‖d_syn − d_obs‖₂ / ‖d_obs‖₂` over the band's shots × frequencies × receivers; `d_syn` is the wavefield sampled at the receivers |
-| `pde_src_ratio` | `RMS(r_pde) / RMS(source)`, PDE residual over interior + PML relative to the source |
+| `pde_rel_residual` | `sqrt(Σ\|r_pde / (\|λ_tt\|·u_ref)\|² / (N_int · n_shots · n_freq))`: the PDE residual over interior + PML in the PDE term's own scale (ADR-0002), normalised by the interior node count; `= sqrt(2 · pde_term / w_pde)`. Independent of the source normalisation, grid spacing and PML width |
 | `rel_wavefield_error` | `‖u − u*‖₂ / ‖u*‖₂` over the interior, all shots × band frequencies; `u*` is the true wavefield, cropped to the interior |
 | `rel_model_update` | `‖c − c_prev‖₂ / ‖c_prev‖₂` over the interior, `c_prev` at the previous row of the same band (`null` on a start row); truth-free plateau signal |
 

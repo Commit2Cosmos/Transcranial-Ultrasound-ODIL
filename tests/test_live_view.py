@@ -69,7 +69,7 @@ def test_ctrl_c_in_on_log_interrupts_the_run(tiny_run_config, new_run):
     assert [int(r["iter"]) for r in _tape_rows(result.run_dir)] == [0, 1, 2, 3]
 
 
-ROW_KEYS = ("rel_data_residual", "pde_src_ratio", "rmse_brain", "ssim_brain")
+ROW_KEYS = ("rel_data_residual", "pde_rel_residual", "rmse_brain", "ssim_brain")
 
 
 @pytest.fixture

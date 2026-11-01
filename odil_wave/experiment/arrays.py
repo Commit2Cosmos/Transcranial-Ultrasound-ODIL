@@ -63,7 +63,7 @@ class BandArrays:
     the last the band's final iterate. :meth:`save` then writes the file.
     """
 
-    def __init__(self, problem, band) -> None:
+    def __init__(self, problem, band, pde_scale: torch.Tensor) -> None:
         """
         Parameters
         ----------
@@ -71,8 +71,12 @@ class BandArrays:
             The run's problem (inversion and observation grids).
         band : BandContext
             The band's frequencies, geometry and observed wavefields ``u*``.
+        pde_scale : torch.Tensor
+            The band's fixed PDE scale ``|lambda_tt| * u_ref``, one value per
+            (shot, frequency).
         """
         self.geom = band.geom
+        self.pde_scale = pde_scale.detach().reshape(pde_scale.shape[0], -1)
         self.freqs = band.freq.frequencies
         self._interior = problem.grid.interior_slice
         u_star = torch.stack([wf.amplitude for wf in band.observed_wfs]).detach()
@@ -130,6 +134,7 @@ class BandArrays:
                 "d_obs": _single(self.d_obs),
                 "d_syn_start": _single(self.d_syn_start),
                 "d_syn_final": _single(self.d_syn_final),
+                "pde_scale": _single(self.pde_scale),
                 "shots": np.asarray(shots, dtype=np.int64),
                 "u": _single(self._final.u.index_select(0, idx)),
                 "u_star": _single(

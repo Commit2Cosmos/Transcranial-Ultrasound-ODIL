@@ -256,7 +256,7 @@ _CONVERGENCE_PANELS = [
         "Normalised residuals",
         [
             ("rel_data_residual", "C0", "-"),
-            ("pde_src_ratio", "C1", "-"),
+            ("pde_rel_residual", "C1", "-"),
             ("rel_wavefield_error", "C2", "-"),
         ],
         True,
