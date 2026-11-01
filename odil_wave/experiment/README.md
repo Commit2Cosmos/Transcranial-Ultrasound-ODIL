@@ -54,7 +54,7 @@ demand, e.g. after a post-processing change:
 
 ```bash
 python main.py --postprocess outputs/runs/<run>   # exit 2 if it is no run directory
-python main.py --postprocess outputs/experiments/<experiment>  # every run + summary.csv
+python main.py --postprocess outputs/experiments/<experiment>  # every run + summary.csv + figures
 ```
 
 ```python
@@ -78,6 +78,19 @@ The set is fixed in code; the run config has no post-processing section.
 | `residual_by_frequency.png`, `.csv` | `rel_data_residual` at each band's final iterate per solved frequency (more than one distinct solved frequency in the run only) |
 | `residual_by_transmitter.png`, `.csv` | `rel_data_residual` of each shot at each band's final iterate against its transmitter's ring angle |
 | `phase_gap.png`, `.csv` | at each band's start row, per frequency, the fraction of transducer pairs whose phase gap `phase(d_syn) − phase(d_obs)` exceeds π (cycle skipping: the band may need a lower band before it). The gap is unwrapped along the ring outwards from the transmitter, the nearest receiver's taken within half a cycle |
+
+An experiment's own figures (`experiment_figures.py`) go to
+`<experiment_dir>/figures/`, drawn from the **completed** runs only (a failed,
+interrupted or pending run has no final iterate to compare), and only with more
+than one:
+
+| file | content |
+|---|---|
+| `final_metrics.png` | final `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual`, `wall_s` against the swept value; the baseline's band-0 start row dashed. Numbers spanning a decade get a log (or, with 0 or negatives, symlog) axis; any other value is a dot plot over the run labels |
+| `convergence_overlay.png` | `rmse_brain`, `rmse_skull`, `rel_data_residual` (log) against `n_evaluations`, one line per run |
+| `difference_maps.png` | `c − c*` at each run's final iterate, one panel per run, on the shared difference scale |
+| `profile_overlay.png`, `.csv` | truth and each run's final `c` along the horizontal line through the head region's centroid; CSV cols `label,x_m,y_m,c_star,c` |
+| `accuracy_cost.png` | final `rmse_brain` against total `n_evaluations`, one labelled point per run |
 
 **Colour scales come from the truth only**, so they are identical across the
 runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
@@ -170,9 +183,8 @@ and writes **no** artifacts.
 ## Experiments
 
 > **Spec ahead of code.** This section is the design decided in "Experiment
-> spec format and reproduce command" (#56). Not yet implemented: `--probe`,
-> `--reproduce` and the experiment figures (`figures/`); each lands with its
-> own issue, which narrows this note.
+> spec format and reproduce command" (#56). Not yet implemented: `--probe` and
+> `--reproduce`; each lands with its own issue, which narrows this note.
 
 An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
 **baseline** run config. Its **experiment spec** is run by one entry point into
@@ -235,8 +247,9 @@ sweep:
   so a spec can be checked while it is written).
 - Runs execute sequentially in `values` order; a failed run doesn't stop the
   others. Each run is post-processed when it ends; experiment post-processing
-  (`summary.csv`) runs at the end. Ctrl-C stops the experiment: the current run
-  is `interrupted` and the rest stay `pending`. Exit codes: `0` every run
+  (`summary.csv`, then the experiment figures) runs at the end. Ctrl-C stops
+  the experiment: the current run is `interrupted` and the rest stay
+  `pending`. Exit codes: `0` every run
   completed, `1` a run failed or was interrupted, `2` could not start.
 - **Resume**: re-running on an existing experiment directory skips `completed`
   runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD
