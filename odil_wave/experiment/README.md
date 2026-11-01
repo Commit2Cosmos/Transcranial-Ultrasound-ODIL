@@ -84,6 +84,27 @@ runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
 `c − c*` is symmetric at half of `c*`'s peak-to-peak in the brain region (the
 skull's error saturates it; the profiles show its amplitude).
 
+### On-demand plots
+
+To dig deeper from a notebook, `on_demand.py` has one-line calls that take a
+run directory and return a matplotlib `Figure` (no CLI; not saved). Like
+post-processing they never solve or optimise. `band` is a completed band's
+position (default `-1`, the last), `shot` a transducer (default the band's
+worst-fit shot) and `frequency` an index into the band's solved frequencies.
+
+| call | figure |
+|---|---|
+| `source_spectrum(rd)` | normalised source spectrum `\|S(f)\|` with each band's inversion bins marked; reads the config only |
+| `optimiser_health(rd)` | `c_min` / `c_max` against `grid.c_min` / `grid.c_max`, `sat_frac`, `grad_u_norm` / `grad_z_norm` (log), against `iter_total` |
+| `wavefield_comparison(rd, band=, shot=, frequency=)` | u \| u* \| u − u* over the interior, real part and magnitude; `shot` must be a saved one |
+| `shot_data_fit(rd, band=, shot=, frequency=)` | amplitude and unwrapped phase of `d_obs` and `d_syn` (final iterate; start row dotted) against receiver angle; any shot |
+| `pde_residual_map(rd, band=, shot=, frequency=)` | `\|r_pde\| / RMS(q)` over the full grid (log), the per-cell `pde_src_ratio`: the operator evaluated on the saved `u` and `c`; `shot` must be a saved one |
+
+```python
+from odil_wave.experiment import pde_residual_map
+pde_residual_map(run_dir, shot=0)
+```
+
 Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
 `load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
 `Wavefield.show(idx)` draws a 2x2 of `|u|`, `Re(u)`, `Im(u)` and phase;
