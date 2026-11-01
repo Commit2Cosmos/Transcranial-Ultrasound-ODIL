@@ -337,13 +337,13 @@ class SSIMCfg:
     sigma: float = 1.5
 
 
-def ssim_window_radius(sigma: float) -> int:
-    """Radius in cells of the Gaussian SSIM window of std ``sigma``.
+def ssim_window_size(sigma: float) -> int:
+    """Width in cells of the Gaussian SSIM window of std ``sigma``.
 
     Matches ``skimage.metrics.structural_similarity``, which truncates the
-    Gaussian at 3.5 standard deviations.
+    Gaussian at 3.5 standard deviations either side of the centre cell.
     """
-    return int(3.5 * float(sigma) + 0.5)
+    return 2 * int(3.5 * float(sigma) + 0.5) + 1
 
 
 # Truth profiles that define a brain and a skull region.
@@ -380,6 +380,10 @@ class RunConfig:
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
+
+    def band_n_iter(self, band: BandCfg) -> int:
+        """``band``'s outer iterations: its ``n_iter``, else ``optimiser.n_iter``."""
+        return int(band.n_iter if band.n_iter is not None else self.optimiser.n_iter)
 
     # -- serialisation ----------------------------------------------------- #
     def to_dict(self) -> Dict[str, Any]:
@@ -685,7 +689,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     sigma = float(cfg.metrics.ssim.sigma)
     if sigma <= 0:
         raise ConfigError(f"metrics.ssim.sigma must be > 0, got {sigma}")
-    win = 2 * ssim_window_radius(sigma) + 1
+    win = ssim_window_size(sigma)
     if win > min(cfg.grid.interior_shape):
         raise ConfigError(
             f"metrics.ssim.sigma={sigma} gives a {win}-cell SSIM window, larger "

@@ -64,9 +64,7 @@ def _summarise(cfg) -> str:
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        lines.append(
-            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})"
-        )
+        lines.append(f"  band {i:02d}: {khz} kHz  (n_iter={cfg.band_n_iter(b)})")
     return "\n".join(lines)
 
 

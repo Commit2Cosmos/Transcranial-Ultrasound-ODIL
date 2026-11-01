@@ -188,9 +188,7 @@ def run_frequency_band(
     cfg = problem.cfg
     freqs = list(band_cfg.frequencies_hz)
     label = _band_label(freqs)
-    n_iter = int(
-        band_cfg.n_iter if band_cfg.n_iter is not None else cfg.optimiser.n_iter
-    )
+    n_iter = cfg.band_n_iter(band_cfg)
 
     t0 = time.perf_counter()
     t_start_epoch = time.time()
