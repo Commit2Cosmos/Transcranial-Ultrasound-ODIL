@@ -88,10 +88,7 @@ def probe_config(baseline: RunConfig) -> RunConfig:
 def total_iterations(config: RunConfig) -> int:
     """A run's iterations over all its bands (a band's ``n_iter`` defaults to
     ``optimiser.n_iter``)."""
-    return sum(
-        int(b.n_iter if b.n_iter is not None else config.optimiser.n_iter)
-        for b in config.continuation.bands
-    )
+    return sum(config.band_n_iter(b) for b in config.continuation.bands)
 
 
 def _estimate(n_iter: int, s_per_iter: float) -> str:

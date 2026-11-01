@@ -1,6 +1,6 @@
 ---
 name: experiment
-description: Walk an experiment from Protocol issue through launch to experiment record, or reproduce one. Use when the user wants to plan, launch, record or reproduce an experiment, or names an experiment issue or id.
+description: Walk an experiment from Protocol issue through launch to experiment record, or reproduce one. Use when the user wants to design, launch, record or reproduce an experiment, or names an experiment issue or id.
 argument-hint: "[<issue#> | <experiment-id> | <loose idea> | reproduce <id>]"
 ---
 

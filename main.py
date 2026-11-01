@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _summarise(cfg) -> str:
@@ -64,40 +64,38 @@ def _summarise(cfg) -> str:
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
-        lines.append(
-            f"  band {i:02d}: {khz} kHz  (n_iter={b.n_iter or cfg.optimiser.n_iter})"
-        )
+        lines.append(f"  band {i:02d}: {khz} kHz  (n_iter={cfg.band_n_iter(b)})")
     return "\n".join(lines)
 
 
 def _postprocess(path: Path) -> int:
     """``--postprocess``: draw a run directory's figures, or, for an experiment
     directory (one holding ``experiment.json``), every run's and the
-    experiment's own. Exit 2 if ``path`` is neither, 1 if a run of an
-    experiment couldn't be drawn."""
-    from odil_wave.experiment.postprocess import postprocess_run
+    experiment's own. Exit 2 if ``path`` is neither or of a format this code
+    can't read, 1 if a run of an experiment couldn't be drawn."""
+    from odil_wave.experiment.postprocess import draw_reported, postprocess_run
+    from odil_wave.experiment.rundir import SchemaVersionError
 
     if (path / "experiment.json").is_file():
         from odil_wave.experiment.launch import postprocess_experiment
 
         failed = []
 
-        def redraw(run_dir: Path) -> None:
-            try:
-                written = postprocess_run(run_dir)
-            except Exception as exc:  # noqa: BLE001 - the other runs still redraw
+        def redraw(run_dir: Path) -> None:  # the other runs still redraw
+            if not draw_reported(postprocess_run, run_dir):
                 failed.append(run_dir.name)
-                print(f"  [postprocess warning] {run_dir.name}: {exc}")
-                return
-            print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
 
-        postprocess_experiment(path, postprocess_run=redraw)
+        try:
+            postprocess_experiment(path, postprocess_run=redraw)
+        except SchemaVersionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         print(f"summary: {path / 'summary.csv'}")
         return 1 if failed else 0
 
     try:
         written = postprocess_run(path)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, SchemaVersionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"figures: {path / 'figures'} ({len(written)} files)")
@@ -262,20 +260,12 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
 
 def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
     """``--experiment``: the committed spec alone defines the runs."""
-    given = [
-        flag
-        for flag, used in (
-            ("--config", args.config is not None),
-            ("--scratch", args.scratch),
-        )
-        if used
-    ]
-    if given:
-        print(
-            f"error: {', '.join(given)} can't be used with --experiment: "
-            "the committed spec alone defines the runs",
-            file=sys.stderr,
-        )
+    if _clash(
+        "--experiment",
+        "the committed spec alone defines the runs",
+        ("--config", args.config is not None),
+        ("--scratch", args.scratch),
+    ):
         return 2
     from odil_wave.experiment.config import ConfigError
     from odil_wave.experiment.spec import device_override
@@ -293,15 +283,12 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
         return 2
 
     if args.probe:
-        clashing = [
-            f for f, used in (("--dry-run", args.dry_run), ("--out", args.out)) if used
-        ]
-        if clashing:
-            print(
-                f"error: {', '.join(clashing)} can't be used with --probe: a probe "
-                "always runs, into outputs/probes/",
-                file=sys.stderr,
-            )
+        if _clash(
+            "--probe",
+            "a probe always runs, into outputs/probes/",
+            ("--dry-run", args.dry_run),
+            ("--out", args.out),
+        ):
             return 2
         from odil_wave.experiment.probe import probe
 
@@ -323,29 +310,34 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
 
 def _reproduce(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
     """``--reproduce``: the record's commit and spec alone define the runs."""
-    given = [
-        flag
-        for flag, used in (
-            ("--config", args.config is not None),
-            ("--experiment", args.experiment is not None),
-            ("--scratch", args.scratch),
-            ("--dry-run", args.dry_run),
-            ("--probe", args.probe),
-            ("--live", args.live),
-            ("--out", args.out is not None),
-        )
-        if used
-    ]
-    if given:
-        print(
-            f"error: {', '.join(given)} can't be used with --reproduce: the "
-            "record's commit and spec alone define the runs",
-            file=sys.stderr,
-        )
+    if _clash(
+        "--reproduce",
+        "the record's commit and spec alone define the runs",
+        ("--config", args.config is not None),
+        ("--experiment", args.experiment is not None),
+        ("--scratch", args.scratch),
+        ("--dry-run", args.dry_run),
+        ("--probe", args.probe),
+        ("--live", args.live),
+        ("--out", args.out is not None),
+    ):
         return 2
     from odil_wave.experiment.reproduce import reproduce
 
     return reproduce(args.reproduce, overrides=args.override, repo_root=repo_root)
+
+
+def _clash(mode: str, reason: str, *flags: Tuple[str, Any]) -> bool:
+    """Print an error naming every ``(flag, used)`` of ``flags`` that is used,
+    since it can't be combined with ``mode`` for ``reason``; return whether
+    any was."""
+    given = [flag for flag, used in flags if used]
+    if given:
+        print(
+            f"error: {', '.join(given)} can't be used with {mode}: {reason}",
+            file=sys.stderr,
+        )
+    return bool(given)
 
 
 if __name__ == "__main__":

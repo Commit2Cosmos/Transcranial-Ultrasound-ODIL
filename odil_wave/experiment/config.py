@@ -33,6 +33,8 @@ from typing import (
 
 import yaml
 
+from .atomic import write_text_atomic
+
 
 class ConfigError(ValueError):
     """Raised for malformed / unknown configuration entries."""
@@ -335,13 +337,13 @@ class SSIMCfg:
     sigma: float = 1.5
 
 
-def ssim_window_radius(sigma: float) -> int:
-    """Radius in cells of the Gaussian SSIM window of std ``sigma``.
+def ssim_window_size(sigma: float) -> int:
+    """Width in cells of the Gaussian SSIM window of std ``sigma``.
 
     Matches ``skimage.metrics.structural_similarity``, which truncates the
-    Gaussian at 3.5 standard deviations.
+    Gaussian at 3.5 standard deviations either side of the centre cell.
     """
-    return int(3.5 * float(sigma) + 0.5)
+    return 2 * int(3.5 * float(sigma) + 0.5) + 1
 
 
 # Truth profiles that define a brain and a skull region.
@@ -379,6 +381,10 @@ class RunConfig:
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
 
+    def band_n_iter(self, band: BandCfg) -> int:
+        """``band``'s outer iterations: its ``n_iter``, else ``optimiser.n_iter``."""
+        return int(band.n_iter if band.n_iter is not None else self.optimiser.n_iter)
+
     # -- serialisation ----------------------------------------------------- #
     def to_dict(self) -> Dict[str, Any]:
         """Return the config as a nested plain-dict tree."""
@@ -396,8 +402,7 @@ class RunConfig:
     def to_json(self, path: Union[str, Path]) -> Path:
         """Write the config to ``path`` as JSON; return the path."""
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
+        write_text_atomic(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
         return p
 
 
@@ -511,18 +516,9 @@ def load_config_file(path: Union[str, Path]) -> Dict[str, Any]:
 def _dump_yaml(obj: Dict[str, Any], path: Union[str, Path]) -> Path:
     """Atomically write ``obj`` to ``path`` as block-style YAML."""
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(obj, sort_keys=False, default_flow_style=False, width=100)
-    _atomic_write(p, text)
+    write_text_atomic(p, text)
     return p
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically (write tmp then rename)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
 
 
 # --------------------------------------------------------------------------- #
@@ -693,7 +689,7 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     sigma = float(cfg.metrics.ssim.sigma)
     if sigma <= 0:
         raise ConfigError(f"metrics.ssim.sigma must be > 0, got {sigma}")
-    win = 2 * ssim_window_radius(sigma) + 1
+    win = ssim_window_size(sigma)
     if win > min(cfg.grid.interior_shape):
         raise ConfigError(
             f"metrics.ssim.sigma={sigma} gives a {win}-cell SSIM window, larger "

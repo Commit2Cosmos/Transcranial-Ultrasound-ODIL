@@ -22,7 +22,7 @@ import yaml
 
 from .bank import read_record
 from .config import ConfigError
-from .rundir import REPO_ROOT, _git
+from .rundir import REPO_ROOT, experiment_path, run_git
 from .spec import DEVICE_KEY, device_override
 
 
@@ -64,7 +64,7 @@ def reproduce(
     tmp = Path(tempfile.mkdtemp(prefix=f"reproduce-{exp_id}-"))
     worktree = tmp / exp_id
     try:
-        if _git(root, "worktree", "add", "--detach", str(worktree), commit) is None:
+        if run_git(root, "worktree", "add", "--detach", str(worktree), commit) is None:
             print(
                 f"error: can't check out the recorded commit {commit} "
                 f"(fetch it, e.g. its launch/{exp_id} tag)",
@@ -77,7 +77,7 @@ def reproduce(
             print(f"error: can't run {command[0]!r}: {exc}", file=sys.stderr)
             return 2
     finally:
-        _git(root, "worktree", "remove", "--force", str(worktree))
+        run_git(root, "worktree", "remove", "--force", str(worktree))
         shutil.rmtree(tmp, ignore_errors=True)
     # The recorded entry point exits 0 / 1 / 2 like this one; anything else
     # (a crash, a signal) means a run did not complete.
@@ -105,7 +105,7 @@ def _spec_device(root: Path, commit: str, spec: str) -> str:
     Read from the YAML alone, not resolved by this commit's config code, which
     may no longer accept an old spec that the recorded entry point does.
     """
-    text = _git(root, "show", f"{commit}:{spec}")
+    text = run_git(root, "show", f"{commit}:{spec}")
     if text is None:
         raise ReproduceError(f"the spec {spec} is not in the recorded commit {commit}")
     data: Any = yaml.safe_load(text)
@@ -118,9 +118,7 @@ def _target(root: Path, exp_id: str, device: str) -> Path:
     device the runs resolve to on this machine; it must not exist."""
     from .envinfo import resolve_device
 
-    kind = resolve_device(device).type
-    suffix = "" if kind == "cpu" else f"_{kind}"
-    target = (root / "outputs" / "experiments" / f"{exp_id}{suffix}").resolve()
+    target = experiment_path(root, exp_id, resolve_device(device).type).resolve()
     if target.exists():
         raise ReproduceError(
             f"{target} already exists; --reproduce never overwrites a result "

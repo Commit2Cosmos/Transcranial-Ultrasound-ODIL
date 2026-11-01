@@ -31,7 +31,7 @@ Show the user **Results, Conclusions supported, Conclusions not supported, Surpr
 
 Done when the user has approved all five.
 
-## 5. Results files
+## 5. Record attachments
 
 Copy `experiment.json`, `summary.csv` and the PNGs the Results cite (at most 3, standard filenames) into `docs/experiments/NNNN-slug/`, and point the Results' image links there.
 

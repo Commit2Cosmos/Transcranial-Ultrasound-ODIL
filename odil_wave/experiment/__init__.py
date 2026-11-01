@@ -21,10 +21,9 @@ from .plots import (
     load_config,
     load_final_velocity,
     load_loss_tape,
-    load_metrics,
     rebuild_problem,
 )
-from .postprocess import ColourScales, SavedRun, postprocess_run
+from .postprocess import ColourScales, SavedRun, load_tape, postprocess_run
 from .problem import BandContext, Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
 from .spec import ExperimentSpec, SweepRun, load_spec
@@ -84,7 +83,7 @@ __all__ = [
     "load_config",
     "load_final_velocity",
     "load_loss_tape",
-    "load_metrics",
+    "load_tape",
     "rebuild_problem",
     # runner
     "RunResult",

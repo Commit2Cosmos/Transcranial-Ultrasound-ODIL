@@ -25,7 +25,7 @@ from skimage.metrics import structural_similarity
 
 from odil_wave.optimisation import Iterate
 
-from .config import ConfigError, ssim_window_radius
+from .config import ConfigError, ssim_window_size
 
 # ``tape.csv`` columns, in order.
 TAPE_COLUMNS: List[str] = [
@@ -110,7 +110,7 @@ class ModelError:
         if not self.brain.any() or not self.skull.any():
             raise ConfigError("the truth model has an empty brain or skull region")
         self.sigma = float(sigma)
-        win = 2 * ssim_window_radius(self.sigma) + 1
+        win = ssim_window_size(self.sigma)
         self.win_size = win
         # Only windows lying wholly inside the brain region are scored.
         self.ssim_region = ndi.binary_erosion(

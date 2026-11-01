@@ -118,7 +118,7 @@ from odil_wave.experiment import pde_residual_map
 pde_residual_map(run_dir, shot=0)
 ```
 
-Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
+Other helpers read the same artifacts: `load_tape(rd)` (the tape as dicts),
 `load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
 `Wavefield.show(idx)` draws a 2x2 of `|u|`, `Re(u)`, `Im(u)` and phase;
 `SourceSignal.plot_spectrum(frequencies=band.freq)` marks the inversion bins on
@@ -250,8 +250,9 @@ sweep:
   `pending`. Exit codes: `0` every run
   completed, `1` a run failed or was interrupted, `2` could not start.
 - **Resume**: re-running on an existing experiment directory skips `completed`
-  runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD
-  and the spec hash match `experiment.json`; otherwise it refuses.
+  runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD,
+  the spec hash and the device type match `experiment.json`; otherwise it
+  refuses.
 - `--dry-run` resolves and validates every run and writes nothing.
 - `--probe` runs **3 iterations of the baseline's first band**, measures s/iter,
   and prints an estimate per run (s/iter × the run's total iterations) and for
@@ -297,7 +298,9 @@ under `outputs/`.
 
 A standalone run (`--config` / `--override`, no `--experiment`) also requires a
 clean tree. `--scratch` allows a dirty one: `_scratch` is appended to the
-directory name, `metadata.json` has `scratch: true`, and `git.diff` is saved.
+directory name, `metadata.json` has `scratch: true`, and `git.diff` is saved:
+every change from HEAD, untracked (non-ignored) files included, so `git apply`
+on a clean checkout of the commit rebuilds the tree.
 No experiment record may cite a scratch run.
 
 ### `--reproduce <experiment-id>`
@@ -326,9 +329,10 @@ reproduced.
 ### Compatibility
 
 The spec, `metadata.json` and `experiment.json` carry an integer
-`schema_version` (from 1). Readers (post-processing, the index script) support
-every version from 1 up; a format change bumps the version and adds a reader
-path, never rewrites old directories. The flags `--experiment`, `--out`,
+`schema_version` (from 1). Readers (post-processing, a resume, the index
+script) support every version from 1 up to the code's own and refuse a newer
+one or none (`--postprocess` and a resume exit `2`); a format change bumps the
+version and adds a reader path, never rewrites old directories. The flags `--experiment`, `--out`,
 `--postprocess`, `--reproduce` and `--probe` (and `-o runtime.device=<device>`
 with `--experiment`) are a stable contract: a new `--reproduce` calls the old
 `main.py` inside the worktree, so a later commit may add flags but never
@@ -345,7 +349,7 @@ experiments are written" above):
 <run_dir>/
   config_resolved.yaml     # every effective value used by the run
   metadata.json            # written once at start: code/env/host/git/uv.lock/seed/grid
-  git.diff                 # scratch runs only: tracked + staged diff
+  git.diff                 # scratch runs only: diff from HEAD incl. untracked files
   tape.csv                 # per-row metric tape (see below); empty cell = null
   problem.npz              # c_star, c0 (interior), pml_c, brain_mask,
                            #   skull_mask, transducer_angles_deg, interior_slice

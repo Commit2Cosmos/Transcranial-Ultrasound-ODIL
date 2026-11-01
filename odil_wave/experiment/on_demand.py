@@ -23,8 +23,8 @@ from odil_wave.grid import FrequencySelection
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
-from .config import RunConfig, deep_merge, load_config_file
-from .postprocess import DIFF_CMAP, SavedBand, SavedRun, _draw_map
+from .config import RunConfig, deep_merge
+from .postprocess import DIFF_CMAP, SavedBand, SavedRun, _draw_map, load_run_config
 from .problem import Problem, build_problem
 from .runner import _band_label
 
@@ -39,12 +39,7 @@ RESIDUAL_DECADES = 6
 def _problem(run_dir: PathLike) -> Problem:
     """The run's problem rebuilt on the CPU from its ``config_resolved.yaml``
     (grid, source, models; no solve)."""
-    path = Path(run_dir) / "config_resolved.yaml"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{str(run_dir)!r} is not a run directory (no config_resolved.yaml)"
-        )
-    config = deep_merge(load_config_file(path), {"runtime": {"device": "cpu"}})
+    config = deep_merge(load_run_config(run_dir), {"runtime": {"device": "cpu"}})
     return build_problem(RunConfig.from_dict(config))
 
 

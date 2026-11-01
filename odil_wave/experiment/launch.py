@@ -18,8 +18,20 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
+from .atomic import atomic_open
 from .config import ConfigError
-from .rundir import REPO_ROOT, SCHEMA_VERSION, GitState, RunStartError, _git, write_json
+from .rundir import (
+    REPO_ROOT,
+    SCHEMA_VERSION,
+    GitState,
+    RunStartError,
+    clean_git_state,
+    SchemaVersionError,
+    experiment_path,
+    load_versioned_json,
+    run_git,
+    write_json,
+)
 from .spec import ExperimentSpec, SweepRun, format_value, load_spec
 from .tape import TAPE_COLUMNS
 
@@ -52,7 +64,9 @@ def launch(
     except ConfigError as exc:
         print(f"spec error: {exc}", file=sys.stderr)
         return 2
-    exp_dir = Path(out) if out is not None else experiment_directory(spec, root)
+    exp_dir = (
+        Path(out) if out is not None else experiment_path(root, spec.id, _device(spec))
+    )
     _print_plan(spec, exp_dir)
     if dry_run:
         print("\n[dry-run] experiment spec is valid; no artifacts written.")
@@ -66,14 +80,6 @@ def launch(
         return 2
     print(f"\nexperiment {status}: {exp_dir}")
     return 0 if status == "completed" else 1
-
-
-def experiment_directory(spec: ExperimentSpec, repo_root: Path) -> Path:
-    """``<repo_root>/outputs/experiments/<id>[_<device>]``, suffixed only for
-    cuda / mps, by the device the baseline's runs use."""
-    device = _device(spec)
-    suffix = "" if device == "cpu" else f"_{device}"
-    return repo_root / "outputs" / "experiments" / f"{spec.id}{suffix}"
 
 
 def run_experiment(
@@ -95,9 +101,10 @@ def run_experiment(
     ------
     RunStartError
         A dirty tree, a spec not committed in ``repo_root``, or an existing
-        ``exp_dir`` that isn't this experiment at this commit and spec.
+        ``exp_dir`` that isn't this experiment at this commit and spec on this
+        device type.
     """
-    state = _clean_state(repo_root)
+    state = clean_git_state(repo_root, needs="an experiment")
     spec_rel = _committed_spec(spec, repo_root)
     record = _resumable_record(spec, state, exp_dir)
     if record is None:
@@ -150,7 +157,7 @@ def postprocess_experiment(
     again with ``postprocess_run``, then the experiment itself, reading only
     what the experiment directory holds."""
     exp_dir = Path(exp_dir)
-    record = json.loads((exp_dir / "experiment.json").read_text())
+    record = load_versioned_json(exp_dir / "experiment.json")
     if postprocess_run is not None:
         for entry in record["runs"]:
             run_dir = exp_dir / entry["dir"]
@@ -166,18 +173,10 @@ def postprocess_experiment_level(exp_dir: Path) -> None:
     completed run). A figure error is reported, never failing the experiment:
     ``--postprocess`` redraws them."""
     from .experiment_figures import postprocess_experiment_figures
+    from .postprocess import draw_reported
 
     write_summary(exp_dir)
-    try:
-        written = postprocess_experiment_figures(exp_dir)
-    except Exception as exc:  # noqa: BLE001 - figures never fail an experiment
-        print(
-            f"  [post-processing warning] {type(exc).__name__}: {exc}; "
-            f"redraw with: main.py --postprocess {exp_dir}"
-        )
-        return
-    if written:
-        print(f"figures: {exp_dir / 'figures'} ({len(written)} files)")
+    draw_reported(postprocess_experiment_figures, exp_dir)
 
 
 def _run_one(
@@ -205,27 +204,11 @@ def _run_one(
     return status
 
 
-def _clean_state(repo_root: Path) -> GitState:
-    """The repository's state, which must be a clean tree at a commit."""
-    state = GitState.of(repo_root)
-    if state.sha is None:
-        raise RunStartError(
-            f"{repo_root} is not a git repository, so the experiment can't name "
-            "its commit"
-        )
-    if state.dirty:
-        raise RunStartError(
-            "the git tree has uncommitted changes or untracked files; an "
-            "experiment needs a clean tree (commit them first)"
-        )
-    return state
-
-
 def write_summary(exp_dir: Path) -> None:
     """Write ``summary.csv``: one row per run with its swept value, whether it
     is the baseline, its status and its final-iterate tape columns (empty
     unless the run completed)."""
-    record = json.loads((exp_dir / "experiment.json").read_text())
+    record = load_versioned_json(exp_dir / "experiment.json")
     header = ["index", "label", "value", "is_baseline", "status"] + TAPE_COLUMNS
     rows = []
     for entry in record["runs"]:
@@ -241,12 +224,10 @@ def write_summary(exp_dir: Path) -> None:
         }
         row.update({k: "" if final.get(k) is None else final[k] for k in TAPE_COLUMNS})
         rows.append(row)
-    tmp = exp_dir / "summary.csv.tmp"
-    with open(tmp, "w", newline="") as f:
+    with atomic_open(exp_dir / "summary.csv", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(rows)
-    tmp.replace(exp_dir / "summary.csv")
 
 
 def _final_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
@@ -270,7 +251,7 @@ def _committed_spec(spec: ExperimentSpec, repo_root: Path) -> str:
         rel = spec.path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         rel = None
-    if rel is None or _git(repo_root, "ls-files", "--error-unmatch", rel) is None:
+    if rel is None or run_git(repo_root, "ls-files", "--error-unmatch", rel) is None:
         raise RunStartError(
             f"the spec {spec.path} must be committed in {repo_root} before launch"
         )
@@ -286,8 +267,9 @@ def _resumable_record(
     Raises
     ------
     RunStartError
-        ``exp_dir`` holds files but no record, or the record's commit or spec
-        hash differs from HEAD's or this spec's.
+        ``exp_dir`` holds files but no record, a record of a format this code
+        can't read, or the record's commit, spec
+        hash or device type differs from HEAD's or this spec's.
     """
     if not exp_dir.exists() or not any(exp_dir.iterdir()):
         return None
@@ -296,7 +278,10 @@ def _resumable_record(
         raise RunStartError(
             f"{exp_dir} already exists and is not an experiment directory"
         )
-    record = json.loads(path.read_text())
+    try:
+        record = load_versioned_json(path)
+    except SchemaVersionError as exc:
+        raise RunStartError(str(exc)) from None
     if record.get("commit") != state.sha:
         raise RunStartError(
             f"{exp_dir} was launched at commit {record.get('commit')}, not HEAD "
@@ -306,6 +291,12 @@ def _resumable_record(
         raise RunStartError(
             f"{exp_dir} was launched from a different spec (hash mismatch); an "
             "experiment resumes only with its spec unchanged"
+        )
+    device = _device(spec)
+    if record.get("device") != device:
+        raise RunStartError(
+            f"{exp_dir} was launched on {record.get('device')}, not {device}; an "
+            "experiment resumes only on its device type"
         )
     return record
 
