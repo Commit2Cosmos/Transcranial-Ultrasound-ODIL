@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
 from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
@@ -65,6 +66,16 @@ class RunResult:
     final_velocity: Any = None
     metrics_summary: Dict[str, Any] = field(default_factory=dict)
     error: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class LoggedRow:
+    """One logged iterate as ``run_inverse(on_log=...)`` receives it."""
+
+    row: Dict[str, Any]  # the tape.csv row just written
+    c: np.ndarray  # interior velocity at this iterate (m/s)
+    c_star: np.ndarray  # interior truth velocity (m/s)
+    band_final: bool  # the row is the band's final iterate
 
 
 # --------------------------------------------------------------------------- #
@@ -163,6 +174,7 @@ def run_frequency_band(
     bands_dir: Path,
     *,
     warnings: Optional[List[str]] = None,
+    on_log: Optional[Callable[[LoggedRow], None]] = None,
 ) -> BandResult:
     """Run a single continuation stage and write its per-band artifacts.
 
@@ -171,6 +183,7 @@ def run_frequency_band(
     start. The band's ``arrays.npz`` and ``band_summary.json`` are written
     only once it completes. Each optimiser-health warning is printed when it
     fires and appended to ``warnings`` (the run's list) as well as the band's.
+    ``on_log`` gets a :class:`LoggedRow` after each tape row is written.
     """
     cfg = problem.cfg
     freqs = list(band_cfg.frequencies_hz)
@@ -201,7 +214,7 @@ def run_frequency_band(
     )
     band_tape = tape.start_band(band_index, band_ctx)
     # The loss callback keeps the solver's scalar history and result; the
-    # tape rows come from ``on_log``.
+    # tape rows come from ``record_row``.
     loss_tape = LossTape(
         name=f"{SOLVER_NAME}_{label}",
         log_every=cfg.optimiser.log_every,
@@ -227,16 +240,26 @@ def run_frequency_band(
     band_arrays = BandArrays(problem, band_ctx)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
 
-    def on_log(it):
+    def record_row(it):
         band_arrays(it)
         row = band_tape.record(it)
         for w in health(row):
             print(f"  [health warning] {w}")
             if warnings is not None:
                 warnings.append(w)
+        if on_log is not None:
+            sl = problem.grid.interior_slice
+            on_log(
+                LoggedRow(
+                    row=row,
+                    c=it.c_full[sl].detach().cpu().numpy().astype(np.float64),
+                    c_star=tape.model_error.truth,
+                    band_final=int(it.iter) == n_iter,
+                )
+            )
 
     t_opt = time.perf_counter()
-    recovered_wfs, _ = opt.minimise(on_log=on_log)
+    recovered_wfs, _ = opt.minimise(on_log=record_row)
     optimise_s = time.perf_counter() - t_opt
 
     recovered_velocity = recovered_wfs[0].velocity_model
@@ -325,6 +348,7 @@ def run_inverse(
     run_directory: RunDirectory,
     *,
     on_band_end: Optional[Callable[["BandResult", "RunResult"], None]] = None,
+    on_log: Optional[Callable[[LoggedRow], None]] = None,
 ) -> RunResult:
     """Run the full (single- or multi-band) inversion into ``run_directory``.
 
@@ -346,10 +370,14 @@ def run_inverse(
         :func:`~odil_wave.experiment.rundir.new_run_directory`.
     on_band_end : callable, optional
         ``on_band_end(band_result, run_result)``, called after every completed
-        band with the recovered model already in ``run_result.band_results``
-        (e.g. :class:`odil_wave.experiment.LiveVelocityView`). An exception from
-        it is reported, never aborting the run; a ``KeyboardInterrupt`` ends the
-        run as ``interrupted``.
+        band with the recovered model already in ``run_result.band_results``.
+        An exception from it is reported, never aborting the run; a
+        ``KeyboardInterrupt`` ends the run as ``interrupted``.
+    on_log : callable, optional
+        ``on_log(logged_row)``, called with a :class:`LoggedRow` after every
+        tape row (e.g. :class:`odil_wave.experiment.LiveVelocityView`). Its
+        first exception is reported and it is not called again, never aborting
+        the run; a ``KeyboardInterrupt`` ends the run as ``interrupted``.
 
     Returns
     -------
@@ -390,6 +418,9 @@ def run_inverse(
         "config_warnings": warnings,
     }
 
+    if on_log is not None:
+        on_log = _guarded(on_log)
+
     t_run0 = time.perf_counter()
     result = RunResult(run_id=run_id, run_dir=run_dir, config=config, status="running")
     try:
@@ -407,7 +438,14 @@ def run_inverse(
         current = problem.init_velocity
         for bi, band_cfg in enumerate(config.continuation.bands):
             band_res = run_frequency_band(
-                problem, current, band_cfg, tape, bi, bands_dir, warnings=run_warnings
+                problem,
+                current,
+                band_cfg,
+                tape,
+                bi,
+                bands_dir,
+                warnings=run_warnings,
+                on_log=on_log,
             )
             result.band_results.append(band_res)
             current = band_res.velocity_model
@@ -448,6 +486,27 @@ def _postprocess(run_dir: Path) -> None:
         )
         return
     print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+
+
+def _guarded(on_log: Callable[[LoggedRow], None]) -> Callable[[LoggedRow], None]:
+    """``on_log`` made harmless: its first exception is reported and it is
+    not called again. A ``KeyboardInterrupt`` still propagates."""
+    failed = False
+
+    def call(logged: LoggedRow) -> None:
+        nonlocal failed
+        if failed:
+            return
+        try:
+            on_log(logged)
+        except Exception as exc:  # never let a monitor kill a run
+            failed = True
+            print(
+                f"  [on_log warning] {type(exc).__name__}: {exc} "
+                "(not called again this run)"
+            )
+
+    return call
 
 
 def _write_run_summary(result: RunResult, warnings: List[str], wall_s: float) -> None:

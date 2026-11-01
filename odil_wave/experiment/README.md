@@ -85,23 +85,36 @@ Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
 `SourceSignal.plot_spectrum(frequencies=band.freq)` marks the inversion bins on
 the source spectrum; `odil_wave.metrics.ssim_map(...)` shows the per-pixel SSIM.
 
-### Watch a run live and stop it early
+## Watch a run live and stop it early
 
-`run_inverse(..., on_band_end=cb)` calls `cb(band_result, run_result)` after
-every completed frequency band. `LiveVelocityView` is a ready-made callback that
-redraws the recovered velocity and the SSIM / relative-error trend after each
-band, so a stalled run is obvious and can be interrupted:
+```bash
+python main.py --live -c configs/example_multiband.yaml
+```
+
+`--live` (CLI) and `LiveVelocityView` (notebook) redraw one matplotlib window
+during the run with three panels: c − c*; the truth-free stopping pair
+`rel_data_residual` and `pde_src_ratio` (the run is done when the PDE residual
+is at its floor *and* the data residual is as low as it goes); and
+`rmse_brain` / `ssim_brain`. It redraws at logged tape rows, at most once every
+5 s and always on each band's final row, and prints nothing to the terminal.
+With no display (a non-interactive matplotlib backend, e.g. a headless
+machine) the run warns once and continues without a live view.
 
 ```python
 from odil_wave.experiment import LiveVelocityView
 
-live = LiveVelocityView(problem.truth_velocity)
-result = run_inverse(cfg, new_run_directory(scratch=True), on_band_end=live)
+result = run_inverse(
+    cfg, new_run_directory(scratch=True), on_log=LiveVelocityView()
+)
 ```
 
-A callback exception is caught and reported, never aborting the run. Ctrl-C (a
-`KeyboardInterrupt`) ends the run as `interrupted`, keeping the tape and the
-completed bands.
+`run_inverse(..., on_log=cb)` calls `cb(logged_row)` after every tape row with
+a `LoggedRow` (`row`, interior `c` and `c_star`, `band_final`);
+`on_band_end=cb` calls `cb(band_result, run_result)` after every completed
+band. A callback exception is caught and reported, never aborting the run (a
+failing `on_log` is not called again). Ctrl-C (a `KeyboardInterrupt`) ends the
+run as `interrupted`, keeping the tape and the completed bands, and still
+post-processes them.
 
 ## Override settings from the CLI
 
