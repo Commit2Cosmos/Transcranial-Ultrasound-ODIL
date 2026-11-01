@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import collections
-import csv
 import json
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 
-from odil_wave.geometry import AcquisitionGeometry
-from odil_wave.grid import FrequencySelection, Grid
+from odil_wave.grid import Grid
 from odil_wave.loss import LossTape
 from odil_wave.models import VelocityModel
 
 from .config import RunConfig, load_config_file
+from .postprocess import load_tape as load_metrics
 from .problem import Problem, build_problem
 
 
@@ -41,14 +38,6 @@ def rebuild_problem(run_dir: Union[str, Path]) -> Problem:
     return build_problem(load_config(run_dir))
 
 
-def _default_geometry(problem: Problem) -> AcquisitionGeometry:
-    """Acquisition geometry for the run's first configured band."""
-    bands = problem.cfg.continuation.bands
-    band = bands[0]
-    freq = FrequencySelection.from_frequencies(problem.grid, list(band.frequencies_hz))
-    return problem._geometry(problem.grid, problem.source, freq)
-
-
 def _resolve_grid_pml(
     run_dir: Union[str, Path], grid: Optional[Grid], pml_c: Optional[float]
 ) -> Tuple[Grid, Optional[float]]:
@@ -68,30 +57,6 @@ def _resolve_grid_pml(
 # --------------------------------------------------------------------------- #
 # Loading saved artifacts
 # --------------------------------------------------------------------------- #
-def load_metrics(run_dir: Union[str, Path]) -> List[dict]:
-    """Read ``tape.csv`` from a run dir: one dict per row, column -> value.
-
-    Numbers are floats (``band_index``, ``iter``, ``iter_total`` and
-    ``n_evaluations`` ints) and an empty cell is ``None``.
-    """
-    path = Path(run_dir) / "tape.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"no tape.csv under {run_dir!r} ({path})")
-    ints = {"band_index", "iter", "iter_total", "n_evaluations"}
-    with open(path, newline="") as f:
-        return [
-            {
-                k: v
-                if k == "run_id"
-                else None
-                if v == ""
-                else (int if k in ints else float)(v)
-                for k, v in row.items()
-            }
-            for row in csv.DictReader(f)
-        ]
-
-
 def _records(source: RunDirOrRecords) -> List[dict]:
     """Accept either a run directory or an already-loaded list of records."""
     if isinstance(source, (str, Path)):
@@ -159,134 +124,3 @@ def load_loss_tape(source: RunDirOrRecords, name: str = "loaded run") -> LossTap
     ``tape.show_velocity_recovery(...)`` exactly as during a live run.
     """
     return LossTape.from_records(_records(source), name=name)
-
-
-# --------------------------------------------------------------------------- #
-# Static diagnostics
-# --------------------------------------------------------------------------- #
-def plot_run_history(
-    source: RunDirOrRecords,
-    *,
-    title: str = "Run history",
-    x: str = "iter_total",
-):
-    """Per-band loss and brain-region SSIM vs iteration (from ``tape.csv``).
-
-    ``x`` selects the horizontal axis: ``"iter_total"`` (default, a continuous
-    run-wide view) or ``"iter"`` (each band starts at 0, overlaid).
-    """
-    records = _records(source)
-    if not records:
-        raise ValueError("no records to plot")
-    by_band = collections.defaultdict(list)
-    for r in records:
-        by_band[r.get("band_index", 0)].append(r)
-
-    fig, (ax_loss, ax_ssim) = plt.subplots(1, 2, figsize=(12, 4))
-    any_ssim = False
-    for bi, recs in sorted(by_band.items()):
-        it = [r.get(x) for r in recs]
-        ax_loss.semilogy(
-            it, [r.get("loss_total") for r in recs], "o-", ms=3, label=f"band {bi}"
-        )
-        ssim_vals = [r.get("ssim_brain") for r in recs]
-        if any(s is not None for s in ssim_vals):
-            any_ssim = True
-            ax_ssim.plot(
-                it,
-                [np.nan if s is None else s for s in ssim_vals],
-                "o-",
-                ms=3,
-                label=f"band {bi}",
-            )
-
-    ax_loss.set_xlabel(x)
-    ax_loss.set_ylabel("loss_total")
-    ax_loss.set_title("Loss")
-    ax_loss.grid(alpha=0.3)
-    ax_loss.legend()
-
-    ax_ssim.set_xlabel(x)
-    ax_ssim.set_ylabel("ssim_brain")
-    ax_ssim.set_title("Brain-region SSIM")
-    ax_ssim.grid(alpha=0.3)
-    if any_ssim:
-        ax_ssim.legend()
-    else:
-        ax_ssim.text(
-            0.5,
-            0.5,
-            "no SSIM (no ground truth)",
-            ha="center",
-            va="center",
-            transform=ax_ssim.transAxes,
-        )
-
-    fig.suptitle(title)
-    fig.tight_layout()
-    plt.show()
-    return fig
-
-
-def plot_velocity_recovery(
-    run_dir: Union[str, Path],
-    truth: Optional[VelocityModel] = None,
-    geom: Optional[AcquisitionGeometry] = None,
-    *,
-    grid: Optional[Grid] = None,
-    title: str = "Velocity recovery",
-    **kwargs,
-):
-    """Truth | recovered | difference | recovery-error, from saved artifacts.
-
-    ``truth`` and ``geom`` default to the ground-truth model and first-band
-    acquisition geometry rebuilt from the run's saved config, so only the run
-    directory is required. Pass them explicitly to reuse a live ``Problem``.
-
-    Loads the final band's saved model and the tape and delegates to
-    :meth:`odil_wave.loss.LossTape.show_velocity_recovery`. Extra ``kwargs``
-    (``vmin`` / ``vcenter`` / ``vmax`` / ``norm``) are forwarded to it.
-    """
-    if truth is None or geom is None:
-        problem = rebuild_problem(run_dir)
-        truth = truth if truth is not None else problem.truth_velocity
-        geom = geom if geom is not None else _default_geometry(problem)
-    grid = grid if grid is not None else truth.grid
-    recovered = load_final_velocity(run_dir, grid)
-    tape = load_loss_tape(run_dir)
-    tape.show_velocity_recovery(truth, recovered, geom, title=title, **kwargs)
-    return recovered
-
-
-def animate_bands(
-    run_dir: Union[str, Path],
-    grid: Optional[Grid] = None,
-    *,
-    filename: str = "c_bands.gif",
-    pml_c: Optional[float] = None,
-    fps: int = 2,
-    title: str = "Recovered c(x, y) across bands",
-    norm=None,
-) -> str:
-    """Animate the per-band recovered velocity (one frame per completed band).
-
-    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
-    config, so only the run directory is required.
-    """
-    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
-    bands = load_band_velocities(run_dir, grid, pml_c=pml_c)
-    if not bands:
-        raise RuntimeError(f"no per-band velocities found under {run_dir!r}")
-    tape = LossTape(store_c_history=True)
-    labels: List[str] = []
-    for band_index, label, vm in bands:
-        tape.history["c_history"].append(vm.c.detach().cpu().numpy())
-        labels.append(f"band {band_index}: {label}")
-    return tape.animate_c(
-        grid,
-        filename=filename,
-        fps=fps,
-        title=title,
-        norm=norm,
-        frame_labels=labels,
-    )

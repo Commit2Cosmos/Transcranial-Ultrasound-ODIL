@@ -11,6 +11,7 @@ Examples
     python main.py --config configs/<run-config>.yaml --dry-run
     python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
     python main.py --live --config configs/<run-config>.yaml     # watch it
+    python main.py --postprocess outputs/runs/<run>  # redraw its figures
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
 needs a clean git tree unless ``--scratch`` is given.
@@ -64,6 +65,19 @@ def _summarise(cfg) -> str:
     return "\n".join(lines)
 
 
+def _postprocess(run_dir: Path) -> int:
+    """``--postprocess``: draw ``run_dir``'s figures; exit 2 if it is no run."""
+    from odil_wave.experiment.postprocess import postprocess_run
+
+    try:
+        written = postprocess_run(run_dir)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) -> int:
     """Run the CLI; return the exit code.
 
@@ -115,7 +129,17 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
     # The run directory itself, for --reproduce and tests; normally the entry
     # point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--postprocess",
+        metavar="RUN_DIR",
+        default=None,
+        help="Redraw a saved run's figures and CSVs into <RUN_DIR>/figures/ "
+        "and exit. Reads only the run directory; never re-runs a solve.",
+    )
     args = parser.parse_args(argv)
+
+    if args.postprocess is not None:
+        return _postprocess(Path(args.postprocess))
 
     # config resolution is torch-free; import lazily so --help stays instant.
     import yaml
