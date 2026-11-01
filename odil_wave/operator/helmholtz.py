@@ -9,7 +9,7 @@ import torch
 from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.wavefield import Wavefield
-from .spatial import _C6, _C6_CENTER, _C8, _C8_CENTER, _C10, _C10_CENTER
+from .spatial import C6, C6_CENTER, C8, C8_CENTER, C10, C10_CENTER
 from .utils import WaveEquation
 
 
@@ -173,7 +173,7 @@ def _laplacian_kernel(
         K[2, 4] = -1.0 / 12.0 * cy
         K[2, 2] = -30.0 / 12.0 * (cx + cy)
         return K, pad
-    wide = {6: (_C6, _C6_CENTER), 8: (_C8, _C8_CENTER), 10: (_C10, _C10_CENTER)}
+    wide = {6: (C6, C6_CENTER), 8: (C8, C8_CENTER), 10: (C10, C10_CENTER)}
     if space_order in wide:
         coeffs, center = wide[space_order]
         pad = len(coeffs)

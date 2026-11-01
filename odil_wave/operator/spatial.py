@@ -12,14 +12,14 @@ from odil_wave.wavefield import Wavefield
 
 # 1D central FD coefficients for d²u/dx² (offsets 1, 2, ... ; plus the centre).
 # 6th-order 7-point stencil.
-_C6 = [3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0]
-_C6_CENTER = -49.0 / 18.0
+C6 = [3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0]
+C6_CENTER = -49.0 / 18.0
 # 8th-order 9-point stencil.
-_C8 = [8.0 / 5.0, -1.0 / 5.0, 8.0 / 315.0, -1.0 / 560.0]
-_C8_CENTER = -205.0 / 72.0
+C8 = [8.0 / 5.0, -1.0 / 5.0, 8.0 / 315.0, -1.0 / 560.0]
+C8_CENTER = -205.0 / 72.0
 # 10th-order 11-point stencil.
-_C10 = [5.0 / 3.0, -5.0 / 21.0, 5.0 / 126.0, -5.0 / 1008.0, 1.0 / 3150.0]
-_C10_CENTER = -5269.0 / 1800.0
+C10 = [5.0 / 3.0, -5.0 / 21.0, 5.0 / 126.0, -5.0 / 1008.0, 1.0 / 3150.0]
+C10_CENTER = -5269.0 / 1800.0
 
 
 def _cross_laplacian_kernel(coeffs, center, cx, cy, dtype, device) -> torch.Tensor:
@@ -229,7 +229,7 @@ class Laplacian6thOrder(SpatialOperator):
         super().__init__(wavefield)
         g = wavefield.grid
         self._kernel = _cross_laplacian_kernel(
-            _C6, _C6_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+            C6, C6_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
         )
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
@@ -259,7 +259,7 @@ class Laplacian8thOrder(SpatialOperator):
         super().__init__(wavefield)
         g = wavefield.grid
         self._kernel = _cross_laplacian_kernel(
-            _C8, _C8_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+            C8, C8_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
         )
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:
@@ -289,7 +289,7 @@ class Laplacian10thOrder(SpatialOperator):
         super().__init__(wavefield)
         g = wavefield.grid
         self._kernel = _cross_laplacian_kernel(
-            _C10, _C10_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
+            C10, C10_CENTER, 1.0 / g.dx_nd**2, 1.0 / g.dy_nd**2, g.dtype, g.device
         )
 
     def apply(self, utm: torch.Tensor, bc=None) -> torch.Tensor:

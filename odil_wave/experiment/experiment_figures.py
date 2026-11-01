@@ -30,8 +30,8 @@ from .postprocess import (
     PathLike,
     Plot,
     SavedRun,
-    _draw_map,
-    _value,
+    draw_map,
+    tape_value,
     head_centre,
     save_plot,
 )
@@ -155,12 +155,12 @@ def final_metrics(
     fig = Figure(figsize=(15, 7.5), layout="constrained")
     axes = list(fig.subplots(2, 3).flat)
     for ax, (column, log) in zip(axes, FINAL_METRICS):
-        ys = [_value(exp.runs[k].final[column], log) for k in order]
+        ys = [tape_value(exp.runs[k].final[column], log) for k in order]
         ax.plot(xs, ys, "o-" if numeric else "o", color="C0", label="final")
         start = exp.start_row[column]
         if start is not None:
             ax.axhline(
-                _value(start, log), color="0.4", linestyle="--", label="start row"
+                tape_value(start, log), color="0.4", linestyle="--", label="start row"
             )
         if log:
             ax.set_yscale("log")
@@ -195,8 +195,8 @@ def convergence_overlay(
     for ax, (column, log) in zip(fig.subplots(1, 3), OVERLAY_METRICS):
         for k, r in enumerate(exp.runs):
             ax.plot(
-                [_value(row["n_evaluations"]) for row in r.run.tape],
-                [_value(row[column], log) for row in r.run.tape],
+                [tape_value(row["n_evaluations"]) for row in r.run.tape],
+                [tape_value(row[column], log) for row in r.run.tape],
                 marker=".",
                 color=f"C{k % 10}",
                 label=r.label,
@@ -225,7 +225,7 @@ def difference_maps(
     fig = Figure(figsize=(4.5 * cols + 1, 4.5 * rows + 0.8), layout="constrained")
     axes = np.atleast_1d(fig.subplots(rows, cols)).ravel()
     for ax, r in zip(axes, exp.runs):
-        im = _draw_map(ax, r.run, r.c - c_star, scales.difference_norm, DIFF_CMAP)
+        im = draw_map(ax, r.run, r.c - c_star, scales.difference_norm, DIFF_CMAP)
         ax.set_title(r.label)
     for ax in axes[n:]:
         ax.remove()
@@ -278,8 +278,8 @@ def accuracy_cost(
     per run: the best runs sit on the lower-left front."""
     fig = Figure(figsize=(7, 5.5), layout="constrained")
     ax = fig.subplots()
-    xs = [_value(r.final["n_evaluations"]) for r in exp.runs]
-    ys = [_value(r.final["rmse_brain"]) for r in exp.runs]
+    xs = [tape_value(r.final["n_evaluations"]) for r in exp.runs]
+    ys = [tape_value(r.final["rmse_brain"]) for r in exp.runs]
     ax.plot(xs, ys, "o", color="C0")
     ax.margins(0.12)  # room for the labels
     for x, y, r in zip(xs, ys, exp.runs):

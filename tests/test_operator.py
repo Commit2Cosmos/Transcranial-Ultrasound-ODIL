@@ -34,8 +34,8 @@ from odil_wave.operator.spatial import (
     Laplacian6thOrder,
     Laplacian8thOrder,
     Laplacian10thOrder,
-    _C6,
-    _C6_CENTER,
+    C6,
+    C6_CENTER,
     _apply_conv_laplacian,
     _cross_laplacian_kernel,
     _fourth_derivative_1d,
@@ -264,12 +264,12 @@ def test_fourth_derivative_1d_matches_manual_stencil_formula():
 
 def test_cross_laplacian_kernel_6th_order_matches_known_coefficients():
     K = _cross_laplacian_kernel(
-        _C6, _C6_CENTER, cx=1.0, cy=1.0, dtype=torch.float64, device="cpu"
+        C6, C6_CENTER, cx=1.0, cy=1.0, dtype=torch.float64, device="cpu"
     )
-    p = len(_C6)  # 3 -> 7x7 kernel
+    p = len(C6)  # 3 -> 7x7 kernel
     assert K.shape == (1, 1, 7, 7)
-    assert K[0, 0, p, p].item() == pytest.approx(_C6_CENTER * 2.0)
-    for k, ck in enumerate(_C6):
+    assert K[0, 0, p, p].item() == pytest.approx(C6_CENTER * 2.0)
+    for k, ck in enumerate(C6):
         offset = k + 1
         assert K[0, 0, p - offset, p].item() == pytest.approx(ck)
         assert K[0, 0, p + offset, p].item() == pytest.approx(ck)

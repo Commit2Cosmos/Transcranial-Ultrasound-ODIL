@@ -81,7 +81,7 @@ class LoggedRow:
 # --------------------------------------------------------------------------- #
 # Small helpers
 # --------------------------------------------------------------------------- #
-def _band_label(frequencies_hz: List[float]) -> str:
+def band_label(frequencies_hz: List[float]) -> str:
     """Human-readable kHz label for a band's frequencies.
 
     Parameters
@@ -187,7 +187,7 @@ def run_frequency_band(
     """
     cfg = problem.cfg
     freqs = list(band_cfg.frequencies_hz)
-    label = _band_label(freqs)
+    label = band_label(freqs)
     n_iter = cfg.band_n_iter(band_cfg)
 
     t0 = time.perf_counter()

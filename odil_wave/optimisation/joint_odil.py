@@ -283,7 +283,7 @@ class JointFreqODIL(Optimiser):
         # ---- fixed reference model / wavefield / residual scales ---------- #
         self.sources = loss.sources  # (n_shots, nf, Nx, Ny), t0**2-scaled, no m-dep
         # (n_shots, nf, n_transducers - 1): no shot is recorded at its source.
-        self._obs_traces = loss._obs_traces().detach()
+        self._obs_traces = loss.obs_traces().detach()
 
         # Active (non-PML interior) mask over the full grid, for RMS_active.
         self._interior_slice = grid.interior_slice
@@ -584,7 +584,7 @@ class JointFreqODIL(Optimiser):
                     **mstats,
                 }
             )
-            self.loss._last_residuals = {
+            self.loss.last_residuals = {
                 "pde_rms": self._last["pde_rms_raw"],
                 "data_rms": self._last["data_rms_raw"],
                 "pde_loss": self._last["pde_loss"],
@@ -599,7 +599,7 @@ class JointFreqODIL(Optimiser):
             }
             self.loss.callback.log(
                 loss_scalar,
-                self.loss._last_residuals,
+                self.loss.last_residuals,
                 pde_src_ratio=self._last["pde_src_ratio"],
             )
             hist = self.loss.callback.history

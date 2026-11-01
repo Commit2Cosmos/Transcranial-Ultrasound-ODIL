@@ -117,14 +117,14 @@ class Problem:
         """
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
-        geom = self._geometry(self.grid, self.source, freq)
+        geom = self.acquisition_geometry(self.grid, self.source, freq)
 
         if self.pml_split:
             obs_grid = self.observation_grid
             obs_source = self.observation_source
             # Same physical frequencies; bins must match (shared nt/dt).
             obs_freq = FrequencySelection.from_frequencies(obs_grid, freqs)
-            obs_geom = self._geometry(obs_grid, obs_source, obs_freq)
+            obs_geom = self.acquisition_geometry(obs_grid, obs_source, obs_freq)
             observed_wfs = self._observed(obs_freq, obs_geom)
             traces = obs_geom.extract_observations(
                 torch.stack([wf.amplitude for wf in observed_wfs])
@@ -142,7 +142,7 @@ class Problem:
             frequencies_hz=freqs, freq=freq, geom=geom, observed_wfs=observed
         )
 
-    def _geometry(
+    def acquisition_geometry(
         self,
         grid: Grid,
         source: SourceSignal,
