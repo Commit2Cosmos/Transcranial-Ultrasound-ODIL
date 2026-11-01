@@ -73,6 +73,40 @@ def load_tape(run_dir: PathLike) -> List[Dict[str, Any]]:
         ]
 
 
+def load_run_config(run_dir: PathLike) -> Dict[str, Any]:
+    """Read ``config_resolved.yaml``, the run's Resolved config, as a dict.
+
+    Raises
+    ------
+    FileNotFoundError
+        ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
+        directory.
+    """
+    path = Path(run_dir) / "config_resolved.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{str(run_dir)!r} is not a run directory (no config_resolved.yaml)"
+        )
+    return load_config_file(path)
+
+
+def load_bands(run_dir: PathLike) -> List["SavedBand"]:
+    """The run's completed bands (each with a ``band_summary.json``), in band
+    order; their arrays are read lazily."""
+    bands = []
+    for summary_path in Path(run_dir).glob("bands/band_*/band_summary.json"):
+        summary = json.loads(summary_path.read_text())
+        bands.append(
+            SavedBand(
+                index=int(summary["band_index"]),
+                label=str(summary["label"]),
+                path=summary_path.parent,
+                summary=summary,
+            )
+        )
+    return sorted(bands, key=lambda b: b.index)
+
+
 def _load_npz(path: Path) -> Dict[str, np.ndarray]:
     with np.load(path) as z:
         return {k: z[k] for k in z.files}
@@ -123,29 +157,13 @@ class SavedRun:
             directory.
         """
         path = Path(run_dir)
-        config_path = path / "config_resolved.yaml"
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"{str(path)!r} is not a run directory (no config_resolved.yaml)"
-            )
         problem_path = path / "problem.npz"
-        bands = []
-        for summary_path in (path / "bands").glob("band_*/band_summary.json"):
-            summary = json.loads(summary_path.read_text())
-            bands.append(
-                SavedBand(
-                    index=int(summary["band_index"]),
-                    label=str(summary["label"]),
-                    path=summary_path.parent,
-                    summary=summary,
-                )
-            )
         return cls(
             path=path,
-            config=load_config_file(config_path),
+            config=load_run_config(path),
             tape=load_tape(path) if (path / "tape.csv").exists() else [],
             problem=_load_npz(problem_path) if problem_path.exists() else None,
-            bands=sorted(bands, key=lambda b: b.index),
+            bands=load_bands(path),
         )
 
     @property

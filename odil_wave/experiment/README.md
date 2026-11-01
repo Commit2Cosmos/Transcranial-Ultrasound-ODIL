@@ -118,7 +118,7 @@ from odil_wave.experiment import pde_residual_map
 pde_residual_map(run_dir, shot=0)
 ```
 
-Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
+Other helpers read the same artifacts: `load_tape(rd)` (the tape as dicts),
 `load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
 `Wavefield.show(idx)` draws a 2x2 of `|u|`, `Re(u)`, `Im(u)` and phase;
 `SourceSignal.plot_spectrum(frequencies=band.freq)` marks the inversion bins on

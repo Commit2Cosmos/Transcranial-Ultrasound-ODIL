@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -11,8 +10,8 @@ from odil_wave.grid import Grid
 from odil_wave.loss import LossTape
 from odil_wave.models import VelocityModel
 
-from .config import RunConfig, load_config_file
-from .postprocess import load_tape as load_metrics
+from .config import RunConfig
+from .postprocess import load_bands, load_run_config, load_tape
 from .problem import Problem, build_problem
 
 
@@ -24,13 +23,7 @@ RunDirOrRecords = Union[str, Path, List[dict]]
 # --------------------------------------------------------------------------- #
 def load_config(run_dir: Union[str, Path]) -> RunConfig:
     """Reconstruct the resolved :class:`RunConfig` saved alongside a run."""
-    path = Path(run_dir) / "config_resolved.yaml"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"no config_resolved.yaml under {run_dir!r} ({path}); "
-            "cannot rebuild the problem from this run directory"
-        )
-    return RunConfig.from_dict(load_config_file(path))
+    return RunConfig.from_dict(load_run_config(run_dir))
 
 
 def rebuild_problem(run_dir: Union[str, Path]) -> Problem:
@@ -60,7 +53,7 @@ def _resolve_grid_pml(
 def _records(source: RunDirOrRecords) -> List[dict]:
     """Accept either a run directory or an already-loaded list of records."""
     if isinstance(source, (str, Path)):
-        return load_metrics(source)
+        return load_tape(source)
     return list(source)
 
 
@@ -96,24 +89,19 @@ def load_band_velocities(
     ``problem.npz``), so only the run directory is required.
     """
     grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
-    bands_dir = Path(run_dir) / "bands"
-    if not bands_dir.exists():
-        raise FileNotFoundError(f"no bands/ directory under {run_dir!r}")
     out: List[Tuple[int, str, VelocityModel]] = []
-    for summary_path in sorted(bands_dir.glob("band_*/band_summary.json")):
-        summary = json.loads(summary_path.read_text())
-        with np.load(summary_path.with_name("arrays.npz")) as saved:
+    for band in load_bands(run_dir):
+        with np.load(band.path / "arrays.npz") as saved:  # just c, not every array
             c = torch.from_numpy(saved["c"]).to(grid.dtype)
         p = grid.pml_width
         c_full = torch.nn.functional.pad(c, (p, p, p, p), value=float(pml_c))
         out.append(
             (
-                int(summary["band_index"]),
-                str(summary["label"]),
+                band.index,
+                band.label,
                 VelocityModel.from_field(grid, c_full, pml_c=pml_c),
             )
         )
-    out.sort(key=lambda t: t[0])
     return out
 
 
