@@ -7,4 +7,3 @@ Each parameter is owned by exactly one layer. A parameter that appears in `RunCo
 ## Consequences
 
 - Library callers (tests, the low-level example notebook) must pass every configured parameter explicitly.
-- No backwards compatibility: configs or run directories that use removed or renamed keys fail with an unknown-key error.
