@@ -14,6 +14,7 @@ Examples
     python main.py --postprocess outputs/runs/<run>  # redraw its figures
     python main.py --postprocess outputs/experiments/<experiment>  # every run's
     python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
+    python main.py --experiment configs/experiments/NNNN-slug.yaml --probe
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
 needs a clean git tree unless ``--scratch`` is given. An experiment spec runs
@@ -157,6 +158,13 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         help="Run an experiment spec (configs/experiments/NNNN-slug.yaml) into "
         "outputs/experiments/; re-running resumes it. Needs a clean tree.",
     )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="With --experiment: run 3 iterations of the baseline's first band "
+        "into outputs/probes/ and print each run's runtime estimate. Allowed "
+        "on a dirty tree.",
+    )
     # The run (or experiment) directory itself, for --reproduce and tests;
     # normally the entry point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
@@ -172,6 +180,12 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
 
     if args.postprocess is not None:
         return _postprocess(Path(args.postprocess))
+    if args.probe and args.experiment is None:
+        print(
+            "error: --probe estimates an experiment: pass --experiment <spec>",
+            file=sys.stderr,
+        )
+        return 2
     if args.experiment is not None:
         return _experiment(args, repo_root)
 
@@ -259,6 +273,21 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.probe:
+        clashing = [
+            f for f, used in (("--dry-run", args.dry_run), ("--out", args.out)) if used
+        ]
+        if clashing:
+            print(
+                f"error: {', '.join(clashing)} can't be used with --probe: a probe "
+                "always runs, into outputs/probes/",
+                file=sys.stderr,
+            )
+            return 2
+        from odil_wave.experiment.probe import probe
+
+        return probe(args.experiment, repo_root=repo_root)
 
     from odil_wave.experiment.launch import launch
 
