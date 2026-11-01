@@ -50,11 +50,11 @@ class GitState:
     @classmethod
     def of(cls, repo_root: Path) -> "GitState":
         """The state of the git repository at ``repo_root``."""
-        sha = _git(repo_root, "rev-parse", "HEAD")
+        sha = run_git(repo_root, "rev-parse", "HEAD")
         if sha is None:
             return cls(sha=None, branch=None, dirty=True)
-        status = _git(repo_root, "status", "--porcelain", "--untracked-files=normal")
-        branch = _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+        status = run_git(repo_root, "status", "--porcelain", "--untracked-files=normal")
+        branch = run_git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
         return cls(
             sha=sha.strip(),
             branch=None if branch is None else branch.strip(),
@@ -122,18 +122,12 @@ def new_run_directory(
         already holds files.
     """
     root = Path(repo_root) if repo_root is not None else REPO_ROOT
-    state = GitState.of(root)
-    if not scratch:
-        if state.sha is None:
-            raise RunStartError(
-                f"{root} is not a git repository, so the run can't name its "
-                "commit; pass --scratch to run anyway"
-            )
-        if state.dirty:
-            raise RunStartError(
-                "the git tree has uncommitted changes or untracked files; "
-                "commit them, or pass --scratch for a scratch run"
-            )
+    if scratch:
+        state = GitState.of(root)
+    else:
+        state = clean_git_state(
+            root, needs="the run", remedy="; pass --scratch for a scratch run"
+        )
     if out is not None:
         path = Path(out)
     else:
@@ -144,8 +138,41 @@ def new_run_directory(
         raise RunStartError(f"run directory {path} already exists and is not empty")
     path.mkdir(parents=True, exist_ok=True)
     if scratch:
-        write_text_atomic(path / "git.diff", _git(root, "diff", "HEAD") or "")
+        write_text_atomic(path / "git.diff", run_git(root, "diff", "HEAD") or "")
     return RunDirectory(path=path, scratch=scratch, git=state, repo_root=root)
+
+
+def clean_git_state(repo_root: Path, *, needs: str, remedy: str = "") -> GitState:
+    """The state of ``repo_root``, which must be a clean tree at a commit.
+
+    ``needs`` names what needs it (``"the run"``) and ``remedy`` ends both
+    error messages.
+
+    Raises
+    ------
+    RunStartError
+        ``repo_root`` is no git repository, or its tree is dirty.
+    """
+    state = GitState.of(repo_root)
+    if state.sha is None:
+        raise RunStartError(
+            f"{repo_root} is not a git repository, so {needs} can't name its "
+            f"commit{remedy}"
+        )
+    if state.dirty:
+        raise RunStartError(
+            "the git tree has uncommitted changes or untracked files; "
+            f"{needs} needs a clean tree (commit them first){remedy}"
+        )
+    return state
+
+
+def experiment_path(repo_root: Path, exp_id: str, device_type: str) -> Path:
+    """``<repo_root>/outputs/experiments/<exp_id>[_<device_type>]``: an
+    experiment's directory, suffixed only for cuda / mps, by the device type
+    its runs use."""
+    suffix = "" if device_type == "cpu" else f"_{device_type}"
+    return repo_root / "outputs" / "experiments" / f"{exp_id}{suffix}"
 
 
 def write_json(path: Path, obj: Any) -> None:
@@ -166,7 +193,7 @@ def _sha256(path: Path) -> Optional[str]:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def _git(repo_root: Path, *args: str) -> Optional[str]:
+def run_git(repo_root: Path, *args: str) -> Optional[str]:
     """``git -C repo_root <args>``'s raw stdout, or ``None`` if it fails."""
     try:
         out = subprocess.run(

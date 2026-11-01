@@ -20,7 +20,16 @@ from typing import Any, Callable, Dict, Optional, Union
 
 from .atomic import atomic_open
 from .config import ConfigError
-from .rundir import REPO_ROOT, SCHEMA_VERSION, GitState, RunStartError, _git, write_json
+from .rundir import (
+    REPO_ROOT,
+    SCHEMA_VERSION,
+    GitState,
+    RunStartError,
+    clean_git_state,
+    experiment_path,
+    run_git,
+    write_json,
+)
 from .spec import ExperimentSpec, SweepRun, format_value, load_spec
 from .tape import TAPE_COLUMNS
 
@@ -53,7 +62,9 @@ def launch(
     except ConfigError as exc:
         print(f"spec error: {exc}", file=sys.stderr)
         return 2
-    exp_dir = Path(out) if out is not None else experiment_directory(spec, root)
+    exp_dir = (
+        Path(out) if out is not None else experiment_path(root, spec.id, _device(spec))
+    )
     _print_plan(spec, exp_dir)
     if dry_run:
         print("\n[dry-run] experiment spec is valid; no artifacts written.")
@@ -67,14 +78,6 @@ def launch(
         return 2
     print(f"\nexperiment {status}: {exp_dir}")
     return 0 if status == "completed" else 1
-
-
-def experiment_directory(spec: ExperimentSpec, repo_root: Path) -> Path:
-    """``<repo_root>/outputs/experiments/<id>[_<device>]``, suffixed only for
-    cuda / mps, by the device the baseline's runs use."""
-    device = _device(spec)
-    suffix = "" if device == "cpu" else f"_{device}"
-    return repo_root / "outputs" / "experiments" / f"{spec.id}{suffix}"
 
 
 def run_experiment(
@@ -98,7 +101,7 @@ def run_experiment(
         A dirty tree, a spec not committed in ``repo_root``, or an existing
         ``exp_dir`` that isn't this experiment at this commit and spec.
     """
-    state = _clean_state(repo_root)
+    state = clean_git_state(repo_root, needs="an experiment")
     spec_rel = _committed_spec(spec, repo_root)
     record = _resumable_record(spec, state, exp_dir)
     if record is None:
@@ -206,22 +209,6 @@ def _run_one(
     return status
 
 
-def _clean_state(repo_root: Path) -> GitState:
-    """The repository's state, which must be a clean tree at a commit."""
-    state = GitState.of(repo_root)
-    if state.sha is None:
-        raise RunStartError(
-            f"{repo_root} is not a git repository, so the experiment can't name "
-            "its commit"
-        )
-    if state.dirty:
-        raise RunStartError(
-            "the git tree has uncommitted changes or untracked files; an "
-            "experiment needs a clean tree (commit them first)"
-        )
-    return state
-
-
 def write_summary(exp_dir: Path) -> None:
     """Write ``summary.csv``: one row per run with its swept value, whether it
     is the baseline, its status and its final-iterate tape columns (empty
@@ -269,7 +256,7 @@ def _committed_spec(spec: ExperimentSpec, repo_root: Path) -> str:
         rel = spec.path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         rel = None
-    if rel is None or _git(repo_root, "ls-files", "--error-unmatch", rel) is None:
+    if rel is None or run_git(repo_root, "ls-files", "--error-unmatch", rel) is None:
         raise RunStartError(
             f"the spec {spec.path} must be committed in {repo_root} before launch"
         )
