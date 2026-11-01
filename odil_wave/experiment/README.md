@@ -250,8 +250,9 @@ sweep:
   `pending`. Exit codes: `0` every run
   completed, `1` a run failed or was interrupted, `2` could not start.
 - **Resume**: re-running on an existing experiment directory skips `completed`
-  runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD
-  and the spec hash match `experiment.json`; otherwise it refuses.
+  runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD,
+  the spec hash and the device type match `experiment.json`; otherwise it
+  refuses.
 - `--dry-run` resolves and validates every run and writes nothing.
 - `--probe` runs **3 iterations of the baseline's first band**, measures s/iter,
   and prints an estimate per run (s/iter × the run's total iterations) and for

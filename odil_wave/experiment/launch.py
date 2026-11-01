@@ -99,7 +99,8 @@ def run_experiment(
     ------
     RunStartError
         A dirty tree, a spec not committed in ``repo_root``, or an existing
-        ``exp_dir`` that isn't this experiment at this commit and spec.
+        ``exp_dir`` that isn't this experiment at this commit and spec on this
+        device type.
     """
     state = clean_git_state(repo_root, needs="an experiment")
     spec_rel = _committed_spec(spec, repo_root)
@@ -264,8 +265,8 @@ def _resumable_record(
     Raises
     ------
     RunStartError
-        ``exp_dir`` holds files but no record, or the record's commit or spec
-        hash differs from HEAD's or this spec's.
+        ``exp_dir`` holds files but no record, or the record's commit, spec
+        hash or device type differs from HEAD's or this spec's.
     """
     if not exp_dir.exists() or not any(exp_dir.iterdir()):
         return None
@@ -284,6 +285,12 @@ def _resumable_record(
         raise RunStartError(
             f"{exp_dir} was launched from a different spec (hash mismatch); an "
             "experiment resumes only with its spec unchanged"
+        )
+    device = _device(spec)
+    if record.get("device") != device:
+        raise RunStartError(
+            f"{exp_dir} was launched on {record.get('device')}, not {device}; an "
+            "experiment resumes only on its device type"
         )
     return record
 

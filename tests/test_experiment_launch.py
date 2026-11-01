@@ -329,6 +329,23 @@ def test_a_resume_of_a_changed_spec_is_refused(git_repo, tmp_path, capsys):
     assert "spec" in capsys.readouterr().err
 
 
+def test_a_resume_on_another_device_type_is_refused(git_repo, tmp_path, capsys):
+    """An ``--out`` directory isn't named by device, so the record is checked."""
+    spec = write_spec(git_repo)
+    out = tmp_path / "experiment"
+    argv = ["--experiment", str(spec), "--out", str(out)]
+    assert main.main(argv, repo_root=git_repo) == 0
+    record = json.loads((out / "experiment.json").read_text())
+    record["device"] = "cuda"
+    (out / "experiment.json").write_text(json.dumps(record))
+    before = (out / "experiment.json").read_bytes()
+
+    assert main.main(argv, repo_root=git_repo) == 2
+
+    assert "device" in capsys.readouterr().err
+    assert (out / "experiment.json").read_bytes() == before
+
+
 def test_a_directory_that_is_not_this_experiments_is_refused(git_repo, tmp_path):
     out = tmp_path / "taken"
     out.mkdir()
