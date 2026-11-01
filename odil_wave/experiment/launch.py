@@ -37,15 +37,18 @@ def launch(
     out: Optional[Union[str, Path]] = None,
     repo_root: Optional[Union[str, Path]] = None,
     postprocess_run: Optional[PostprocessRun] = None,
+    device: Optional[str] = None,
 ) -> int:
     """Validate the spec at ``spec_path`` and, unless ``dry_run``, run it.
+
+    ``device``, if given, replaces the spec's ``runtime.device`` in every run.
 
     Returns the exit code: ``0`` every run completed (or a valid dry run),
     ``1`` a run failed or was interrupted, ``2`` the experiment could not start.
     """
     root = Path(repo_root) if repo_root is not None else REPO_ROOT
     try:
-        spec = load_spec(spec_path, repo_root=root)
+        spec = load_spec(spec_path, repo_root=root, device=device)
     except ConfigError as exc:
         print(f"spec error: {exc}", file=sys.stderr)
         return 2

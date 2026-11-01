@@ -15,6 +15,7 @@ Examples
     python main.py --postprocess outputs/experiments/<experiment>  # every run's
     python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
     python main.py --experiment configs/experiments/NNNN-slug.yaml --probe
+    python main.py --reproduce NNNN-slug [-o runtime.device=cuda]  # regenerate
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
 needs a clean git tree unless ``--scratch`` is given. An experiment spec runs
@@ -165,6 +166,14 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         "into outputs/probes/ and print each run's runtime estimate. Allowed "
         "on a dirty tree.",
     )
+    parser.add_argument(
+        "--reproduce",
+        default=None,
+        metavar="ID",
+        help="Regenerate experiment NNNN-slug's runs at its recorded commit "
+        "into outputs/experiments/; compares nothing. Only "
+        "-o runtime.device=<device> may be given with it.",
+    )
     # The run (or experiment) directory itself, for --reproduce and tests;
     # normally the entry point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
@@ -180,6 +189,8 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
 
     if args.postprocess is not None:
         return _postprocess(Path(args.postprocess))
+    if args.reproduce is not None:
+        return _reproduce(args, repo_root)
     if args.probe and args.experiment is None:
         print(
             "error: --probe estimates an experiment: pass --experiment <spec>",
@@ -255,7 +266,6 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
         flag
         for flag, used in (
             ("--config", args.config is not None),
-            ("--override", bool(args.override)),
             ("--scratch", args.scratch),
         )
         if used
@@ -266,6 +276,14 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
             "the committed spec alone defines the runs",
             file=sys.stderr,
         )
+        return 2
+    from odil_wave.experiment.config import ConfigError
+    from odil_wave.experiment.spec import device_override
+
+    try:  # -o runtime.device=<device> only, as --reproduce passes it
+        device = device_override(args.override)
+    except ConfigError as exc:
+        print(f"error: with --experiment, {exc}", file=sys.stderr)
         return 2
     if args.live:
         print(
@@ -287,7 +305,7 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
             return 2
         from odil_wave.experiment.probe import probe
 
-        return probe(args.experiment, repo_root=repo_root)
+        return probe(args.experiment, repo_root=repo_root, device=device)
 
     from odil_wave.experiment.launch import launch
 
@@ -295,8 +313,39 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
     # returns (completed, failed or interrupted), so passing one would draw
     # each run's figures twice.
     return launch(
-        args.experiment, dry_run=args.dry_run, out=args.out, repo_root=repo_root
+        args.experiment,
+        dry_run=args.dry_run,
+        out=args.out,
+        repo_root=repo_root,
+        device=device,
     )
+
+
+def _reproduce(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
+    """``--reproduce``: the record's commit and spec alone define the runs."""
+    given = [
+        flag
+        for flag, used in (
+            ("--config", args.config is not None),
+            ("--experiment", args.experiment is not None),
+            ("--scratch", args.scratch),
+            ("--dry-run", args.dry_run),
+            ("--probe", args.probe),
+            ("--live", args.live),
+            ("--out", args.out is not None),
+        )
+        if used
+    ]
+    if given:
+        print(
+            f"error: {', '.join(given)} can't be used with --reproduce: the "
+            "record's commit and spec alone define the runs",
+            file=sys.stderr,
+        )
+        return 2
+    from odil_wave.experiment.reproduce import reproduce
+
+    return reproduce(args.reproduce, overrides=args.override, repo_root=repo_root)
 
 
 if __name__ == "__main__":

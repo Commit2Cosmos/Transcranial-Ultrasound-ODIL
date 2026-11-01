@@ -62,13 +62,21 @@ def load_records(bank_dir: Path) -> tuple[List[Record], List[str]]:
     for path in sorted(bank_dir.glob("*.md")):
         if not _RECORD_NAME.match(path.name):
             continue
-        match = _FRONTMATTER.match(path.read_text())
-        front = yaml.safe_load(match.group(1)) if match else None
-        if not isinstance(front, dict):
+        record = read_record(path)
+        if record is None:
             problems.append(f"{path.stem}: no YAML frontmatter between '---' lines")
             continue
-        records.append(Record(path.stem, front, match.group(2)))
+        records.append(record)
     return records, problems
+
+
+def read_record(path: Path) -> Optional[Record]:
+    """The record at ``path``, or ``None`` if it has no YAML frontmatter."""
+    match = _FRONTMATTER.match(path.read_text())
+    front = yaml.safe_load(match.group(1)) if match else None
+    if not isinstance(front, dict):
+        return None
+    return Record(path.stem, front, match.group(2))
 
 
 def check(bank_dir: Path) -> List[str]:
