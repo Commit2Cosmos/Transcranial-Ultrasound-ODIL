@@ -22,8 +22,9 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 from .atomic import write_text_atomic
 
-# Version of the run directory's formats (``metadata.json``); a format change
-# bumps it and readers keep a path for every version from 1.
+# Version of the run and experiment directories' formats (``metadata.json``,
+# ``experiment.json``); a format change bumps it and readers keep a path for
+# every version from 1 (:func:`load_versioned_json`).
 SCHEMA_VERSION = 1
 
 # The repository holding this code: the default ``repo_root``.
@@ -33,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 class RunStartError(RuntimeError):
     """A run that may not start: a dirty tree without ``scratch``, no git
     repository, or a run directory that already holds files."""
+
+
+class SchemaVersionError(ValueError):
+    """A ``metadata.json`` or ``experiment.json`` whose ``schema_version``
+    this code can't read: newer than :data:`SCHEMA_VERSION`, or none."""
 
 
 @dataclass(frozen=True)
@@ -174,6 +180,29 @@ def experiment_path(repo_root: Path, exp_id: str, device_type: str) -> Path:
     its runs use."""
     suffix = "" if device_type == "cpu" else f"_{device_type}"
     return repo_root / "outputs" / "experiments" / f"{exp_id}{suffix}"
+
+
+def load_versioned_json(path: Path) -> Dict[str, Any]:
+    """Read ``metadata.json`` or ``experiment.json`` at ``path``, whose
+    ``schema_version`` must be one this code reads: 1 to :data:`SCHEMA_VERSION`.
+
+    Raises
+    ------
+    SchemaVersionError
+        The file's ``schema_version`` is missing or out of that range.
+    """
+    data = json.loads(Path(path).read_text())
+    version = data.get("schema_version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or not 1 <= version <= SCHEMA_VERSION
+    ):
+        raise SchemaVersionError(
+            f"{path} has schema_version {version!r}; this code reads 1 to "
+            f"{SCHEMA_VERSION} (check out a newer commit to read it)"
+        )
+    return data
 
 
 def write_json(path: Path, obj: Any) -> None:

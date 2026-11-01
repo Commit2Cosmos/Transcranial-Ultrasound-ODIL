@@ -26,7 +26,9 @@ from .rundir import (
     GitState,
     RunStartError,
     clean_git_state,
+    SchemaVersionError,
     experiment_path,
+    load_versioned_json,
     run_git,
     write_json,
 )
@@ -155,7 +157,7 @@ def postprocess_experiment(
     again with ``postprocess_run``, then the experiment itself, reading only
     what the experiment directory holds."""
     exp_dir = Path(exp_dir)
-    record = json.loads((exp_dir / "experiment.json").read_text())
+    record = load_versioned_json(exp_dir / "experiment.json")
     if postprocess_run is not None:
         for entry in record["runs"]:
             run_dir = exp_dir / entry["dir"]
@@ -206,7 +208,7 @@ def write_summary(exp_dir: Path) -> None:
     """Write ``summary.csv``: one row per run with its swept value, whether it
     is the baseline, its status and its final-iterate tape columns (empty
     unless the run completed)."""
-    record = json.loads((exp_dir / "experiment.json").read_text())
+    record = load_versioned_json(exp_dir / "experiment.json")
     header = ["index", "label", "value", "is_baseline", "status"] + TAPE_COLUMNS
     rows = []
     for entry in record["runs"]:
@@ -265,7 +267,8 @@ def _resumable_record(
     Raises
     ------
     RunStartError
-        ``exp_dir`` holds files but no record, or the record's commit, spec
+        ``exp_dir`` holds files but no record, a record of a format this code
+        can't read, or the record's commit, spec
         hash or device type differs from HEAD's or this spec's.
     """
     if not exp_dir.exists() or not any(exp_dir.iterdir()):
@@ -275,7 +278,10 @@ def _resumable_record(
         raise RunStartError(
             f"{exp_dir} already exists and is not an experiment directory"
         )
-    record = json.loads(path.read_text())
+    try:
+        record = load_versioned_json(path)
+    except SchemaVersionError as exc:
+        raise RunStartError(str(exc)) from None
     if record.get("commit") != state.sha:
         raise RunStartError(
             f"{exp_dir} was launched at commit {record.get('commit')}, not HEAD "

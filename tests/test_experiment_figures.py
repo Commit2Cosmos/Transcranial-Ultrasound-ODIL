@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import main
 from odil_wave.experiment import experiment_figures
 from odil_wave.experiment.experiment_figures import SavedExperiment
 from odil_wave.experiment.launch import postprocess_experiment
@@ -118,6 +119,18 @@ def test_an_experiment_draws_its_figures(numeric_experiment):
     for png in (numeric_experiment / "figures").glob("*.png"):
         with Image.open(png) as img:
             assert [round(d) for d in img.info["dpi"]] == [DPI, DPI], png.name
+
+
+def test_an_experiment_of_a_newer_schema_version_is_not_postprocessed(
+    numeric_experiment, capsys
+):
+    path = numeric_experiment / "experiment.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "schema_version": 2}))
+
+    assert main.main(["--postprocess", str(numeric_experiment)]) == 2
+
+    assert "schema_version 2" in capsys.readouterr().err
+    assert outputs(numeric_experiment) == set()
 
 
 def test_an_experiment_with_one_completed_run_draws_no_figures(

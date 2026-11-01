@@ -16,7 +16,6 @@ alone, which every run of an experiment shares.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -24,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 from matplotlib.figure import Figure
 
+from .rundir import load_versioned_json
 from .postprocess import (
     DIFF_CMAP,
     ColourScales,
@@ -69,9 +69,15 @@ class SavedExperiment:
 
     @classmethod
     def load(cls, exp_dir: PathLike) -> "SavedExperiment":
-        """Read the experiment directory ``exp_dir``."""
+        """Read the experiment directory ``exp_dir``.
+
+        Raises
+        ------
+        SchemaVersionError
+            Its ``experiment.json`` is of a format this code can't read.
+        """
         path = Path(exp_dir)
-        record = json.loads((path / "experiment.json").read_text())
+        record = load_versioned_json(path / "experiment.json")
         runs = [
             ComparedRun(
                 label=entry["label"],

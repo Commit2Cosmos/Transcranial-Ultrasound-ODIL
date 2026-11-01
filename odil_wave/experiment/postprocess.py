@@ -30,6 +30,7 @@ from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
 from .config import load_config_file
+from .rundir import load_versioned_json
 
 # Resolution of every saved PNG.
 DPI = 150
@@ -155,12 +156,17 @@ class SavedRun:
         FileNotFoundError
             ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
             directory.
+        SchemaVersionError
+            Its ``metadata.json`` is of a format this code can't read.
         """
         path = Path(run_dir)
+        config = load_run_config(path)
+        if (path / "metadata.json").exists():  # a run may stop before writing it
+            load_versioned_json(path / "metadata.json")
         problem_path = path / "problem.npz"
         return cls(
             path=path,
-            config=load_run_config(path),
+            config=config,
             tape=load_tape(path) if (path / "tape.csv").exists() else [],
             problem=_load_npz(problem_path) if problem_path.exists() else None,
             bands=load_bands(path),

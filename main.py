@@ -71,9 +71,10 @@ def _summarise(cfg) -> str:
 def _postprocess(path: Path) -> int:
     """``--postprocess``: draw a run directory's figures, or, for an experiment
     directory (one holding ``experiment.json``), every run's and the
-    experiment's own. Exit 2 if ``path`` is neither, 1 if a run of an
-    experiment couldn't be drawn."""
+    experiment's own. Exit 2 if ``path`` is neither or of a format this code
+    can't read, 1 if a run of an experiment couldn't be drawn."""
     from odil_wave.experiment.postprocess import draw_reported, postprocess_run
+    from odil_wave.experiment.rundir import SchemaVersionError
 
     if (path / "experiment.json").is_file():
         from odil_wave.experiment.launch import postprocess_experiment
@@ -84,13 +85,17 @@ def _postprocess(path: Path) -> int:
             if not draw_reported(postprocess_run, run_dir):
                 failed.append(run_dir.name)
 
-        postprocess_experiment(path, postprocess_run=redraw)
+        try:
+            postprocess_experiment(path, postprocess_run=redraw)
+        except SchemaVersionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         print(f"summary: {path / 'summary.csv'}")
         return 1 if failed else 0
 
     try:
         written = postprocess_run(path)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, SchemaVersionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"figures: {path / 'figures'} ({len(written)} files)")

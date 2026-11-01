@@ -346,6 +346,18 @@ def test_a_resume_on_another_device_type_is_refused(git_repo, tmp_path, capsys):
     assert (out / "experiment.json").read_bytes() == before
 
 
+def test_a_resume_of_a_newer_schema_version_is_refused(git_repo, tmp_path, capsys):
+    spec = write_spec(git_repo)
+    out = tmp_path / "experiment"
+    argv = ["--experiment", str(spec), "--out", str(out)]
+    assert main.main(argv, repo_root=git_repo) == 0
+    record = json.loads((out / "experiment.json").read_text())
+    (out / "experiment.json").write_text(json.dumps({**record, "schema_version": 2}))
+
+    assert main.main(argv, repo_root=git_repo) == 2
+    assert "schema_version 2" in capsys.readouterr().err
+
+
 def test_a_directory_that_is_not_this_experiments_is_refused(git_repo, tmp_path):
     out = tmp_path / "taken"
     out.mkdir()

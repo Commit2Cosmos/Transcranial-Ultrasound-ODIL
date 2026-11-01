@@ -329,9 +329,10 @@ reproduced.
 ### Compatibility
 
 The spec, `metadata.json` and `experiment.json` carry an integer
-`schema_version` (from 1). Readers (post-processing, the index script) support
-every version from 1 up; a format change bumps the version and adds a reader
-path, never rewrites old directories. The flags `--experiment`, `--out`,
+`schema_version` (from 1). Readers (post-processing, a resume, the index
+script) support every version from 1 up to the code's own and refuse a newer
+one or none (`--postprocess` and a resume exit `2`); a format change bumps the
+version and adds a reader path, never rewrites old directories. The flags `--experiment`, `--out`,
 `--postprocess`, `--reproduce` and `--probe` (and `-o runtime.device=<device>`
 with `--experiment`) are a stable contract: a new `--reproduce` calls the old
 `main.py` inside the worktree, so a later commit may add flags but never
