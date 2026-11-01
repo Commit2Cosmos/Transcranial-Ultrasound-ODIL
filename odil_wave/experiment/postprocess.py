@@ -478,6 +478,222 @@ def band_contribution(
     return Plot("band_contribution", fig, table)
 
 
+# --------------------------------------------------------------------------- #
+# Data fit
+# --------------------------------------------------------------------------- #
+def _receiver_ids(n_transducers: int) -> np.ndarray:
+    """``(n, n - 1)``: shot ``s``'s receivers in saved order (every other
+    transducer, ascending), as the last axis of ``d_obs`` / ``d_syn_*``."""
+    ids = np.arange(n_transducers)
+    return np.stack([np.delete(ids, s) for s in ids])
+
+
+def offsets_deg(angles_deg: np.ndarray) -> np.ndarray:
+    """``(n, n - 1)``: the **Offset** of each (transmitter, receiver) pair as a
+    ring angle in ``[0, 180]`` degrees, from each transducer's ring angle."""
+    n = len(angles_deg)
+    d = angles_deg[_receiver_ids(n)] - angles_deg[:, None]
+    return np.abs((d + 180.0) % 360.0 - 180.0)
+
+
+def _rel_residual(d_syn: np.ndarray, d_obs: np.ndarray) -> float:
+    """``||d_syn - d_obs|| / ||d_obs||`` over every sample given."""
+    return float(np.linalg.norm(d_syn - d_obs) / np.linalg.norm(d_obs))
+
+
+def _band_name(band: SavedBand) -> str:
+    return f"band {band.index}: {band.label}"
+
+
+def _per_band_figure(title: str, xlabel: str, ylabel: str, log: bool = True):
+    fig = Figure(figsize=(7, 4.5), layout="constrained")
+    ax = fig.subplots()
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if log:
+        ax.set_yscale("log")
+    ax.grid(alpha=0.3)
+    return fig, ax
+
+
+def residual_by_offset(
+    run: SavedRun, scales: Optional[ColourScales] = None
+) -> Optional[Plot]:
+    """``rel_data_residual`` at each band's final iterate against **Offset**
+    (0-180 degrees), one point per distinct offset, pooling every shot,
+    frequency and receiver pair at that offset."""
+    if run.problem is None or not run.bands:
+        return None
+    offsets = offsets_deg(run.problem["transducer_angles_deg"].astype(np.float64))
+    # Distinct offsets up to float32 rounding of the ring angles.
+    keys = np.round(offsets, 3)
+    distinct = np.unique(keys)
+    fig, ax = _per_band_figure(
+        "Data residual by offset (final iterate)", "offset [deg]", "rel_data_residual"
+    )
+    table: List[Dict[str, Any]] = []
+    for band in run.bands:
+        # (shot, receiver, frequency), so a pair mask picks every frequency.
+        d_syn = band.arrays["d_syn_final"].transpose(0, 2, 1)
+        d_obs = band.arrays["d_obs"].transpose(0, 2, 1)
+        values = []
+        for offset in distinct:
+            pairs = keys == offset
+            values.append(_rel_residual(d_syn[pairs], d_obs[pairs]))
+            table.append(
+                {
+                    "band_index": band.index,
+                    "label": band.label,
+                    "offset_deg": float(offset),
+                    "n_pairs": int(pairs.sum()),
+                    "rel_data_residual": values[-1],
+                }
+            )
+        ax.plot(distinct, values, "o-", label=_band_name(band))
+    ax.set_xlim(-5, 185)
+    ax.set_xticks(np.arange(0, 181, 45))
+    ax.legend(fontsize="small")
+    return Plot("residual_by_offset", fig, table)
+
+
+def residual_by_frequency(
+    run: SavedRun, scales: Optional[ColourScales] = None
+) -> Optional[Plot]:
+    """``rel_data_residual`` at each band's final iterate per solved frequency
+    (over every shot and receiver); only with more than one frequency in the
+    run."""
+    freqs = {float(f) for band in run.bands for f in band.arrays["freqs"]}
+    if len(freqs) < 2:
+        return None
+    fig, ax = _per_band_figure(
+        "Data residual by frequency (final iterate)",
+        "frequency [kHz]",
+        "rel_data_residual",
+    )
+    table: List[Dict[str, Any]] = []
+    for band in run.bands:
+        d_syn, d_obs = band.arrays["d_syn_final"], band.arrays["d_obs"]
+        band_freqs = band.arrays["freqs"]
+        values = [
+            _rel_residual(d_syn[:, f], d_obs[:, f]) for f in range(len(band_freqs))
+        ]
+        table += [
+            {
+                "band_index": band.index,
+                "label": band.label,
+                "frequency_hz": float(freq),
+                "rel_data_residual": value,
+            }
+            for freq, value in zip(band_freqs, values)
+        ]
+        ax.plot(band_freqs / 1e3, values, "o-", label=_band_name(band))
+    ax.legend(fontsize="small")
+    return Plot("residual_by_frequency", fig, table)
+
+
+def residual_by_transmitter(
+    run: SavedRun, scales: Optional[ColourScales] = None
+) -> Optional[Plot]:
+    """``rel_data_residual`` of each shot at each band's final iterate (over its
+    frequencies and receivers) against the transmitting transducer's ring angle."""
+    if run.problem is None or not run.bands:
+        return None
+    angles = run.problem["transducer_angles_deg"]
+    fig, ax = _per_band_figure(
+        "Data residual by transmitter (final iterate)",
+        "transmitter angle [deg]",
+        "rel_data_residual",
+    )
+    table: List[Dict[str, Any]] = []
+    for band in run.bands:
+        d_syn, d_obs = band.arrays["d_syn_final"], band.arrays["d_obs"]
+        values = [_rel_residual(d_syn[s], d_obs[s]) for s in range(len(d_obs))]
+        table += [
+            {
+                "band_index": band.index,
+                "label": band.label,
+                "shot": s,
+                "transmitter_angle_deg": float(angles[s]),
+                "rel_data_residual": value,
+            }
+            for s, value in enumerate(values)
+        ]
+        ax.plot(angles, values, "o-", label=_band_name(band))
+    ax.set_xlim(-10, 370)
+    ax.set_xticks(np.arange(0, 361, 90))
+    ax.legend(fontsize="small")
+    return Plot("residual_by_transmitter", fig, table)
+
+
+def _arcs(n_transducers: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Receiver columns of each shot along the two arcs of the ring, outwards
+    from the transmitter: ``(n, n // 2)`` ascending ids (ending at the opposite
+    transducer) and ``(n, n - 1 - n // 2)`` descending ids. Transducer ids run
+    in ring order."""
+    n = n_transducers
+    shots = np.arange(n)[:, None]
+
+    def columns(direction: int, n_steps: int) -> np.ndarray:
+        ids = (shots + direction * np.arange(1, n_steps + 1)) % n
+        return np.where(ids < shots, ids, ids - 1)  # the shot's own id is skipped
+
+    return columns(1, n // 2), columns(-1, n - 1 - n // 2)
+
+
+def phase_gap_per_pair(d_syn: np.ndarray, d_obs: np.ndarray) -> np.ndarray:
+    """``(n_shots, nf, n - 1)``: the phase gap ``phase(d_syn) - phase(d_obs)``
+    of each transducer pair, unwrapped along the ring.
+
+    A wrapped gap never exceeds pi, so the gap is followed outwards from the
+    transmitter along both arcs: the nearest receiver's gap is taken within
+    half a cycle, and each next receiver's within half a cycle of its
+    neighbour's. ``|gap| > pi`` then marks a skipped cycle (it assumes the
+    ring samples the gap finely enough that neighbours differ by under pi).
+    """
+    wrapped = np.angle(d_syn * np.conj(d_obs))
+    gap = np.empty_like(wrapped, dtype=np.float64)
+    shots = np.arange(len(d_obs))[:, None]
+    for arc in _arcs(d_obs.shape[0]):
+        along = wrapped[shots, :, arc]  # (n_shots, n_steps, nf)
+        gap[shots, :, arc] = np.unwrap(along, axis=1)
+    return gap
+
+
+def phase_gap(run: SavedRun, scales: Optional[ColourScales] = None) -> Optional[Plot]:
+    """At each band's start row, per frequency, the fraction of transducer
+    pairs whose phase gap (:func:`phase_gap_per_pair`) exceeds pi: the
+    cycle-skipping check for whether a band needs a lower band before it."""
+    if not run.bands:
+        return None
+    fig, ax = _per_band_figure(
+        "Phase gap at each band's start: pairs more than π out",
+        "frequency [kHz]",
+        "fraction of pairs with |Δphase| > π",
+        log=False,
+    )
+    table: List[Dict[str, Any]] = []
+    for band in run.bands:
+        d_obs = band.arrays["d_obs"]
+        over = np.abs(phase_gap_per_pair(band.arrays["d_syn_start"], d_obs)) > np.pi
+        freqs = band.arrays["freqs"]
+        fractions = [float(over[:, f].mean()) for f in range(len(freqs))]
+        table += [
+            {
+                "band_index": band.index,
+                "label": band.label,
+                "frequency_hz": float(freq),
+                "n_pairs": int(over[:, f].size),
+                "fraction_over_pi": fraction,
+            }
+            for f, (freq, fraction) in enumerate(zip(freqs, fractions))
+        ]
+        ax.plot(freqs / 1e3, fractions, "o", label=_band_name(band))
+    ax.set_ylim(-0.05, 1.05)
+    ax.legend(fontsize="small")
+    return Plot("phase_gap", fig, table)
+
+
 # The per-run set, in drawing order.
 RUN_PLOTS: List[PlotFn] = [
     convergence,
@@ -485,6 +701,10 @@ RUN_PLOTS: List[PlotFn] = [
     per_band_error,
     profiles,
     band_contribution,
+    residual_by_offset,
+    residual_by_frequency,
+    residual_by_transmitter,
+    phase_gap,
 ]
 
 

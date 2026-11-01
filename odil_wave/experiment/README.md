@@ -73,6 +73,10 @@ The set is fixed in code; the run config has no post-processing section.
 | `per_band_error.png` | `c_band − c*` after each band (more than one band only) |
 | `profiles.png`, `profiles.csv` | truth, start and recovered `c` along the horizontal and vertical lines through the head region's centroid |
 | `band_contribution.png`, `.csv` | per band (more than one band only): change in `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual` from its start row to its final row, and its cost (its own `n_evaluations`, `wall_s`) |
+| `residual_by_offset.png`, `.csv` | `rel_data_residual` at each band's final iterate against **Offset** (0–180°, one point per distinct offset, all shots × frequencies at that offset) |
+| `residual_by_frequency.png`, `.csv` | `rel_data_residual` at each band's final iterate per solved frequency (more than one distinct solved frequency in the run only) |
+| `residual_by_transmitter.png`, `.csv` | `rel_data_residual` of each shot at each band's final iterate against its transmitter's ring angle |
+| `phase_gap.png`, `.csv` | at each band's start row, per frequency, the fraction of transducer pairs whose phase gap `phase(d_syn) − phase(d_obs)` exceeds π (cycle skipping: the band may need a lower band before it). The gap is unwrapped along the ring outwards from the transmitter, the nearest receiver's taken within half a cycle |
 
 **Colour scales come from the truth only**, so they are identical across the
 runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
@@ -440,9 +444,11 @@ exits 2 for each.
 
 A non-finite value is written as `nan` / `inf`, never as an empty cell.
 
-Derived in post-processing, not on the tape: `rel_data_residual` per frequency
-and per **Offset** (ring angle 0–180°, one point per distinct offset) at each
-band's final iterate, from the saved receiver wavefield and observed data.
+Derived in post-processing, not on the tape: `rel_data_residual` per
+**Offset** (ring angle 0–180°, one point per distinct offset), per frequency and
+per transmitter at each band's final iterate, and the phase gap at each band's
+start row, from the saved synthetic and observed data (`residual_by_*.csv`,
+`phase_gap.csv` under `figures/`; see [Post-processing](#post-processing)).
 
 ### Iteration count vs. closure/function-evaluation count
 

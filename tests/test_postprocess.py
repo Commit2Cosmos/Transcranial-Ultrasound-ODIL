@@ -31,7 +31,18 @@ QUICK = {"optimiser": {"n_iter": 1}}
 # Every PNG is saved at this resolution.
 DPI = 150
 
-# The tape/velocity figures of a multi-band run, and the CSVs beside them.
+# The data-fit figures and CSVs of every run with a completed band; the
+# breakdown by frequency only with more than one solved frequency (the tiny
+# runs' 30 and 40 kHz bands both solve the 33.2 kHz bin).
+DATA_FIT_OUTPUTS = {
+    "residual_by_offset.png",
+    "residual_by_offset.csv",
+    "residual_by_transmitter.png",
+    "residual_by_transmitter.csv",
+    "phase_gap.png",
+    "phase_gap.csv",
+}
+# The figures of a multi-band run, and the CSVs beside them.
 MULTI_BAND_OUTPUTS = {
     "convergence.png",
     "velocity.png",
@@ -40,6 +51,7 @@ MULTI_BAND_OUTPUTS = {
     "profiles.csv",
     "band_contribution.png",
     "band_contribution.csv",
+    *DATA_FIT_OUTPUTS,
 }
 # Per-band error and band contribution are drawn only with more than one band.
 SINGLE_BAND_OUTPUTS = {
@@ -47,6 +59,7 @@ SINGLE_BAND_OUTPUTS = {
     "velocity.png",
     "profiles.png",
     "profiles.csv",
+    *DATA_FIT_OUTPUTS,
 }
 
 
@@ -303,3 +316,160 @@ def test_the_old_plot_functions_are_gone(name):
 
     assert not hasattr(experiment, name)
     assert not hasattr(plots, name)
+
+
+# --------------------------------------------------------------------------- #
+# Data fit
+# --------------------------------------------------------------------------- #
+N_TRANSDUCERS = 8  # the tiny ring: transducer k at 360 k / 8 degrees
+
+
+def receiver_ids(shot: int) -> list:
+    """Shot ``shot``'s receivers in saved order: every other transducer, ascending."""
+    return [r for r in range(N_TRANSDUCERS) if r != shot]
+
+
+def ring_steps(shot: int, receiver: int) -> int:
+    """Transducers between transmitter and receiver along the shorter arc."""
+    d = (receiver - shot) % N_TRANSDUCERS
+    return min(d, N_TRANSDUCERS - d)
+
+
+def rel_residual(pairs: list) -> float:
+    """``||d_syn - d_obs|| / ||d_obs||`` over ``(d_syn, d_obs)`` samples."""
+    syn, obs = (np.array(x) for x in zip(*pairs))
+    return float(np.linalg.norm(syn - obs) / np.linalg.norm(obs))
+
+
+def test_residual_by_offset_is_each_bands_final_fit_per_offset(tiny_two_band_run):
+    run_dir = tiny_two_band_run.run_dir
+
+    table = read_csv(run_dir / "figures" / "residual_by_offset.csv")
+
+    for b, band_dir in enumerate(band_dirs(run_dir)):
+        arrays = load_npz(band_dir / "arrays.npz")
+        by_step: dict = {}
+        for s in range(N_TRANSDUCERS):
+            for j, r in enumerate(receiver_ids(s)):
+                for f in range(len(arrays["freqs"])):
+                    by_step.setdefault(ring_steps(s, r), []).append(
+                        (arrays["d_syn_final"][s, f, j], arrays["d_obs"][s, f, j])
+                    )
+        rows = [r for r in table if int(r["band_index"]) == b]
+        # One point per distinct offset, 0-180 degrees.
+        assert [float(r["offset_deg"]) for r in rows] == [45.0, 90.0, 135.0, 180.0]
+        for row, step in zip(rows, [1, 2, 3, 4]):
+            assert float(row["rel_data_residual"]) == pytest.approx(
+                rel_residual(by_step[step]), rel=1e-5
+            )
+
+
+def test_residual_by_transmitter_is_each_shots_final_fit(tiny_two_band_run):
+    run_dir = tiny_two_band_run.run_dir
+
+    table = read_csv(run_dir / "figures" / "residual_by_transmitter.csv")
+
+    for b, band_dir in enumerate(band_dirs(run_dir)):
+        arrays = load_npz(band_dir / "arrays.npz")
+        rows = [r for r in table if int(r["band_index"]) == b]
+        assert [int(r["shot"]) for r in rows] == list(range(N_TRANSDUCERS))
+        assert [float(r["transmitter_angle_deg"]) for r in rows] == [
+            0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0
+        ]  # fmt: skip
+        for s, row in enumerate(rows):
+            pairs = list(
+                zip(arrays["d_syn_final"][s].ravel(), arrays["d_obs"][s].ravel())
+            )
+            assert float(row["rel_data_residual"]) == pytest.approx(
+                rel_residual(pairs), rel=1e-5
+            )
+
+
+# One band of two frequencies the tiny time grid resolves to distinct bins.
+TWO_FREQUENCIES = {"continuation": {"bands": [{"frequencies_hz": [20e3, 50e3]}]}}
+
+
+def test_residual_by_frequency_is_the_final_fit_per_frequency(tmp_path, git_repo):
+    config = deep_merge(deep_merge(TINY_RUN_CONFIG, QUICK), TWO_FREQUENCIES)
+    run_dir = run_cli(tmp_path, git_repo, config)
+    arrays = load_npz(band_dirs(run_dir)[0] / "arrays.npz")
+    assert len(set(arrays["freqs"])) == 2
+
+    table = read_csv(run_dir / "figures" / "residual_by_frequency.csv")
+
+    assert outputs(run_dir) == SINGLE_BAND_OUTPUTS | {
+        "residual_by_frequency.png",
+        "residual_by_frequency.csv",
+    }
+    assert [float(r["frequency_hz"]) for r in table] == pytest.approx(
+        list(arrays["freqs"])
+    )
+    for f, row in enumerate(table):
+        pairs = list(
+            zip(arrays["d_syn_final"][:, f].ravel(), arrays["d_obs"][:, f].ravel())
+        )
+        assert float(row["rel_data_residual"]) == pytest.approx(
+            rel_residual(pairs), rel=1e-5
+        )
+
+
+def wrap(phase: float) -> float:
+    """``phase`` into ``(-pi, pi]``."""
+    return float(np.angle(np.exp(1j * phase)))
+
+
+def phase_gaps(d_syn: np.ndarray, d_obs: np.ndarray, shot: int) -> list:
+    """Shot ``shot``'s phase gap ``phase(d_syn) - phase(d_obs)`` at each receiver,
+    followed outwards from the transmitter along both arcs of the ring: the
+    nearest receiver's gap is taken within half a cycle, and each next one
+    differs from its neighbour's by less than half a cycle."""
+    column = {r: j for j, r in enumerate(receiver_ids(shot))}
+    gaps = []
+    for direction, n_steps in ((1, N_TRANSDUCERS // 2), (-1, N_TRANSDUCERS // 2 - 1)):
+        gap = 0.0
+        for step in range(1, n_steps + 1):
+            j = column[(shot + direction * step) % N_TRANSDUCERS]
+            raw = float(np.angle(d_syn[j]) - np.angle(d_obs[j]))
+            gap += wrap(raw - gap)
+            gaps.append(gap)
+    return gaps
+
+
+def test_a_phase_ramp_skips_a_cycle_only_past_half_a_cycle(tiny_two_band_run, tmp_path):
+    """d_syn lagging d_obs by 1 rad per ring step: of each shot's 7 pairs only
+    the opposite one (4 rad) is more than pi out."""
+    run_dir = copy_run(tiny_two_band_run.run_dir, tmp_path)
+    for band in band_dirs(run_dir):
+        arrays = load_npz(band / "arrays.npz")
+        steps = np.array(
+            [[ring_steps(s, r) for r in receiver_ids(s)] for s in range(N_TRANSDUCERS)]
+        )
+        arrays["d_syn_start"] = arrays["d_obs"] * np.exp(-1j * steps)[:, None, :]
+        np.savez(band / "arrays.npz", **arrays)
+
+    postprocess.postprocess_run(run_dir)
+
+    table = read_csv(run_dir / "figures" / "phase_gap.csv")
+    assert [int(r["band_index"]) for r in table] == [0, 1]
+    for row in table:
+        assert int(row["n_pairs"]) == N_TRANSDUCERS * (N_TRANSDUCERS - 1)
+        assert float(row["fraction_over_pi"]) == pytest.approx(1 / 7)
+
+
+def test_phase_gap_is_each_bands_start_fit_per_frequency(tiny_two_band_run):
+    run_dir = tiny_two_band_run.run_dir
+
+    table = read_csv(run_dir / "figures" / "phase_gap.csv")
+
+    for row, band_dir in zip(table, band_dirs(run_dir)):
+        arrays = load_npz(band_dir / "arrays.npz")
+        (freq,) = arrays["freqs"]
+        assert float(row["frequency_hz"]) == pytest.approx(float(freq))
+        gaps = [
+            g
+            for s in range(N_TRANSDUCERS)
+            for g in phase_gaps(arrays["d_syn_start"][s, 0], arrays["d_obs"][s, 0], s)
+        ]
+        assert float(row["fraction_over_pi"]) == pytest.approx(
+            np.mean(np.abs(gaps) > np.pi)
+        )
