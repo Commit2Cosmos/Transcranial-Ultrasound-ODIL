@@ -12,9 +12,12 @@ Examples
     python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
     python main.py --live --config configs/<run-config>.yaml     # watch it
     python main.py --postprocess outputs/runs/<run>  # redraw its figures
+    python main.py --postprocess outputs/experiments/<experiment>  # every run's
+    python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
-needs a clean git tree unless ``--scratch`` is given.
+needs a clean git tree unless ``--scratch`` is given. An experiment spec runs
+from a clean tree into ``outputs/experiments/NNNN-slug[_cuda|_mps]/``.
 
 The default config is defined in code (the ``RunConfig`` dataclass defaults in
 ``odil_wave/experiment/config.py``); a run config names only the values
@@ -65,16 +68,37 @@ def _summarise(cfg) -> str:
     return "\n".join(lines)
 
 
-def _postprocess(run_dir: Path) -> int:
-    """``--postprocess``: draw ``run_dir``'s figures; exit 2 if it is no run."""
+def _postprocess(path: Path) -> int:
+    """``--postprocess``: draw a run directory's figures, or, for an experiment
+    directory (one holding ``experiment.json``), every run's and the
+    experiment's own. Exit 2 if ``path`` is neither, 1 if a run of an
+    experiment couldn't be drawn."""
     from odil_wave.experiment.postprocess import postprocess_run
 
+    if (path / "experiment.json").is_file():
+        from odil_wave.experiment.launch import postprocess_experiment
+
+        failed = []
+
+        def redraw(run_dir: Path) -> None:
+            try:
+                written = postprocess_run(run_dir)
+            except Exception as exc:  # noqa: BLE001 - the other runs still redraw
+                failed.append(run_dir.name)
+                print(f"  [postprocess warning] {run_dir.name}: {exc}")
+                return
+            print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+
+        postprocess_experiment(path, postprocess_run=redraw)
+        print(f"summary: {path / 'summary.csv'}")
+        return 1 if failed else 0
+
     try:
-        written = postprocess_run(run_dir)
+        written = postprocess_run(path)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+    print(f"figures: {path / 'figures'} ({len(written)} files)")
     return 0
 
 
@@ -126,20 +150,30 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         action="store_true",
         help="Redraw a live view of the run in one window (needs a display).",
     )
-    # The run directory itself, for --reproduce and tests; normally the entry
-    # point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
+    parser.add_argument(
+        "--experiment",
+        default=None,
+        metavar="SPEC",
+        help="Run an experiment spec (configs/experiments/NNNN-slug.yaml) into "
+        "outputs/experiments/; re-running resumes it. Needs a clean tree.",
+    )
+    # The run (or experiment) directory itself, for --reproduce and tests;
+    # normally the entry point picks outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/.
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--postprocess",
-        metavar="RUN_DIR",
+        metavar="DIR",
         default=None,
-        help="Redraw a saved run's figures and CSVs into <RUN_DIR>/figures/ "
-        "and exit. Reads only the run directory; never re-runs a solve.",
+        help="Redraw a saved run's figures and CSVs into <DIR>/figures/ and "
+        "exit; for an experiment directory, every run's and its summary.csv. "
+        "Reads only the directory; never re-runs a solve.",
     )
     args = parser.parse_args(argv)
 
     if args.postprocess is not None:
         return _postprocess(Path(args.postprocess))
+    if args.experiment is not None:
+        return _experiment(args, repo_root)
 
     # config resolution is torch-free; import lazily so --help stays instant.
     import yaml
@@ -199,6 +233,41 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         return 2
     print(f"\nartifacts: {result.run_dir}")
     return 0 if result.status == "completed" else 1
+
+
+def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
+    """``--experiment``: the committed spec alone defines the runs."""
+    given = [
+        flag
+        for flag, used in (
+            ("--config", args.config is not None),
+            ("--override", bool(args.override)),
+            ("--scratch", args.scratch),
+        )
+        if used
+    ]
+    if given:
+        print(
+            f"error: {', '.join(given)} can't be used with --experiment: "
+            "the committed spec alone defines the runs",
+            file=sys.stderr,
+        )
+        return 2
+    if args.live:
+        print(
+            "error: --live watches a single run; it can't be used with --experiment",
+            file=sys.stderr,
+        )
+        return 2
+
+    from odil_wave.experiment.launch import launch
+
+    # No postprocess_run hook: run_inverse already post-processes every run it
+    # returns (completed, failed or interrupted), so passing one would draw
+    # each run's figures twice.
+    return launch(
+        args.experiment, dry_run=args.dry_run, out=args.out, repo_root=repo_root
+    )
 
 
 if __name__ == "__main__":
