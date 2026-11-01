@@ -46,25 +46,41 @@ result = run_inverse(cfg, new_run_directory())   # -> RunResult
 print(result.metrics_summary["final_metrics"]["ssim_brain"])
 ```
 
-## Plotting & analysis
+## Post-processing
 
-All figures come from the library, so a saved run reproduces without
-re-solving. These helpers read the artifacts below (`tape.csv`,
-`bands/*/arrays.npz`; the last band's `c` is the run's final model):
+Every run ends with post-processing (`postprocess.py`), including failed and
+interrupted runs, which get the figures of what they saved. It redraws on
+demand, e.g. after a post-processing change:
 
-```python
-from odil_wave.experiment import (
-    load_metrics, load_loss_tape, plot_run_history,
-    plot_velocity_recovery, animate_bands,
-)
-
-rd = result.run_dir
-plot_run_history(rd)                       # per-band loss & brain-region SSIM
-load_loss_tape(rd).show()                  # rebuilt LossTape from the tape
-plot_velocity_recovery(rd, problem.truth_velocity, band0.geom)  # truth|rec|diff|error
-animate_bands(rd, problem.grid, filename="c_bands.gif")         # one frame per band
+```bash
+python main.py --postprocess outputs/runs/<run>   # exit 2 if it is no run directory
 ```
 
+```python
+from odil_wave.experiment import postprocess_run
+postprocess_run(result.run_dir)            # -> the written paths
+```
+
+Post-processing reads only the run directory and **never re-runs a solve or an
+optimisation**. It writes PNGs at a fixed dpi (150) into `<run_dir>/figures/`,
+with a CSV beside a figure for every derived number that is not on the tape.
+The set is fixed in code; the run config has no post-processing section.
+
+| file | content |
+|---|---|
+| `convergence.png` | against `iter_total`, band starts marked: `pde_term`, `data_term`, `reg_term` (log); `rel_data_residual`, `pde_src_ratio`, `rel_wavefield_error` (log); `rmse_*` solid and `bias_*` dashed (m/s); `ssim_brain` |
+| `velocity.png` | truth \| recovered (last completed band) \| recovered − truth over the interior, brain and skull outlines |
+| `per_band_error.png` | `c_band − c*` after each band (more than one band only) |
+| `profiles.png`, `profiles.csv` | truth, start and recovered `c` along the horizontal and vertical lines through the head region's centroid |
+| `band_contribution.png`, `.csv` | per band (more than one band only): change in `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual` from its start row to its final row, and its cost (its own `n_evaluations`, `wall_s`) |
+
+**Colour scales come from the truth only**, so they are identical across the
+runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
+`c − c*` is symmetric at half of `c*`'s peak-to-peak in the brain region (the
+skull's error saturates it; the profiles show its amplitude).
+
+Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
+`load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
 `Wavefield.show(idx)` draws a 2x2 of `|u|`, `Re(u)`, `Im(u)` and phase;
 `SourceSignal.plot_spectrum(frequencies=band.freq)` marks the inversion bins on
 the source spectrum; `odil_wave.metrics.ssim_map(...)` shows the per-pixel SSIM.

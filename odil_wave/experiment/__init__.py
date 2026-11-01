@@ -10,16 +10,14 @@ from .config import (
 )
 from .plots import (
     LiveVelocityView,
-    animate_bands,
     load_band_velocities,
     load_config,
     load_final_velocity,
     load_loss_tape,
     load_metrics,
-    plot_run_history,
-    plot_velocity_recovery,
     rebuild_problem,
 )
+from .postprocess import ColourScales, SavedRun, postprocess_run
 from .problem import BandContext, Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
 from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
@@ -54,16 +52,17 @@ __all__ = [
     "BandTape",
     "TAPE_COLUMNS",
     "NonFiniteError",
+    # post-processing
+    "ColourScales",
+    "SavedRun",
+    "postprocess_run",
     # plots / analysis
     "LiveVelocityView",
-    "animate_bands",
     "load_band_velocities",
     "load_config",
     "load_final_velocity",
     "load_loss_tape",
     "load_metrics",
-    "plot_run_history",
-    "plot_velocity_recovery",
     "rebuild_problem",
     # runner
     "RunResult",
