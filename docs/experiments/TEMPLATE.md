@@ -12,7 +12,7 @@ device: cpu                  # cpu | cuda | mps
 variable: ""                 # the one swept key, e.g. loss.weights.reg
 baseline: ""                 # the baseline run config, or where it came from
 answer: ""                   # the answer, in one line
-supersedes: []               # every record this one replaces, transitively, as full ids: [0001-slug, 0002-slug]
+supersedes: []               # every record this one supersedes, transitively, as full ids: [0001-slug, 0002-slug]
 ---
 
 # NNNN-slug: Title
@@ -63,7 +63,7 @@ Current.
 
 <!--
 Replace "Current." with the first dated entry; later entries go below it. Formats:
-- YYYY-MM-DD · superseded by [NNNN-slug](NNNN-slug.md) · <why the newer record replaces this one>
+- YYYY-MM-DD · superseded by [NNNN-slug](NNNN-slug.md) · <why the newer record answers the question in its place>
 - YYYY-MM-DD · note · <PR> · affects <conclusion bullets> · <why the change could break them>
 - YYYY-MM-DD · invalidated by <PR or commit> · <what changed> · affects <conclusion bullets | all> · <why this breaks them>
 Only the user writes `invalidated`. A superseded or invalidated entry flips `status` and is the last entry.

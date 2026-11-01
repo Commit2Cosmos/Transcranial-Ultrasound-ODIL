@@ -53,7 +53,7 @@ the user decides.
      against current `main`.
 2. **Supersession.** When a record becomes `current`, check whether it answers
    the same question as any `current` record. If it does, list in its
-   `supersedes` **every** record it replaces, transitively (in a chain
+   `supersedes` **every** record it supersedes, transitively (in a chain
    0001→0002→0003, 0003 has `supersedes: [0001-…, 0002-…]`), flip each `current`
    one to `superseded` and give it the entry
    `YYYY-MM-DD · superseded by [NNNN-slug](NNNN-slug.md) · <why>`. The link lives

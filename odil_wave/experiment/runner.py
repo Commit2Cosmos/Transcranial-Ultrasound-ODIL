@@ -364,7 +364,7 @@ def run_inverse(
     Parameters
     ----------
     config : RunConfig
-        The resolved Run config.
+        The run's Resolved config.
     run_directory : RunDirectory
         Where the run is written, from
         :func:`~odil_wave.experiment.rundir.new_run_directory`.
