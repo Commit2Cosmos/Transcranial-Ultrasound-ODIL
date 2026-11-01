@@ -7,7 +7,7 @@
 # or skull region for the tape, so it lives outside configs/*.yaml.
 
 acquisition:
-  sigma_s: 3.5e-3   # pinned in metres, the same source on every grid
+  sigma_s: 3.5e-3   # pinned in metres: the source of the #32 before/after tables
 
 truth:
   profile: overdensity

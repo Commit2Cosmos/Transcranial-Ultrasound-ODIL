@@ -117,7 +117,7 @@ or removed keys are rejected.
 | `pml`          | `width`, `power`, `R0`, `damping_scale`, `observation_width` | `observation_width: null` generates the data on the inversion grid (inverse crime); a different width is a deliberate modelling error. |
 | `time`         | `t_max`, `init_nt`, `cfl_safety` | Sets `dt` and the FFT bins the band frequencies snap to. |
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
-| `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. |
+| `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s`, `source_spatial` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. The source is a density that integrates to 1 on any grid: a Gaussian of width `sigma_s` (metres, default 3.4 mm) or a point `1/(dx·dy)`; see below. |
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
@@ -131,10 +131,36 @@ or removed keys are rejected.
   no block alternation. `u` is scaled by a fixed per-(shot, frequency) reference;
   `c` is reparameterised through a sigmoid so its bounds hold structurally. It
   minimises `Phi = pde * pde_term + data * data_term + reg * R(c)` with the
-  weights from `loss.weights`, where each term is the mean (over real scalar
-  entries) of the per-(shot, frequency) scaled relative residual. The L-BFGS
+  weights from `loss.weights`. The L-BFGS
   settings (`inner_max_iter`, `history_size`, …) live under `optimiser`; the
   latent velocity bounds are `grid.c_min` / `grid.c_max`.
+
+### Objective balance
+
+The PDE/data balance does not depend on grid spacing, PML width or the
+source's normalisation (ADR-0002), so `loss.weights` mean the same at any
+resolution:
+
+- **PDE term**: the residual of each (shot, frequency) divided by
+  `|λ_tt|·u_ref`, the size of the wave term (`u_ref` is the interior RMS of
+  the band's Helmholtz warm start, fixed for the band), summed over interior
+  **and** PML nodes and normalised by the interior node count.
+- **Data term**: the receiver misfit of each (shot, frequency) divided by the
+  RMS of its observed traces, then a **mean** over traces, so it does not grow
+  with `n_transducers`. There is no noise model: the data are noise-free
+  (the inverse crime).
+- `python -m odil_wave.experiment.balance -c configs/checks/balance.yaml
+  --cases 1 2 3 1:2` checks it: the PDE term at `(H⁻¹(c_true), c_init)` over
+  the data term at `(H⁻¹(c_init), c_init)` on 125²/PML 40, 250²/80, 375²/120
+  and 125²/80 (case `k` scales interior and PML; `k:p` scales them apart).
+
+**Source width.** `acquisition.sigma_s` is a length in metres. Keep
+`1.5 h ≤ sigma_s ≤ 1/k_max` with `k_max = 2π f_max / grid.c_min`: below 1.5 h
+the Gaussian is under-resolved, above `1/k_max` it low-pass filters the top
+frequency. That window needs ≥ 3π ≈ 9.4 points per wavelength at `f_max`
+(the default grid has 10.7 at 60 kHz, 8.1 at 80 kHz). The config warns, printing
+`sigma_s/h`, `k_max·sigma_s` and the ring's clearance, when either bound is
+crossed or the ring is within 3 `sigma_s` of the PML.
 
 ### Frequency continuation (`bands`)
 

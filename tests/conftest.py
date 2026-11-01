@@ -80,7 +80,7 @@ def make_geometry(grid, source, freq, **overrides) -> AcquisitionGeometry:
     """8-transducer point-injection ring; keyword overrides win."""
     kw = dict(
         n_transducers=8,
-        sigma_s=None,
+        sigma_s=4e-3,
         a_frac=0.55,
         b_frac=0.70,
         ring_center=None,

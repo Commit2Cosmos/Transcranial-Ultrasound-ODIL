@@ -1,7 +1,9 @@
 import pytest
 import torch
 
-from conftest import make_geometry
+from odil_wave import FrequencySelection
+
+from conftest import F0, make_geometry, make_grid, make_source
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +78,21 @@ def test_gaussian_source_profile_is_spread(grid, source, freq_selection):
     spatial_support = (field_t.abs().sum(dim=0) > 1e-12).sum()
     assert int(spatial_support) > 1
     assert geom.sigma_s > 0
+
+
+@pytest.mark.parametrize("source_spatial", ["gaussian", "point"])
+def test_source_integrates_to_its_amplitude_on_any_grid(source_spatial):
+    """The spatial profile is a density: sum(q) dx dy is the source spectrum,
+    the same at h and h / 2 (sigma_s = 4 mm is 1.5 h on the coarse grid)."""
+    for shape in [(20, 20), (39, 39)]:
+        grid = make_grid(interior_shape=shape, pml_width=4 * shape[0] // 20)
+        freq = FrequencySelection.from_frequencies(grid, [F0])
+        src = make_source(grid)
+        geom = make_geometry(grid, src, freq, source_spatial=source_spatial)
+        integral = geom.source_field(0).sum(dim=(-2, -1)) * grid.dx * grid.dy
+        torch.testing.assert_close(
+            integral, src.spectrum(freq).to(integral.dtype), rtol=1e-6, atol=0
+        )
 
 
 def test_source_field_shapes(geometry, grid, freq_selection):
