@@ -27,6 +27,8 @@ from .plots import (
 from .postprocess import ColourScales, SavedRun, postprocess_run
 from .problem import BandContext, Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
+from .spec import ExperimentSpec, SweepRun, load_spec
+from .launch import postprocess_experiment
 from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
 from .runner import (
     BandResult,
@@ -55,6 +57,11 @@ __all__ = [
     "RunDirectory",
     "RunStartError",
     "new_run_directory",
+    # experiments
+    "ExperimentSpec",
+    "SweepRun",
+    "load_spec",
+    "postprocess_experiment",
     # metric tape
     "MetricTape",
     "BandTape",

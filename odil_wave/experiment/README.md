@@ -54,6 +54,7 @@ demand, e.g. after a post-processing change:
 
 ```bash
 python main.py --postprocess outputs/runs/<run>   # exit 2 if it is no run directory
+python main.py --postprocess outputs/experiments/<experiment>  # every run + summary.csv
 ```
 
 ```python
@@ -73,6 +74,10 @@ The set is fixed in code; the run config has no post-processing section.
 | `per_band_error.png` | `c_band − c*` after each band (more than one band only) |
 | `profiles.png`, `profiles.csv` | truth, start and recovered `c` along the horizontal and vertical lines through the head region's centroid |
 | `band_contribution.png`, `.csv` | per band (more than one band only): change in `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual` from its start row to its final row, and its cost (its own `n_evaluations`, `wall_s`) |
+| `residual_by_offset.png`, `.csv` | `rel_data_residual` at each band's final iterate against **Offset** (0–180°, one point per distinct offset, all shots × frequencies at that offset) |
+| `residual_by_frequency.png`, `.csv` | `rel_data_residual` at each band's final iterate per solved frequency (more than one distinct solved frequency in the run only) |
+| `residual_by_transmitter.png`, `.csv` | `rel_data_residual` of each shot at each band's final iterate against its transmitter's ring angle |
+| `phase_gap.png`, `.csv` | at each band's start row, per frequency, the fraction of transducer pairs whose phase gap `phase(d_syn) − phase(d_obs)` exceeds π (cycle skipping: the band may need a lower band before it). The gap is unwrapped along the ring outwards from the transmitter, the nearest receiver's taken within half a cycle |
 
 **Colour scales come from the truth only**, so they are identical across the
 runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
@@ -165,10 +170,9 @@ and writes **no** artifacts.
 ## Experiments
 
 > **Spec ahead of code.** This section is the design decided in "Experiment
-> spec format and reproduce command" (#56). The implementation issue lands the
-> code and removes this note. Already implemented: standalone runs
-> (`outputs/runs/`, `--scratch`, the hidden `--out`, and run directories
-> chosen by the entry point rather than the Run config).
+> spec format and reproduce command" (#56). Not yet implemented: `--probe`,
+> `--reproduce` and the experiment figures (`figures/`); each lands with its
+> own issue, which narrows this note.
 
 An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
 **baseline** run config. Its **experiment spec** is run by one entry point into
@@ -227,8 +231,13 @@ sweep:
   non-ignored file counts as dirty). Otherwise exit 2.
 - `--config`, `--override` and `--scratch` are errors with `--experiment`: the
   committed spec alone defines the runs.
+- The spec must be committed in the repository (`--dry-run` doesn't need it,
+  so a spec can be checked while it is written).
 - Runs execute sequentially in `values` order; a failed run doesn't stop the
-  others. Experiment post-processing runs at the end.
+  others. Each run is post-processed when it ends; experiment post-processing
+  (`summary.csv`) runs at the end. Ctrl-C stops the experiment: the current run
+  is `interrupted` and the rest stay `pending`. Exit codes: `0` every run
+  completed, `1` a run failed or was interrupted, `2` could not start.
 - **Resume**: re-running on an existing experiment directory skips `completed`
   runs and re-runs failed or interrupted ones from scratch. Allowed only if HEAD
   and the spec hash match `experiment.json`; otherwise it refuses.
@@ -258,7 +267,15 @@ outputs/probes/<YYMMDD-HHMMSS>/                  # --probe
 ```
 
 `idx` is two digits, 0-based. `experiment.json` holds no absolute paths or
-host names. With the record, the experiment skill commits `experiment.json` and
+host names: `schema_version`, `id`, `issue`, `spec` (repo-relative path),
+`spec_sha256`, `commit`, `device` (resolved: cpu / cuda / mps), `sweep_key`,
+`status` (`running | completed | failed | interrupted`), `started_utc`,
+`finished_utc`, and `runs` (each `index`, `label`, `dir`, `value`,
+`is_baseline`, `status`: `pending | running | completed | failed |
+interrupted`). `summary.csv` columns: `index`, `label`, `value` (JSON for a
+list or dict), `is_baseline` (`true`/`false`), `status`, then every tape column
+at the run's final iterate, empty unless the run completed. With
+`--out <dir>`, `<dir>` is the experiment directory. With the record, the experiment skill commits `experiment.json` and
 `summary.csv` to `docs/experiments/NNNN-slug/`; the entry point only writes
 under `outputs/`.
 
@@ -461,9 +478,11 @@ exits 2 for each.
 
 A non-finite value is written as `nan` / `inf`, never as an empty cell.
 
-Derived in post-processing, not on the tape: `rel_data_residual` per frequency
-and per **Offset** (ring angle 0–180°, one point per distinct offset) at each
-band's final iterate, from the saved receiver wavefield and observed data.
+Derived in post-processing, not on the tape: `rel_data_residual` per
+**Offset** (ring angle 0–180°, one point per distinct offset), per frequency and
+per transmitter at each band's final iterate, and the phase gap at each band's
+start row, from the saved synthetic and observed data (`residual_by_*.csv`,
+`phase_gap.csv` under `figures/`; see [Post-processing](#post-processing)).
 
 ### Iteration count vs. closure/function-evaluation count
 
