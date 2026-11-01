@@ -12,6 +12,6 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-### Experiment bank
+### Experiments
 
-A PR touching `odil_wave/`, `configs/` or `main.py` checks the `current` experiment records and adds invalidation notes: see "Maintaining the bank" in `docs/experiments/README.md`.
+`/experiment` (`.claude/skills/experiment/`) walks an experiment from its `experiment`-labelled Protocol issue through launch to record. Bank conventions live in `docs/experiments/README.md`. A PR touching `odil_wave/`, `configs/` or `main.py` checks the `current` experiment records and adds invalidation notes: see "Maintaining the bank" there.
