@@ -26,7 +26,7 @@ from . import envinfo
 from .arrays import BandArrays, save_problem
 from .config import BandCfg, ConfigError, RunConfig, validate_config
 from .health import HealthCheck
-from .postprocess import postprocess_run
+from .postprocess import draw_reported, postprocess_run
 from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, write_json
 from .tape import MetricTape
@@ -468,22 +468,9 @@ def run_inverse(
             _write_run_summary(result, run_warnings, time.perf_counter() - t_run0)
             raise
     _write_run_summary(result, run_warnings, time.perf_counter() - t_run0)
-    _postprocess(run_dir)
+    # A post-processing error never changes the run's status.
+    draw_reported(postprocess_run, run_dir, interruptible=False)
     return result
-
-
-def _postprocess(run_dir: Path) -> None:
-    """Draw the run's figures from what it saved. A post-processing error is
-    reported, never changing the run's status: ``--postprocess`` redraws them."""
-    try:
-        written = postprocess_run(run_dir)
-    except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
-        print(
-            f"  [post-processing warning] {type(exc).__name__}: {exc}; "
-            f"redraw with: main.py --postprocess {run_dir}"
-        )
-        return
-    print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
 
 
 def _guarded(on_log: Callable[[LoggedRow], None]) -> Callable[[LoggedRow], None]:

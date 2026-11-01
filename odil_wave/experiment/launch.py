@@ -170,18 +170,10 @@ def postprocess_experiment_level(exp_dir: Path) -> None:
     completed run). A figure error is reported, never failing the experiment:
     ``--postprocess`` redraws them."""
     from .experiment_figures import postprocess_experiment_figures
+    from .postprocess import draw_reported
 
     write_summary(exp_dir)
-    try:
-        written = postprocess_experiment_figures(exp_dir)
-    except Exception as exc:  # noqa: BLE001 - figures never fail an experiment
-        print(
-            f"  [post-processing warning] {type(exc).__name__}: {exc}; "
-            f"redraw with: main.py --postprocess {exp_dir}"
-        )
-        return
-    if written:
-        print(f"figures: {exp_dir / 'figures'} ({len(written)} files)")
+    draw_reported(postprocess_experiment_figures, exp_dir)
 
 
 def _run_one(

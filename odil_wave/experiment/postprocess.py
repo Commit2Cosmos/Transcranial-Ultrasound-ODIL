@@ -741,3 +741,27 @@ def postprocess_run(run_dir: PathLike) -> List[Path]:
         if plot is not None:
             written += save_plot(plot, run.path / "figures")
     return written
+
+
+def draw_reported(
+    draw: Callable[[Path], List[Path]], directory: Path, *, interruptible: bool = True
+) -> bool:
+    """Call ``draw(directory)`` and print where its figures went; return
+    whether it drew.
+
+    An error from it is printed as a warning naming the redraw command, never
+    raised, so figures never fail a run or an experiment. With
+    ``interruptible=False`` a ``KeyboardInterrupt`` is reported likewise.
+    """
+    caught = Exception if interruptible else (Exception, KeyboardInterrupt)
+    try:
+        written = draw(directory)
+    except caught as exc:  # noqa: BLE001 - reported, never raised
+        print(
+            f"  [post-processing warning] {type(exc).__name__}: {exc}; "
+            f"redraw with: main.py --postprocess {directory}"
+        )
+        return False
+    if written:
+        print(f"figures: {directory / 'figures'} ({len(written)} files)")
+    return True
