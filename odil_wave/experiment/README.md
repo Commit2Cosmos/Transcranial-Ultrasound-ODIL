@@ -74,6 +74,10 @@ The set is fixed in code; the run config has no post-processing section.
 | `per_band_error.png` | `c_band − c*` after each band (more than one band only) |
 | `profiles.png`, `profiles.csv` | truth, start and recovered `c` along the horizontal and vertical lines through the head region's centroid |
 | `band_contribution.png`, `.csv` | per band (more than one band only): change in `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual` from its start row to its final row, and its cost (its own `n_evaluations`, `wall_s`) |
+| `residual_by_offset.png`, `.csv` | `rel_data_residual` at each band's final iterate against **Offset** (0–180°, one point per distinct offset, all shots × frequencies at that offset) |
+| `residual_by_frequency.png`, `.csv` | `rel_data_residual` at each band's final iterate per solved frequency (more than one distinct solved frequency in the run only) |
+| `residual_by_transmitter.png`, `.csv` | `rel_data_residual` of each shot at each band's final iterate against its transmitter's ring angle |
+| `phase_gap.png`, `.csv` | at each band's start row, per frequency, the fraction of transducer pairs whose phase gap `phase(d_syn) − phase(d_obs)` exceeds π (cycle skipping: the band may need a lower band before it). The gap is unwrapped along the ring outwards from the transmitter, the nearest receiver's taken within half a cycle |
 
 An experiment's own figures (`experiment_figures.py`) go to
 `<experiment_dir>/figures/`, drawn from the **completed** runs only (a failed,
@@ -92,6 +96,27 @@ than one:
 runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
 `c − c*` is symmetric at half of `c*`'s peak-to-peak in the brain region (the
 skull's error saturates it; the profiles show its amplitude).
+
+### On-demand plots
+
+To dig deeper from a notebook, `on_demand.py` has one-line calls that take a
+run directory and return a matplotlib `Figure` (no CLI; not saved). Like
+post-processing they never solve or optimise. `band` is a completed band's
+position (default `-1`, the last), `shot` a transducer (default the band's
+worst-fit shot) and `frequency` an index into the band's solved frequencies.
+
+| call | figure |
+|---|---|
+| `source_spectrum(rd)` | normalised source spectrum `\|S(f)\|` with each band's inversion bins marked; reads the config only |
+| `optimiser_health(rd)` | `c_min` / `c_max` against `grid.c_min` / `grid.c_max`, `sat_frac`, `grad_u_norm` / `grad_z_norm` (log), against `iter_total` |
+| `wavefield_comparison(rd, band=, shot=, frequency=)` | u \| u* \| u − u* over the interior, real part and magnitude; `shot` must be a saved one |
+| `shot_data_fit(rd, band=, shot=, frequency=)` | amplitude and unwrapped phase of `d_obs` and `d_syn` (final iterate; start row dotted) against receiver angle; any shot |
+| `pde_residual_map(rd, band=, shot=, frequency=)` | `\|r_pde\| / RMS(q)` over the full grid (log), the per-cell `pde_src_ratio`: the operator evaluated on the saved `u` and `c`; `shot` must be a saved one |
+
+```python
+from odil_wave.experiment import pde_residual_map
+pde_residual_map(run_dir, shot=0)
+```
 
 Other helpers read the same artifacts: `load_metrics(rd)` (the tape as dicts),
 `load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
@@ -466,9 +491,11 @@ exits 2 for each.
 
 A non-finite value is written as `nan` / `inf`, never as an empty cell.
 
-Derived in post-processing, not on the tape: `rel_data_residual` per frequency
-and per **Offset** (ring angle 0–180°, one point per distinct offset) at each
-band's final iterate, from the saved receiver wavefield and observed data.
+Derived in post-processing, not on the tape: `rel_data_residual` per
+**Offset** (ring angle 0–180°, one point per distinct offset), per frequency and
+per transmitter at each band's final iterate, and the phase gap at each band's
+start row, from the saved synthetic and observed data (`residual_by_*.csv`,
+`phase_gap.csv` under `figures/`; see [Post-processing](#post-processing)).
 
 ### Iteration count vs. closure/function-evaluation count
 
