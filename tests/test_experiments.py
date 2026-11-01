@@ -322,8 +322,8 @@ def test_observed_data_satisfy_inverse_operator_on_truth(tiny_run_config):
     )
     amp = torch.stack([w.amplitude for w in band.observed_wfs])
     loss.evaluate(amp, problem.truth_velocity.c)
-    assert loss._last_residuals["pde_src_ratio"] < 1e-8
-    assert loss._last_residuals["data_rms"] == 0.0
+    assert loss.last_residuals["pde_src_ratio"] < 1e-8
+    assert loss.last_residuals["data_rms"] == 0.0
 
 
 def _amplitudes(wavefields) -> torch.Tensor:

@@ -75,7 +75,7 @@ class DiscreteLoss(ABC):
         float
             ``|r_pde|_rms / |src|_rms`` from the most recent evaluation.
         """
-        residuals = self._last_residuals
+        residuals = self.last_residuals
 
         if isinstance(residuals, dict):
             if "pde_src_ratio" in residuals:

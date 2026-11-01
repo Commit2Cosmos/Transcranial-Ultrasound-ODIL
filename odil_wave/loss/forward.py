@@ -45,5 +45,5 @@ class ForwardLoss(DiscreteLoss):
             L = L.real
 
         self.evaluations += 1
-        self._last_residuals = (r.detach(),)
+        self.last_residuals = (r.detach(),)
         return L

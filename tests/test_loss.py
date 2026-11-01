@@ -190,8 +190,8 @@ def test_inverse_loss_zero_at_truth(wave_stack):
     )
     L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
     assert float(L) < 1e-18
-    # diagnostics are recorded on _last_residuals.
-    assert set(loss._last_residuals) >= {"pde_rms", "data_rms", "pde_src_ratio"}
+    # diagnostics are recorded on last_residuals.
+    assert set(loss.last_residuals) >= {"pde_rms", "data_rms", "pde_src_ratio"}
 
 
 def test_inverse_loss_requires_exactly_one_observation(wave_stack):
@@ -243,7 +243,7 @@ def test_inverse_loss_data_term_ignores_the_transmitting_transducer(wave_stack):
         i, j = geom.transducer_ij[s]
         amp[s, :, i, j] += 10.0
     loss.evaluate(amp, wave_stack.model.c)
-    assert loss._last_residuals["data_loss"] < 1e-30
+    assert loss.last_residuals["data_loss"] < 1e-30
 
 
 def test_inverse_loss_weights_override(wave_stack):

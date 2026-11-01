@@ -152,10 +152,10 @@ class VelocityModel:
         vm.profile_kwargs = {}
         vm.c = c.to(dtype=grid.dtype, device=grid.device).reshape(grid.shape)
         vm.pml_c = float(pml_c) if pml_c is not None else float(vm.c.min())
-        vm._head_mask = None
-        vm._interior_mask = None
-        vm._rim_mask = None
-        vm._interior_bg = None
+        vm._head_mask = None  # noqa: SLF001 - alternate constructor
+        vm._interior_mask = None  # noqa: SLF001 - alternate constructor
+        vm._rim_mask = None  # noqa: SLF001 - alternate constructor
+        vm._interior_bg = None  # noqa: SLF001 - alternate constructor
         return vm
 
     def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:

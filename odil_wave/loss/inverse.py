@@ -98,7 +98,7 @@ class InverseLoss(DiscreteLoss):
             return torch.stack(amps)
         return observed_wavefield
 
-    def _obs_traces(self) -> torch.Tensor:
+    def obs_traces(self) -> torch.Tensor:
         """Observation traces sampled at the receivers.
 
         Returns
@@ -130,7 +130,7 @@ class InverseLoss(DiscreteLoss):
         pde = self.config.wave_eq.residual(amp, wsp, self.sources)
 
         syn_tr = self.config.geometry.extract_observations(amp)
-        data = syn_tr - self._obs_traces()
+        data = syn_tr - self.obs_traces()
         return pde, data
 
     def evaluate(
@@ -181,7 +181,7 @@ class InverseLoss(DiscreteLoss):
             data_rms = float(mean_abs_sq(r_data).sqrt().detach().cpu())
             src_rms = float(mean_abs_sq(self.sources).sqrt().detach().cpu())
 
-        self._last_residuals = {
+        self.last_residuals = {
             "pde_rms": pde_rms,
             "data_rms": data_rms,
             "pde_loss": float(pde_terms.detach().cpu()),

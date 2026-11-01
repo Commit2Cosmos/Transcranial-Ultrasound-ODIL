@@ -6,3 +6,5 @@
 outputs/
 prompts/
 info.md
+.claude/worktrees/
+.pytest_tmp/

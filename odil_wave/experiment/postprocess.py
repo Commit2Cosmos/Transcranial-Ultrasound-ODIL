@@ -238,7 +238,7 @@ class Plot:
 PlotFn = Callable[[SavedRun, Optional[ColourScales]], Optional[Plot]]
 
 
-def _value(v: Optional[float], log: bool = False) -> float:
+def tape_value(v: Optional[float], log: bool = False) -> float:
     """A tape value for plotting: ``None`` (and non-positive on a log axis) -> nan."""
     if v is None or (log and v <= 0):
         return np.nan
@@ -292,7 +292,7 @@ def convergence(run: SavedRun, scales: Optional[ColourScales] = None) -> Optiona
             for i, (_, rows) in enumerate(sorted(by_band.items())):
                 ax.plot(
                     [r["iter_total"] for r in rows],
-                    [_value(r[column], log) for r in rows],
+                    [tape_value(r[column], log) for r in rows],
                     style,
                     color=colour,
                     marker=".",
@@ -310,7 +310,7 @@ def convergence(run: SavedRun, scales: Optional[ColourScales] = None) -> Optiona
     return Plot("convergence", fig)
 
 
-def _draw_map(ax, run: SavedRun, field: np.ndarray, norm: Normalize, cmap: str):
+def draw_map(ax, run: SavedRun, field: np.ndarray, norm: Normalize, cmap: str):
     """``field`` (interior) on ``ax`` in mm, with brain and skull outlines."""
     x, y = (a * 1e3 for a in run.interior_axes)
     im = ax.imshow(
@@ -351,7 +351,7 @@ def velocity(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Plot]:
         ("c − c*", final.c - c_star, scales.difference_norm, DIFF_CMAP, "Δc [m/s]"),
     ]
     for ax, (title, field, norm, cmap, unit) in zip(axes, panels):
-        im = _draw_map(ax, run, field, norm, cmap)
+        im = draw_map(ax, run, field, norm, cmap)
         ax.set_title(title)
         fig.colorbar(im, ax=ax, shrink=0.85, label=unit)
     return Plot("velocity", fig)
@@ -367,7 +367,7 @@ def per_band_error(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Pl
     fig = Figure(figsize=(4.5 * n + 1, 4.5), layout="constrained")
     axes = np.atleast_1d(fig.subplots(1, n))
     for ax, band in zip(axes, run.bands):
-        im = _draw_map(ax, run, band.c - c_star, scales.difference_norm, DIFF_CMAP)
+        im = draw_map(ax, run, band.c - c_star, scales.difference_norm, DIFF_CMAP)
         ax.set_title(f"band {band.index}: {band.label}")
     fig.colorbar(im, ax=list(axes), shrink=0.85, label="c − c* [m/s]")
     return Plot("per_band_error", fig)

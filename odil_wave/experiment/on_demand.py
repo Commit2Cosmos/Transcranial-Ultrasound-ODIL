@@ -24,9 +24,9 @@ from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from .config import RunConfig, deep_merge
-from .postprocess import DIFF_CMAP, SavedBand, SavedRun, _draw_map, load_run_config
+from .postprocess import DIFF_CMAP, SavedBand, SavedRun, draw_map, load_run_config
 from .problem import Problem, build_problem
-from .runner import _band_label
+from .runner import band_label
 
 PathLike = Union[str, Path]
 
@@ -64,7 +64,7 @@ def source_spectrum(run_dir: PathLike) -> Figure:
                 f,
                 color=f"C{b}",
                 linestyle="--",
-                label=f"band {b}: {_band_label(band.frequencies_hz)}"
+                label=f"band {b}: {band_label(band.frequencies_hz)}"
                 if k == 0
                 else None,
             )
@@ -205,7 +205,7 @@ def wavefield_comparison(
         for ax, (name, field) in zip(
             row, [("u", u), ("u*", u_star), ("u − u*", u - u_star)]
         ):
-            im = _draw_map(ax, run, take(field), norm, cmap)
+            im = draw_map(ax, run, take(field), norm, cmap)
             ax.set_title(f"{part}({name})")
         fig.colorbar(im, ax=list(row), shrink=0.85)
     fig.suptitle(
@@ -289,7 +289,7 @@ def pde_residual_map(
     problem = _problem(run_dir)
     grid = problem.grid
     freq = FrequencySelection.from_frequencies(grid, saved.summary["frequencies_hz"])
-    geom = problem._geometry(grid, problem.source, freq)
+    geom = problem.acquisition_geometry(grid, problem.source, freq)
     wave_eq = WaveEquation(
         Wavefield(grid, freq),
         space_order=problem.space_order,
