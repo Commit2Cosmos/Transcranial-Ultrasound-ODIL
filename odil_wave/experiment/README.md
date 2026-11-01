@@ -183,8 +183,8 @@ and writes **no** artifacts.
 ## Experiments
 
 > **Spec ahead of code.** This section is the design decided in "Experiment
-> spec format and reproduce command" (#56). Not yet implemented: `--probe` and
-> `--reproduce`; each lands with its own issue, which narrows this note.
+> spec format and reproduce command" (#56). Not yet implemented: `--reproduce`;
+> it lands with its own issue, which removes this note.
 
 An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
 **baseline** run config. Its **experiment spec** is run by one entry point into
@@ -258,7 +258,10 @@ sweep:
 - `--probe` runs **3 iterations of the baseline's first band**, measures s/iter,
   and prints an estimate per run (s/iter × the run's total iterations) and for
   the experiment. It is allowed on a dirty tree, reserves nothing and writes
-  only to `outputs/probes/<YYMMDD-HHMMSS>/`.
+  only to `outputs/probes/<YYMMDD-HHMMSS>/` (a scratch run directory). s/iter
+  is timed between the band's first and last tape rows, so it excludes setup
+  (the problem build and each band's observed data and warm start).
+  `--dry-run` and `--out` are errors with `--probe`.
 
 ### Where runs and experiments are written
 
