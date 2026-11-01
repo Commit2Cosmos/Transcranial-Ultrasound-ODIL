@@ -99,6 +99,37 @@ def test_objective_vanishes_at_truth(truth_problem):
     assert opt._last["data_term"] < 1e-20
 
 
+def test_pde_scale_is_the_wave_term(truth_problem):
+    """pde_scale is |lambda_tt| * u_ref per (shot, frequency), u_ref the interior
+    RMS of the warm start (ADR-0002), independent of the source."""
+    opt = _make_optimiser(truth_problem)
+    sl = (slice(None), slice(None)) + opt.grid.interior_slice
+    u_ref = opt.u_seed[sl].abs().square().mean(dim=(2, 3)).sqrt()
+    lam_tt = truth_problem.wavefield.frequency_selection.lambda_tt.abs()
+    expected = lam_tt.view(1, -1) * u_ref
+    assert opt.pde_scale.shape == (opt.n_shots, opt.nf, 1, 1)
+    torch.testing.assert_close(opt.pde_scale[..., 0, 0], expected.to(opt.dtype))
+
+
+def test_pde_term_sums_interior_and_pml_over_the_interior_count(truth_problem):
+    """The PDE term sums |r / pde_scale|^2 over interior + PML nodes and divides
+    by the interior node count (and 2 per complex entry), so residual in the PML
+    counts and a thicker PML does not dilute the term."""
+    opt = _make_optimiser(truth_problem)
+    u_re, u_im, z = opt.init_params()
+    z = z + 0.1  # off the truth, so the residual is non-zero
+    opt.objective(u_re, u_im, z, record=True)
+    r_pde, _ = opt.residuals(u_re, u_im, z)
+    n_int = opt.grid.interior_nx * opt.grid.interior_ny
+    expected = (r_pde / opt.pde_scale).abs().square().sum() / (
+        2 * n_int * opt.n_shots * opt.nf
+    )
+    assert opt.last_record["pde_term"] == pytest.approx(float(expected), rel=1e-12)
+    assert opt.last_record["pde_rel_residual"] == pytest.approx(
+        float((2 * expected).sqrt()), rel=1e-12
+    )
+
+
 def test_data_term_ignores_the_transmitting_transducer(truth_problem):
     """Perturbing u only at each shot's own transducer node leaves the data
     term, and its per-(shot, frequency) scale, unchanged."""

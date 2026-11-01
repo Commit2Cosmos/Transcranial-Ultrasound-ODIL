@@ -43,7 +43,7 @@ TAPE_COLUMNS: List[str] = [
     "reg_term",
     # normalised residuals
     "rel_data_residual",
-    "pde_src_ratio",
+    "pde_rel_residual",
     "rel_wavefield_error",
     "rel_model_update",
     # model error (m/s, against c*)
@@ -280,7 +280,7 @@ class BandTape:
             "data_term": it.data_term,
             "reg_term": it.reg_term,
             "rel_data_residual": it.rel_data_residual,
-            "pde_src_ratio": it.pde_src_ratio,
+            "pde_rel_residual": it.pde_rel_residual,
             "rel_wavefield_error": rel_wavefield_error,
             "rel_model_update": rel_model_update,
             **self.tape.model_error(c),

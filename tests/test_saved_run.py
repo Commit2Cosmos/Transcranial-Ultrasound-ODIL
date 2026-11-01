@@ -107,10 +107,13 @@ def test_band_arrays_hold_the_data_wavefields_and_model(tiny_two_band_run):
             "d_obs",
             "d_syn_start",
             "d_syn_final",
+            "pde_scale",
             "shots",
             "u",
             "u_star",
         }
+        assert saved["pde_scale"].shape == (8, 1)
+        assert (saved["pde_scale"] > 0).all()
         # The frequencies solved at: the FFT bins nearest the requested ones.
         np.testing.assert_allclose(saved["freqs"], band.freq.frequencies, rtol=1e-6)
         assert saved["c"].shape == (20, 20)

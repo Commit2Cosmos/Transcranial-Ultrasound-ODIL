@@ -266,7 +266,7 @@ def run_frequency_band(
 
     opt = build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
-    band_arrays = BandArrays(problem, band_ctx)
+    band_arrays = BandArrays(problem, band_ctx, opt.pde_scale)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
 
     def record_row(it):

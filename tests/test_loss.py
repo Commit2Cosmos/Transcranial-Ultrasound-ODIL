@@ -85,7 +85,7 @@ def test_loss_config_weights_and_offset(wave_stack):
 def test_loss_tape_logs_dict_and_tuple():
     """LossTape stores scalar loss/residual series from dict or tensor residuals."""
     tape = LossTape()
-    tape.log(1.0, {"pde_rms": 0.5, "data_rms": 0.2}, pde_src_ratio=0.1)
+    tape.log(1.0, {"pde_rms": 0.5, "data_rms": 0.2}, pde_rel_residual=0.1)
     r_pde = torch.tensor([3.0, 4.0])
     r_data = torch.tensor([1.0, 1.0])
     tape.log(0.5, (r_pde, r_data))

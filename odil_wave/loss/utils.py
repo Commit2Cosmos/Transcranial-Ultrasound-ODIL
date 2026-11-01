@@ -91,7 +91,7 @@ class LossTape:
             "data_rms": [],
             "pde_loss": [],
             "data_loss": [],
-            "pde_src_ratio": [],
+            "pde_rel_residual": [],
             "c_history": [],
         }
     )
@@ -101,7 +101,7 @@ class LossTape:
         self,
         loss: float,
         residuals,
-        pde_src_ratio: float | None = None,
+        pde_rel_residual: float | None = None,
     ) -> None:
         """Log scalar loss and residual diagnostics for one iteration.
 
@@ -112,8 +112,8 @@ class LossTape:
         residuals : dict or tuple of torch.Tensor
             Either ``{"pde_rms": ..., "data_rms": ...}`` or a tuple
             ``(r_pde, r_data)`` from which RMS values are derived.
-        pde_src_ratio : float, optional
-            PDE-to-source RMS ratio to append.
+        pde_rel_residual : float, optional
+            Scaled PDE residual RMS (the tape's ``pde_rel_residual``) to append.
 
         Notes
         -----
@@ -144,8 +144,8 @@ class LossTape:
                     self.history["data_rms"].append(float(data_sq.mean().sqrt().cpu()))
                     self.history["data_loss"].append(float(data_sq.mean().cpu()))
 
-        if pde_src_ratio is not None:
-            self.history["pde_src_ratio"].append(float(pde_src_ratio))
+        if pde_rel_residual is not None:
+            self.history["pde_rel_residual"].append(float(pde_rel_residual))
 
     def log_c(self, c_arr: np.ndarray) -> None:
         """Record a snapshot of the full-grid velocity field.
@@ -195,7 +195,7 @@ class LossTape:
         # (history key, record key) — records use ``loss_total`` for the loss.
         key_map = [
             ("loss", "loss_total"),
-            ("pde_src_ratio", "pde_src_ratio"),
+            ("pde_rel_residual", "pde_rel_residual"),
             ("rel_data_residual", "rel_data_residual"),
             ("rmse_brain", "rmse_brain"),
             ("ssim_brain", "ssim_brain"),

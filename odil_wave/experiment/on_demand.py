@@ -272,10 +272,11 @@ def shot_data_fit(
 def pde_residual_map(
     run_dir: PathLike, *, band: int = -1, shot: Optional[int] = None, frequency: int = 0
 ) -> Figure:
-    """``|r_pde| / RMS(q)`` over the full grid (the PML too) for one saved shot
-    and frequency of a band's final iterate: the per-cell form of the tape's
-    ``pde_src_ratio``, whose RMS over the grid is that shot and frequency's
-    ratio.
+    """``|r_pde| / pde_scale`` over the full grid (the PML too) for one saved
+    shot and frequency of a band's final iterate, with ``pde_scale`` the band's
+    fixed ``|lambda_tt| * u_ref`` from ``arrays.npz``: the per-cell form of the
+    tape's ``pde_rel_residual``, whose root of the sum of squares over the grid
+    divided by the interior node count is that shot and frequency's value.
 
     The residual is the inversion's operator (``WaveEquation.residual``)
     evaluated on the saved ``u`` and ``c`` (padded with ``pml_c``), on the problem
@@ -303,8 +304,9 @@ def pde_residual_map(
         r = wave_eq.residual(
             u[None], torch.as_tensor(c_full, dtype=grid.dtype), q[None]
         )[0, frequency]
-        q_rms = float(q[frequency].abs().square().mean().sqrt())
-    ratio = r.abs().cpu().numpy() / max(q_rms, 1e-30)
+    scale = float(saved.arrays["pde_scale"][shot, frequency])
+    ratio = r.abs().cpu().numpy() / max(scale, 1e-30)
+    n_int = len(run.interior_axes[0]) * len(run.interior_axes[1])
 
     fig = Figure(figsize=(7, 6), layout="constrained")
     ax = fig.subplots()
@@ -328,14 +330,15 @@ def pde_residual_map(
     head = run.problem["brain_mask"] | run.problem["skull_mask"]
     for mask in (head, run.problem["brain_mask"]):
         ax.contour(x, y, mask.T.astype(float), levels=[0.5], colors="w", linewidths=0.6)
-    fig.colorbar(im, ax=ax, shrink=0.85, label="|r_pde| / RMS(q)")
+    fig.colorbar(im, ax=ax, shrink=0.85, label="|r_pde| / (|λ_tt|·u_ref)")
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
     ax.set_aspect("equal")
     ax.legend(fontsize="small", loc="upper right")
     ax.set_title(
         f"PDE residual: band {saved.index} ({saved.label}), shot {shot}, "
-        f"{f_hz / 1e3:.2f} kHz\nRMS = {np.sqrt(np.mean(ratio**2)):.3g} "
-        f"(this shot and frequency's pde_src_ratio)"
+        f"{f_hz / 1e3:.2f} kHz\n"
+        f"pde_rel_residual = {np.sqrt(np.sum(ratio**2) / n_int):.3g} "
+        f"(this shot and frequency)"
     )
     return fig

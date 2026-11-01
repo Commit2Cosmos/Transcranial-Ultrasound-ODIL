@@ -238,7 +238,18 @@ def test_start_row_residuals_match_a_helmholtz_solve(tiny_two_band_run):
         assert start["rel_wavefield_error"] == pytest.approx(
             float((u[sl] - u_star[sl]).norm() / u_star[sl].norm()), rel=1e-6
         )
-        assert start["pde_src_ratio"] == pytest.approx(rms(r_pde) / rms(q), abs=1e-9)
+        # PDE scale |lambda_tt| * u_ref, u_ref the interior RMS of the warm start;
+        # the sum over interior + PML is normalised by the interior node count.
+        lam_tt = band.freq.symbols_broadcast()[1].abs().real
+        u_ref = u[sl].abs().square().mean(dim=(2, 3), keepdim=True).sqrt()
+        n_int = u[sl][0, 0].numel()
+        expected = float(
+            (
+                (r_pde / (lam_tt * u_ref)).abs().square().sum()
+                / (n_int * u.shape[0] * u.shape[1])
+            ).sqrt()
+        )
+        assert start["pde_rel_residual"] == pytest.approx(expected, rel=1e-4, abs=1e-12)
 
 
 def test_model_errors_match_the_band_models(tiny_two_band_run):
