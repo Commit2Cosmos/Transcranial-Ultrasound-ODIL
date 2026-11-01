@@ -12,6 +12,7 @@ Examples
     python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
     python main.py --live --config configs/<run-config>.yaml     # watch it
     python main.py --postprocess outputs/runs/<run>  # redraw its figures
+    python main.py --postprocess outputs/experiments/<experiment>  # every run's
     python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
@@ -67,16 +68,37 @@ def _summarise(cfg) -> str:
     return "\n".join(lines)
 
 
-def _postprocess(run_dir: Path) -> int:
-    """``--postprocess``: draw ``run_dir``'s figures; exit 2 if it is no run."""
+def _postprocess(path: Path) -> int:
+    """``--postprocess``: draw a run directory's figures, or, for an experiment
+    directory (one holding ``experiment.json``), every run's and the
+    experiment's own. Exit 2 if ``path`` is neither, 1 if a run of an
+    experiment couldn't be drawn."""
     from odil_wave.experiment.postprocess import postprocess_run
 
+    if (path / "experiment.json").is_file():
+        from odil_wave.experiment.launch import postprocess_experiment
+
+        failed = []
+
+        def redraw(run_dir: Path) -> None:
+            try:
+                written = postprocess_run(run_dir)
+            except Exception as exc:  # noqa: BLE001 - the other runs still redraw
+                failed.append(run_dir.name)
+                print(f"  [postprocess warning] {run_dir.name}: {exc}")
+                return
+            print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+
+        postprocess_experiment(path, postprocess_run=redraw)
+        print(f"summary: {path / 'summary.csv'}")
+        return 1 if failed else 0
+
     try:
-        written = postprocess_run(run_dir)
+        written = postprocess_run(path)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"figures: {run_dir / 'figures'} ({len(written)} files)")
+    print(f"figures: {path / 'figures'} ({len(written)} files)")
     return 0
 
 
@@ -140,10 +162,11 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--postprocess",
-        metavar="RUN_DIR",
+        metavar="DIR",
         default=None,
-        help="Redraw a saved run's figures and CSVs into <RUN_DIR>/figures/ "
-        "and exit. Reads only the run directory; never re-runs a solve.",
+        help="Redraw a saved run's figures and CSVs into <DIR>/figures/ and "
+        "exit; for an experiment directory, every run's and its summary.csv. "
+        "Reads only the directory; never re-runs a solve.",
     )
     args = parser.parse_args(argv)
 
@@ -239,6 +262,9 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
 
     from odil_wave.experiment.launch import launch
 
+    # No postprocess_run hook: run_inverse already post-processes every run it
+    # returns (completed, failed or interrupted), so passing one would draw
+    # each run's figures twice.
     return launch(
         args.experiment, dry_run=args.dry_run, out=args.out, repo_root=repo_root
     )

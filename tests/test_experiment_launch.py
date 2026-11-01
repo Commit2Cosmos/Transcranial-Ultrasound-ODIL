@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import shutil
 import socket
 from pathlib import Path
 
@@ -377,3 +378,19 @@ def test_postprocessing_an_experiment_reprocesses_every_run(git_repo, tmp_path):
 
     assert seen == ["00_reg-0", "01_reg-1e-6"]
     assert (out / "summary.csv").read_text() == expected
+
+
+def test_postprocess_flag_on_an_experiment_redraws_every_run(git_repo, tmp_path):
+    out = tmp_path / "experiment"
+    argv = ["--experiment", str(write_spec(git_repo)), "--out", str(out)]
+    assert main.main(argv, repo_root=git_repo) == 0
+    runs = sorted((out / "runs").iterdir())
+    for run_dir in runs:
+        shutil.rmtree(run_dir / "figures")
+    (out / "summary.csv").unlink()
+
+    assert main.main(["--postprocess", str(out)]) == 0
+
+    for run_dir in runs:
+        assert (run_dir / "figures" / "convergence.png").is_file()
+    assert [r["label"] for r in read_csv(out / "summary.csv")] == ["reg-0", "reg-1e-6"]

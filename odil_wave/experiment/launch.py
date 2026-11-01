@@ -23,7 +23,10 @@ from .rundir import REPO_ROOT, SCHEMA_VERSION, GitState, RunStartError, _git, wr
 from .spec import ExperimentSpec, SweepRun, format_value, load_spec
 from .tape import TAPE_COLUMNS
 
-# Per-run post-processing, called with each run directory once its run ends.
+# An extra per-run hook, called with each run directory once its run ends.
+# ``run_inverse`` already draws each run's figures, so a launch needs none;
+# ``--postprocess <experiment_dir>`` passes the redraw through
+# :func:`postprocess_experiment`.
 PostprocessRun = Callable[[Path], None]
 
 

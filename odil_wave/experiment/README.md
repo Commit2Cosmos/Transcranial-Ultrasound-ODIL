@@ -54,6 +54,7 @@ demand, e.g. after a post-processing change:
 
 ```bash
 python main.py --postprocess outputs/runs/<run>   # exit 2 if it is no run directory
+python main.py --postprocess outputs/experiments/<experiment>  # every run + summary.csv
 ```
 
 ```python
