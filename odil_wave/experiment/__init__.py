@@ -8,8 +8,8 @@ from .config import (
     resolve_config,
     validate_config,
 )
+from .live import LiveVelocityView
 from .plots import (
-    LiveVelocityView,
     animate_bands,
     load_band_velocities,
     load_config,
@@ -27,6 +27,7 @@ from .launch import postprocess_experiment
 from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
 from .runner import (
     BandResult,
+    LoggedRow,
     RunResult,
     run_frequency_band,
     run_inverse,
@@ -61,8 +62,9 @@ __all__ = [
     "BandTape",
     "TAPE_COLUMNS",
     "NonFiniteError",
-    # plots / analysis
+    # live view
     "LiveVelocityView",
+    # plots / analysis
     "animate_bands",
     "load_band_velocities",
     "load_config",
@@ -75,6 +77,7 @@ __all__ = [
     # runner
     "RunResult",
     "BandResult",
+    "LoggedRow",
     "run_inverse",
     "run_frequency_band",
 ]

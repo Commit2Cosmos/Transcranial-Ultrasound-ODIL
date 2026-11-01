@@ -101,7 +101,13 @@ def test_a_dirty_tree_refuses_to_launch(git_repo, capsys):
 
 
 @pytest.mark.parametrize(
-    "extra", [["--config", "run.yaml"], ["-o", "optimiser.n_iter=2"], ["--scratch"]]
+    "extra",
+    [
+        ["--config", "run.yaml"],
+        ["-o", "optimiser.n_iter=2"],
+        ["--scratch"],
+        ["--live"],
+    ],
 )
 def test_the_spec_alone_defines_the_runs(git_repo, extra, capsys):
     spec = write_spec(git_repo)

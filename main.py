@@ -10,6 +10,7 @@ Examples
         --override optimiser.n_iter=40
     python main.py --config configs/<run-config>.yaml --dry-run
     python main.py --scratch --config configs/<run-config>.yaml  # dirty tree
+    python main.py --live --config configs/<run-config>.yaml     # watch it
     python main.py --experiment configs/experiments/NNNN-slug.yaml [--dry-run]
 
 A run is written to ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` and
@@ -109,6 +110,11 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         "saving its git diff. No experiment record may cite it.",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Redraw a live view of the run in one window (needs a display).",
+    )
+    parser.add_argument(
         "--experiment",
         default=None,
         metavar="SPEC",
@@ -168,8 +174,14 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    on_log = None
+    if args.live:
+        from odil_wave.experiment.live import LiveVelocityView
+
+        on_log = LiveVelocityView()
+
     try:
-        result = run_inverse(cfg, run_directory)
+        result = run_inverse(cfg, run_directory, on_log=on_log)
     except ConfigError as exc:  # found at startup, once the problem is built
         print(f"config error: {exc}", file=sys.stderr)
         return 2
@@ -192,6 +204,12 @@ def _experiment(args: argparse.Namespace, repo_root: Optional[Path]) -> int:
         print(
             f"error: {', '.join(given)} can't be used with --experiment: "
             "the committed spec alone defines the runs",
+            file=sys.stderr,
+        )
+        return 2
+    if args.live:
+        print(
+            "error: --live watches a single run; it can't be used with --experiment",
             file=sys.stderr,
         )
         return 2
