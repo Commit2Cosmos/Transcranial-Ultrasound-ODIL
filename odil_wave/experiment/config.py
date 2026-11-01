@@ -33,6 +33,8 @@ from typing import (
 
 import yaml
 
+from .atomic import write_text_atomic
+
 
 class ConfigError(ValueError):
     """Raised for malformed / unknown configuration entries."""
@@ -396,8 +398,7 @@ class RunConfig:
     def to_json(self, path: Union[str, Path]) -> Path:
         """Write the config to ``path`` as JSON; return the path."""
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
+        write_text_atomic(p, json.dumps(self.to_dict(), indent=2, sort_keys=False))
         return p
 
 
@@ -511,18 +512,9 @@ def load_config_file(path: Union[str, Path]) -> Dict[str, Any]:
 def _dump_yaml(obj: Dict[str, Any], path: Union[str, Path]) -> Path:
     """Atomically write ``obj`` to ``path`` as block-style YAML."""
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(obj, sort_keys=False, default_flow_style=False, width=100)
-    _atomic_write(p, text)
+    write_text_atomic(p, text)
     return p
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically (write tmp then rename)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
+from .atomic import atomic_open
 from .config import ConfigError
 from .rundir import REPO_ROOT, SCHEMA_VERSION, GitState, RunStartError, _git, write_json
 from .spec import ExperimentSpec, SweepRun, format_value, load_spec
@@ -241,12 +242,10 @@ def write_summary(exp_dir: Path) -> None:
         }
         row.update({k: "" if final.get(k) is None else final[k] for k in TAPE_COLUMNS})
         rows.append(row)
-    tmp = exp_dir / "summary.csv.tmp"
-    with open(tmp, "w", newline="") as f:
+    with atomic_open(exp_dir / "summary.csv", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(rows)
-    tmp.replace(exp_dir / "summary.csv")
 
 
 def _final_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:

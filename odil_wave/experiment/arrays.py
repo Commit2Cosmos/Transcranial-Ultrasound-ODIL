@@ -9,7 +9,6 @@ cover the interior only; the full-grid model is the interior padded with
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,20 +17,16 @@ import torch
 
 from odil_wave.optimisation import Iterate
 
+from .atomic import atomic_open
+
 # The fixed saved shots: the transducers nearest these ring angles.
 SAVED_ANGLES_DEG = (0.0, 90.0, 180.0, 270.0)
 
 
 def write_npz(path: Path, arrays: Dict[str, np.ndarray]) -> None:
     """Atomically write ``arrays`` as an uncompressed ``.npz`` (tmp + rename)."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "wb") as f:
+    with atomic_open(path, "wb") as f:
         np.savez(f, **arrays)
-        f.flush()
-        os.fsync(f.fileno())
-    tmp.replace(path)
 
 
 def transducer_angles_deg(n_transducers: int) -> np.ndarray:

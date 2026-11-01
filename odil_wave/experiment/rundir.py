@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from .atomic import write_text_atomic
+
 # Version of the run directory's formats (``metadata.json``); a format change
 # bumps it and readers keep a path for every version from 1.
 SCHEMA_VERSION = 1
@@ -142,13 +144,13 @@ def new_run_directory(
         raise RunStartError(f"run directory {path} already exists and is not empty")
     path.mkdir(parents=True, exist_ok=True)
     if scratch:
-        _write_atomic(path / "git.diff", _git(root, "diff", "HEAD") or "")
+        write_text_atomic(path / "git.diff", _git(root, "diff", "HEAD") or "")
     return RunDirectory(path=path, scratch=scratch, git=state, repo_root=root)
 
 
 def write_json(path: Path, obj: Any) -> None:
     """Atomically write ``obj`` to ``path`` as indented JSON (``str`` fallback)."""
-    _write_atomic(path, json.dumps(obj, indent=2, default=_json_default))
+    write_text_atomic(path, json.dumps(obj, indent=2, default=_json_default))
 
 
 def _json_default(o: Any) -> Any:
@@ -157,14 +159,6 @@ def _json_default(o: Any) -> Any:
     if callable(item) and getattr(o, "shape", None) == ():
         return item()
     return str(o)
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` via a temp file and a rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
 
 
 def _sha256(path: Path) -> Optional[str]:
