@@ -90,6 +90,7 @@ def test_an_experiment_runs_every_value_into_one_directory(git_repo):
     assert resolved["loss"]["weights"]["reg"] == 1e-6
     assert float(rows[1]["value"]) == 1e-6
     assert rows[1]["iter_total"] == "1"
+    assert (exp / "figures" / "final_metrics.png").is_file()
 
 
 def test_a_dirty_tree_refuses_to_launch(git_repo, capsys):
@@ -240,6 +241,8 @@ def test_a_failed_run_does_not_stop_the_others(git_repo):
         ("data-10", "completed"),
     ]
     assert rows[0]["ssim_brain"] == "" and rows[1]["ssim_brain"] != ""
+    # One completed run: nothing to compare.
+    assert not (exp / "figures").exists()
 
 
 def test_the_experiment_record_ties_it_to_its_commit_and_spec(git_repo, tmp_path):
@@ -387,10 +390,12 @@ def test_postprocess_flag_on_an_experiment_redraws_every_run(git_repo, tmp_path)
     runs = sorted((out / "runs").iterdir())
     for run_dir in runs:
         shutil.rmtree(run_dir / "figures")
+    shutil.rmtree(out / "figures")
     (out / "summary.csv").unlink()
 
     assert main.main(["--postprocess", str(out)]) == 0
 
     for run_dir in runs:
         assert (run_dir / "figures" / "convergence.png").is_file()
+    assert (out / "figures" / "accuracy_cost.png").is_file()
     assert [r["label"] for r in read_csv(out / "summary.csv")] == ["reg-0", "reg-1e-6"]

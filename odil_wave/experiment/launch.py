@@ -159,8 +159,22 @@ def postprocess_experiment(
 def postprocess_experiment_level(exp_dir: Path) -> None:
     """The experiment's own post-processing, at the end of a launch and on
     ``--postprocess``, from the experiment directory alone: ``summary.csv``,
-    and the place for experiment figures (written to ``figures/``)."""
+    then the experiment figures in ``figures/`` (only with more than one
+    completed run). A figure error is reported, never failing the experiment:
+    ``--postprocess`` redraws them."""
+    from .experiment_figures import postprocess_experiment_figures
+
     write_summary(exp_dir)
+    try:
+        written = postprocess_experiment_figures(exp_dir)
+    except Exception as exc:  # noqa: BLE001 - figures never fail an experiment
+        print(
+            f"  [post-processing warning] {type(exc).__name__}: {exc}; "
+            f"redraw with: main.py --postprocess {exp_dir}"
+        )
+        return
+    if written:
+        print(f"figures: {exp_dir / 'figures'} ({len(written)} files)")
 
 
 def _run_one(
