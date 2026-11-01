@@ -73,6 +73,27 @@ def test_a_scratch_run_is_marked_and_saves_its_diff(git_repo, quick_config):
     assert "-committed" in diff and "+changed" in diff
 
 
+def test_a_scratch_runs_diff_rebuilds_its_tree_with_untracked_files(git_repo, tmp_path):
+    """Applied to a clean checkout of the commit, ``git.diff`` gives back the
+    tracked changes and the untracked, non-ignored files; ignored ones stay out."""
+    from odil_wave.experiment import new_run_directory
+
+    (git_repo / "tracked.txt").write_text("changed\n")
+    (git_repo / "pkg").mkdir()
+    (git_repo / "pkg" / "new.py").write_text("x = 1\n")
+    (git_repo / "outputs").mkdir()
+    (git_repo / "outputs" / "ignored.txt").write_text("not code\n")
+
+    run = new_run_directory(scratch=True, out=tmp_path / "run", repo_root=git_repo)
+
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", str(git_repo), str(clone))
+    git(clone, "apply", str(run.path / "git.diff"))
+    assert (clone / "tracked.txt").read_text() == "changed\n"
+    assert (clone / "pkg" / "new.py").read_text() == "x = 1\n"
+    assert not (clone / "outputs").exists()
+
+
 def test_metadata_ties_the_run_to_its_commit_and_lockfile(git_repo, quick_config):
     assert main.main(["--config", str(quick_config)], repo_root=git_repo) == 0
 

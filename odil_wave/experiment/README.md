@@ -297,7 +297,9 @@ under `outputs/`.
 
 A standalone run (`--config` / `--override`, no `--experiment`) also requires a
 clean tree. `--scratch` allows a dirty one: `_scratch` is appended to the
-directory name, `metadata.json` has `scratch: true`, and `git.diff` is saved.
+directory name, `metadata.json` has `scratch: true`, and `git.diff` is saved:
+every change from HEAD, untracked (non-ignored) files included, so `git apply`
+on a clean checkout of the commit rebuilds the tree.
 No experiment record may cite a scratch run.
 
 ### `--reproduce <experiment-id>`
@@ -345,7 +347,7 @@ experiments are written" above):
 <run_dir>/
   config_resolved.yaml     # every effective value used by the run
   metadata.json            # written once at start: code/env/host/git/uv.lock/seed/grid
-  git.diff                 # scratch runs only: tracked + staged diff
+  git.diff                 # scratch runs only: diff from HEAD incl. untracked files
   tape.csv                 # per-row metric tape (see below); empty cell = null
   problem.npz              # c_star, c0 (interior), pml_c, brain_mask,
                            #   skull_mask, transducer_angles_deg, interior_slice

@@ -18,7 +18,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from .atomic import write_text_atomic
 
@@ -103,7 +103,8 @@ def new_run_directory(
     ----------
     scratch : bool
         Allow a dirty tree (or no repository): ``_scratch`` is appended to the
-        directory name and the tracked + staged ``git.diff`` is saved in it.
+        directory name and its ``git.diff`` (:func:`scratch_diff`: tracked
+        changes and untracked, non-ignored files) is saved in it.
     out : str or Path, optional
         The run directory itself, instead of
         ``<repo_root>/outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]``.
@@ -138,7 +139,7 @@ def new_run_directory(
         raise RunStartError(f"run directory {path} already exists and is not empty")
     path.mkdir(parents=True, exist_ok=True)
     if scratch:
-        write_text_atomic(path / "git.diff", run_git(root, "diff", "HEAD") or "")
+        write_text_atomic(path / "git.diff", scratch_diff(root))
     return RunDirectory(path=path, scratch=scratch, git=state, repo_root=root)
 
 
@@ -193,8 +194,22 @@ def _sha256(path: Path) -> Optional[str]:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def run_git(repo_root: Path, *args: str) -> Optional[str]:
-    """``git -C repo_root <args>``'s raw stdout, or ``None`` if it fails."""
+def scratch_diff(repo_root: Path) -> str:
+    """A scratch run's ``git.diff``: every change from HEAD, the untracked,
+    non-ignored files included as new files, so ``git apply`` on a clean
+    checkout of the commit rebuilds the tree (binary files too)."""
+    parts = [run_git(repo_root, "diff", "--binary", "HEAD") or ""]
+    untracked = run_git(repo_root, "ls-files", "--others", "--exclude-standard", "-z")
+    for rel in filter(None, (untracked or "").split("\0")):
+        # --no-index exits 1 when the files differ, as they always do here.
+        new_file = ("diff", "--no-index", "--binary", "--", "/dev/null", rel)
+        parts.append(run_git(repo_root, *new_file, ok=(0, 1)) or "")
+    return "".join(parts)
+
+
+def run_git(repo_root: Path, *args: str, ok: Tuple[int, ...] = (0,)) -> Optional[str]:
+    """``git -C repo_root <args>``'s raw stdout, or ``None`` if it fails (exits
+    with a code not in ``ok``)."""
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_root), *args],
@@ -204,4 +219,4 @@ def run_git(repo_root: Path, *args: str) -> Optional[str]:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return out.stdout if out.returncode == 0 else None
+    return out.stdout if out.returncode in ok else None
