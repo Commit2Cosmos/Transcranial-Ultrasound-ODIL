@@ -14,7 +14,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .config import (
     ConfigError,
@@ -33,6 +33,10 @@ _SWEEP_KEYS = ("key", "values", "labels")
 _ID = re.compile(r"^(\d{4})-[a-z0-9]+(?:-[a-z0-9]+)*$")
 # A label names a run's directory, so it stays filesystem-safe.
 _LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+# The one override an experiment accepts (--reproduce passes it to regenerate
+# on another device), and the devices it may name.
+DEVICE_KEY = "runtime.device"
+_DEVICE = re.compile(r"^(cpu|mps|cuda(:\d+)?)$")
 
 
 @dataclass(frozen=True)
@@ -65,7 +69,10 @@ class ExperimentSpec:
 
 
 def load_spec(
-    path: Union[str, Path], *, repo_root: Optional[Union[str, Path]] = None
+    path: Union[str, Path],
+    *,
+    repo_root: Optional[Union[str, Path]] = None,
+    device: Optional[str] = None,
 ) -> ExperimentSpec:
     """Parse and validate the experiment spec at ``path``, resolving every run.
 
@@ -77,6 +84,9 @@ def load_spec(
         The repository whose ``configs/experiments/`` specs and
         ``docs/experiments/`` records must not use the spec's id number.
         Without it the id number isn't checked.
+    device : str, optional
+        ``runtime.device`` for the baseline and every run, in place of the
+        spec's (see :func:`device_override`).
 
     Raises
     ------
@@ -101,8 +111,9 @@ def load_spec(
     baseline_user = data.get("baseline")
     if not isinstance(baseline_user, dict):
         raise ConfigError("baseline must be a run config (a mapping)")
+    on_device = {} if device is None else _nest(DEVICE_KEY, device)
     try:
-        baseline = resolve_config(baseline_user)
+        baseline = resolve_config(deep_merge(baseline_user, on_device))
         validate_config(baseline)
     except ConfigError as exc:
         raise ConfigError(f"baseline: {exc}") from None
@@ -112,7 +123,8 @@ def load_spec(
     for index, (label, value) in enumerate(zip(labels, values)):
         name = f"{index:02d}_{label}"
         try:
-            cfg = resolve_config(deep_merge(baseline_user, _nest(key, value)))
+            run_user = deep_merge(baseline_user, _nest(key, value))
+            cfg = resolve_config(deep_merge(run_user, on_device))
             validate_config(cfg)
         except ConfigError as exc:
             raise ConfigError(f"run {name}: {exc}") from None
@@ -139,6 +151,29 @@ def load_spec(
         runs=runs,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
+
+
+def device_override(overrides: Sequence[str]) -> Optional[str]:
+    """The device named by ``-o runtime.device=<device>`` among ``overrides``,
+    or ``None`` when there are none.
+
+    Raises
+    ------
+    ConfigError
+        An override of another key, or a device other than cpu, cuda[:N], mps.
+    """
+    device = None
+    for override in overrides:
+        key, _, value = override.partition("=")
+        if key.strip() != DEVICE_KEY:
+            raise ConfigError(
+                f"only -o {DEVICE_KEY}=<device> may be given, not {override!r}: "
+                "the committed spec alone defines the runs"
+            )
+        device = value.strip()
+        if not _DEVICE.match(device):
+            raise ConfigError(f"{DEVICE_KEY} must be cpu, cuda or mps, not {value!r}")
+    return device
 
 
 def _check_id(exp_id: Any, path: Path, repo_root: Optional[Union[str, Path]]) -> str:

@@ -107,6 +107,7 @@ def test_a_dirty_tree_refuses_to_launch(git_repo, capsys):
     [
         ["--config", "run.yaml"],
         ["-o", "optimiser.n_iter=2"],
+        ["-o", "runtime.device=cpu", "-o", "optimiser.n_iter=2"],
         ["--scratch"],
         ["--live"],
     ],
@@ -117,6 +118,21 @@ def test_the_spec_alone_defines_the_runs(git_repo, extra, capsys):
     assert main.main(["--experiment", str(spec), *extra], repo_root=git_repo) == 2
     assert "--experiment" in capsys.readouterr().err
     assert not (git_repo / "outputs").exists()
+
+
+def test_a_device_override_runs_every_run_on_that_device(git_repo, tmp_path):
+    # As --reproduce passes it, to regenerate on another device than the spec's.
+    baseline = deep_merge(BASELINE, {"runtime": {"device": "cuda"}})
+    spec = write_spec(git_repo, baseline=baseline)
+    exp = tmp_path / "exp"
+
+    argv = ["--experiment", str(spec), "--out", str(exp), "-o", "runtime.device=cpu"]
+    assert main.main(argv, repo_root=git_repo) == 0
+
+    assert json.loads((exp / "experiment.json").read_text())["device"] == "cpu"
+    for run in (exp / "runs").iterdir():
+        resolved = yaml.safe_load((run / "config_resolved.yaml").read_text())
+        assert resolved["runtime"]["device"] == "cpu"
 
 
 def dry_run(repo: Path, spec: Path) -> int:

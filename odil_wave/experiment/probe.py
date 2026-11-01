@@ -23,11 +23,15 @@ PROBE_ITERATIONS = 3
 
 
 def probe(
-    spec_path: Union[str, Path], *, repo_root: Optional[Union[str, Path]] = None
+    spec_path: Union[str, Path],
+    *,
+    repo_root: Optional[Union[str, Path]] = None,
+    device: Optional[str] = None,
 ) -> int:
     """Run a Probe run of the spec at ``spec_path`` and print the estimates.
 
-    ``repo_root`` is the code's repository, holding ``outputs/probes/``.
+    ``repo_root`` is the code's repository, holding ``outputs/probes/``;
+    ``device``, if given, replaces the spec's ``runtime.device``.
     Returns the exit code: ``0`` the probe completed, ``1`` it failed or was
     interrupted, ``2`` it could not start (a spec or config error).
     """
@@ -37,7 +41,7 @@ def probe(
     root = Path(repo_root) if repo_root is not None else REPO_ROOT
     try:
         # No repo_root: a probe reserves no id, so the id number isn't checked.
-        spec = load_spec(spec_path)
+        spec = load_spec(spec_path, device=device)
         config = probe_config(spec.baseline)
     except ConfigError as exc:
         print(f"spec error: {exc}", file=sys.stderr)

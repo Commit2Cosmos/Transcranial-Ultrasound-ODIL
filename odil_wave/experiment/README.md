@@ -182,10 +182,6 @@ and writes **no** artifacts.
 
 ## Experiments
 
-> **Spec ahead of code.** This section is the design decided in "Experiment
-> spec format and reproduce command" (#56). Not yet implemented: `--reproduce`;
-> it lands with its own issue, which removes this note.
-
 An **experiment** (see `GLOSSARY.md`) varies one parameter or feature of a
 **baseline** run config. Its **experiment spec** is run by one entry point into
 one experiment directory, at one commit.
@@ -242,7 +238,9 @@ sweep:
 - Requires a **clean tree**: `git status --porcelain` is empty (an untracked,
   non-ignored file counts as dirty). Otherwise exit 2.
 - `--config`, `--override` and `--scratch` are errors with `--experiment`: the
-  committed spec alone defines the runs.
+  committed spec alone defines the runs. The one exception is
+  `-o runtime.device=<device>` (cpu, cuda[:N] or mps), which sets every run's
+  device; `--reproduce` passes it to regenerate on another device.
 - The spec must be committed in the repository (`--dry-run` doesn't need it,
   so a spec can be checked while it is written).
 - Runs execute sequentially in `values` order; a failed run doesn't stop the
@@ -317,9 +315,13 @@ machine. It **compares nothing** and never edits the record.
    use. It refuses if `<target>` exists.
 
 The only accepted override is `-o runtime.device=<device>`, to regenerate on a
-device other than the recorded one; any other key is an error. Exit codes:
-`0` all runs completed, `1` a run failed, `2` could not start. Commits from
-before `--experiment` existed cannot be reproduced.
+device other than the recorded one; any other key is an error. It is passed on
+as `--experiment <spec> --out <target> -o runtime.device=<device>`, so it needs
+a recorded commit whose `--experiment` accepts it. Exit codes:
+`0` all runs completed, `1` a run failed, `2` could not start (no record, empty
+`commit` / `spec`, a commit or spec that can't be checked out, an existing
+`<target>`, no `uv`). Commits from before `--experiment` existed cannot be
+reproduced.
 
 ### Compatibility
 
@@ -327,8 +329,10 @@ The spec, `metadata.json` and `experiment.json` carry an integer
 `schema_version` (from 1). Readers (post-processing, the index script) support
 every version from 1 up; a format change bumps the version and adds a reader
 path, never rewrites old directories. The flags `--experiment`, `--out`,
-`--postprocess`, `--reproduce` and `--probe` are a stable contract: a new
-`--reproduce` calls the old `main.py` inside the worktree.
+`--postprocess`, `--reproduce` and `--probe` (and `-o runtime.device=<device>`
+with `--experiment`) are a stable contract: a new `--reproduce` calls the old
+`main.py` inside the worktree, so a later commit may add flags but never
+rename, remove or change the meaning of these.
 
 ---
 
