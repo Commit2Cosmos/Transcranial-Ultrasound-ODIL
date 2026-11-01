@@ -169,7 +169,7 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
 
 def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
     """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
-    the runner built (captured from ``runner._build_optimiser``)."""
+    the runner built (captured from ``runner.build_optimiser``)."""
     user_cfg = deep_merge(
         run_config,
         {
@@ -178,13 +178,13 @@ def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
         },
     )
     built = []
-    original = runner._build_optimiser
+    original = runner.build_optimiser
 
     def spy(*args, **kwargs):
         built.append(original(*args, **kwargs))
         return built[-1]
 
-    monkeypatch.setattr(runner, "_build_optimiser", spy)
+    monkeypatch.setattr(runner, "build_optimiser", spy)
     assert run_inverse(resolve_config(user_cfg), run_directory).status == "completed"
     return built[0]
 

@@ -387,6 +387,11 @@ class JointFreqODIL(Optimiser):
     def c_full_of_z(self, z_m: torch.Tensor) -> torch.Tensor:
         return self.vm_in.build_full_c(self.latent.c_of_z(z_m))
 
+    @property
+    def last_record(self) -> Dict[str, float]:
+        """Diagnostics of the latest ``objective(..., record=True)`` call."""
+        return dict(self._last)
+
     # ------------------------------------------------------------------ #
     # Residuals and objective (the production code path).
     # ------------------------------------------------------------------ #

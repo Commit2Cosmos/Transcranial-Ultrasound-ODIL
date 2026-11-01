@@ -5,6 +5,8 @@ Public entry points
 --------------------
 ``run_inverse(config, run_directory) -> RunResult``  run every continuation band
 ``run_frequency_band(...) -> BandResult``            one continuation stage
+``build_band_loss(...) -> (Wavefield, InverseLoss)`` one band's objective
+``build_optimiser(...) -> JointFreqODIL``            one band's optimiser
 ``build_problem(config) -> Problem``                 (re-exported from problem.py)
 """
 
@@ -15,7 +17,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
@@ -103,7 +105,61 @@ def band_label(frequencies_hz: List[float]) -> str:
 # --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
-def _build_optimiser(
+def build_band_loss(
+    problem: Problem,
+    velocity_model: Any,
+    band_ctx,
+    callback: Optional[LossTape] = None,
+) -> Tuple[Wavefield, InverseLoss]:
+    """Inverse-grid wavefield on ``velocity_model`` and the band's objective.
+
+    Parameters
+    ----------
+    problem : Problem
+        The shared physical problem.
+    velocity_model :
+        The band's starting model.
+    band_ctx :
+        Per-band context (frequencies / geometry / observed data).
+    callback : LossTape, optional
+        Diagnostics tape of the loss.
+
+    Returns
+    -------
+    tuple
+        ``(wf_inv, loss)``.
+    """
+    cfg = problem.cfg
+    wf_inv = Wavefield(problem.grid, band_ctx.freq, velocity_model=velocity_model)
+    wave_eq = WaveEquation(
+        wf_inv,
+        space_order=problem.space_order,
+        damping_scale=problem.damping_scale,
+    )
+    loss_config = LossConfig(
+        wave_eq=wave_eq,
+        geometry=band_ctx.geom,
+        weights=dict(cfg.loss.weights),
+        regulariser=_build_regulariser(cfg),
+    )
+    # PML split: observations synthesised on a separate forward grid are
+    # reduced to receiver traces; otherwise use full observed wavefields.
+    if getattr(band_ctx, "observed_traces", None) is not None:
+        loss = InverseLoss(
+            observed_traces=band_ctx.observed_traces,
+            config=loss_config,
+            callback=callback,
+        )
+    else:
+        loss = InverseLoss(
+            observed_wavefield=band_ctx.observed_wfs,
+            config=loss_config,
+            callback=callback,
+        )
+    return wf_inv, loss
+
+
+def build_optimiser(
     problem: Problem,
     band_ctx,
     wf_inv: Wavefield,
@@ -198,18 +254,6 @@ def run_frequency_band(
     u_init = problem.warm_start(velocity_model, band_ctx)
     warm_s = time.perf_counter() - t_warm
 
-    wf_inv = Wavefield(problem.grid, band_ctx.freq, velocity_model=velocity_model)
-    wave_eq = WaveEquation(
-        wf_inv,
-        space_order=problem.space_order,
-        damping_scale=problem.damping_scale,
-    )
-    loss_config = LossConfig(
-        wave_eq=wave_eq,
-        geometry=band_ctx.geom,
-        weights=dict(cfg.loss.weights),
-        regulariser=_build_regulariser(cfg),
-    )
     band_tape = tape.start_band(band_index, band_ctx)
     # The loss callback keeps the solver's scalar history and result; the
     # tape rows come from ``record_row``.
@@ -218,22 +262,9 @@ def run_frequency_band(
         log_every=cfg.optimiser.log_every,
         store_c_history=False,
     )
-    # PML split: observations synthesised on a separate forward grid are
-    # reduced to receiver traces; otherwise use full observed wavefields.
-    if getattr(band_ctx, "observed_traces", None) is not None:
-        loss = InverseLoss(
-            observed_traces=band_ctx.observed_traces,
-            config=loss_config,
-            callback=loss_tape,
-        )
-    else:
-        loss = InverseLoss(
-            observed_wavefield=band_ctx.observed_wfs,
-            config=loss_config,
-            callback=loss_tape,
-        )
+    wf_inv, loss = build_band_loss(problem, velocity_model, band_ctx, loss_tape)
 
-    opt = _build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
+    opt = build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
     band_arrays = BandArrays(problem, band_ctx)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
