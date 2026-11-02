@@ -1,0 +1,32 @@
+# The tiny single-band joint inversion: the test suite's TINY_RUN_CONFIG and
+# the default config of the run comparison
+#   python -m odil_wave.experiment.compare <ref>
+# Names only the values that differ from the default config.
+
+runtime: {dtype: float64}
+grid:
+  interior_shape: [20, 20]
+  interior_extent: [[0.0, 0.05], [0.0, 0.05]]
+  c_min: 1400.0
+  c_max: 1750.0
+pml: {width: 6}
+time: {t_max: 6.0e-5, init_nt: 200}
+source: {f0: 40000.0, n_cycles: 2.0}
+acquisition: {n_transducers: 8, source_spatial: point}
+# Shepp-Logan has the brain and skull regions the tape scores. A slow skull
+# keeps the truth inside the grid's velocity bounds; a small head keeps the
+# transducers in water and is recovered within the tiny budget.
+truth:
+  profile: shepp_logan
+  scale: 0.6
+  extra: {c_skull: 1700.0}
+init: {profile: homogeneous}
+continuation:
+  bands:
+    - frequencies_hz: [40000.0]
+loss:
+  weights: {data: 10.0}
+optimiser: {n_iter: 10, log_every: 1}
+# A 5-cell SSIM window leaves part of the tiny brain region after erosion.
+metrics:
+  ssim: {sigma: 0.5}
