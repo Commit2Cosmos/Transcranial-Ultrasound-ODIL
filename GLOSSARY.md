@@ -91,6 +91,9 @@ One transmission by one transducer, recorded by all the other transducers.
 **Offset**:
 The separation along the ring between the transmitting transducer and a recording transducer.
 
+**Trace**:
+What one transducer records of one shot at one frequency.
+
 **Interior**:
 The physical region being imaged; everything on the grid except the PML.
 _Avoid_: active region, domain
@@ -114,6 +117,10 @@ The part of the objective that penalises the wave-equation residual over the int
 
 **Data term**:
 The part of the objective that penalises the mismatch between the wavefield at the receivers and the observed data.
+
+**Trace weighting**:
+How much the data term counts each trace's misfit relative to the other traces. Separate from the data weight, which balances the data term against the other terms.
+_Avoid_: data normalisation
 
 **Regularisation term**:
 The part of the objective that penalises roughness of the velocity model, averaged over the interior in dimensionless units so that its size does not depend on the grid resolution.
