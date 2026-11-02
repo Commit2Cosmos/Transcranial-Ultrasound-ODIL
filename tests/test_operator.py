@@ -182,6 +182,8 @@ def test_apply_conv_laplacian_complex_matches_real_imag_split():
 
 
 def test_laplacian_stencil_6th_order_matches_known_coefficients():
+    """The 6th-order cross stencil carries the textbook 1D coefficients,
+    scaled by 1/dx**2 on the x arm and 1/dy**2 on the y arm."""
     K, pad = laplacian_stencil(6, dx_nd=1.0, dy_nd=0.5)
     assert pad == 3 and K.shape == (7, 7)
     # 1D coefficients (Fornberg): offsets 1..3, then the centre; cy = 1/0.5**2.
@@ -200,6 +202,7 @@ def test_laplacian_stencil_6th_order_matches_known_coefficients():
 
 @pytest.mark.parametrize("space_order", [3, 12])
 def test_laplacian_stencil_unsupported_order_raises(space_order):
+    """Orders without a coefficient table are rejected."""
     with pytest.raises(ValueError):
         laplacian_stencil(space_order, 1.0, 1.0)
 

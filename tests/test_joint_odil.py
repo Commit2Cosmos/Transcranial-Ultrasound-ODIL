@@ -102,6 +102,27 @@ def test_objective_vanishes_at_truth(truth_problem):
     assert opt._last["data_term"] < 1e-20
 
 
+def test_minimise_writes_residual_diagnostics_to_the_loss(truth_problem):
+    """Each logged iteration leaves the scalar diagnostics on
+    ``loss.last_residuals`` and appends them to the loss's callback tape."""
+    opt = _make_optimiser(truth_problem)
+    opt.n_iter = 2
+    _, tape = opt.minimise()
+    assert set(opt.loss.last_residuals) == {
+        "pde_rms",
+        "data_rms",
+        "pde_loss",
+        "data_loss",
+        "pde_term",
+        "data_term",
+        "reg_term",
+        "pde_rel_residual",
+        "n_evaluations",
+    }
+    assert tape is opt.loss.callback
+    assert len(tape.history["pde_rms"]) == len(tape.history["loss"]) >= 2
+
+
 def test_pde_scale_is_the_wave_term(truth_problem):
     """pde_scale is |lambda_tt| * u_ref per (shot, frequency), u_ref the interior
     RMS of the warm start (ADR-0002), independent of the source."""

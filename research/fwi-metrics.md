@@ -118,7 +118,7 @@ Current state (read from code):
 How the current metrics are computed:
 - `data_rms` = √mean|syn − obs|² over all shots × frequencies × receivers, absolute.
 - `pde_rms` is absolute.
-- PDE-to-source ratio = pde_rms / src_rms (no longer recorded since #31; the tape's `pde_rel_residual` is the normalised PDE residual).
+- PDE-to-source ratio = pde_rms / src_rms (only the since-removed loss-side residual path computed it; the joint optimiser never recorded it, and the tape's `pde_rel_residual` is the normalised PDE residual).
 - `rel_c_error` = ‖c−c*‖/‖c*‖ over the whole interior.
 - `ssim_head_roi`: the per-pixel SSIM map is computed over the interior and averaged inside `head_mask`. Defaults are win 7, no Gaussian, skimage's default sample covariance; `data_range` is the truth's peak-to-peak inside the mask.
 

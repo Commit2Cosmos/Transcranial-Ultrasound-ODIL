@@ -109,7 +109,7 @@ class SpatialOperator(DenseOperator):
     """Spatial Laplacian on the t-1 field, cell-centred grid."""
 
     @abstractmethod
-    def apply(self, utm: torch.Tensor, **kwargs) -> torch.Tensor:
+    def apply(self, utm: torch.Tensor) -> torch.Tensor:
         """Discrete Laplacian ``u_xx + u_yy`` on ``utm`` (reflect padding).
 
         Parameters
