@@ -215,8 +215,10 @@ def test_objective_gradient_with_regulariser(truth_problem):
     """The regulariser path is differentiated correctly as well."""
     opt = _make_optimiser(
         truth_problem,
-        regulariser=Regulariser(kind="tikhonov", eps=1e-8),
-        reg_weight=1e-6,
+        regulariser=Regulariser(
+            kind="tikhonov", eps=1e-4, grid=truth_problem.wavefield.grid
+        ),
+        reg_weight=1e-2,
     )
     # the regulariser term actually contributes at the perturbed point.
     plain = _make_optimiser(truth_problem)

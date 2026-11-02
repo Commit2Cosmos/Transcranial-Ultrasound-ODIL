@@ -127,9 +127,9 @@ def test_operators_require_configured_params(name, wave_stack):
         HelmholtzSolver(wf, geom, **_without(OPERATOR_KW, name))
 
 
-@pytest.mark.parametrize("name", ["kind", "eps"])
-def test_regulariser_requires_configured_params(name):
-    kw = dict(kind="tv_iso", eps=1e-8)
+@pytest.mark.parametrize("name", ["kind", "eps", "grid"])
+def test_regulariser_requires_configured_params(name, grid):
+    kw = dict(kind="tv_iso", eps=1e-4, grid=grid)
     with pytest.raises(TypeError, match=name):
         Regulariser(**_without(kw, name))
 

@@ -269,14 +269,21 @@ class ContinuationCfg:
 class RegulariserCfg:
     """Regulariser on the interior velocity; active iff ``loss.weights.reg > 0``.
 
+    The regularisation value ``R`` is dimensionless and resolution-independent: the
+    interior mean of ``|grad' c'|^p`` with ``c' = c / c0`` and
+    ``grad' = L0 * grad`` (the grid's scales).
+
     Params:
-    * ``name``: ``"tv_iso"`` | ``"tikhonov"`` | ``"tv_aniso"``.
+    * ``name``: ``"tv_iso"`` (mean of ``sqrt(|grad' c'|^2 + eps) - sqrt(eps)``)
+      | ``"tikhonov"`` (mean of ``|grad' c'|^2``) | ``"tv_aniso"`` (mean of
+      ``|d'_x c'| + |d'_y c'|``).
     * ``eps``: > 0 smoothing floor inside the isotropic-TV square root (used
-      by ``tv_iso`` only).
+      by ``tv_iso`` only), a squared dimensionless gradient: ``sqrt(eps)`` is
+      a contrast of ``sqrt(eps) * c0`` across ``L0`` (1% of ``c0`` at 1e-4).
     """
 
     name: str = "tv_iso"
-    eps: float = 1e-8
+    eps: float = 1e-4
 
 
 @dataclass(frozen=True)
@@ -708,6 +715,10 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             f"loss.regulariser.name must be one of {list(_REGULARISERS)}, "
             f"got {loss.regulariser.name!r}"
+        )
+    if float(loss.regulariser.eps) <= 0:
+        raise ConfigError(
+            f"loss.regulariser.eps must be > 0, got {loss.regulariser.eps}"
         )
 
     # The tape scores the brain and skull regions of the truth model.

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+from odil_wave.grid import Grid
 from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
@@ -139,7 +140,7 @@ def build_band_loss(
     loss_config = LossConfig(
         wave_eq=wave_eq,
         geometry=band_ctx.geom,
-        regulariser=_build_regulariser(cfg),
+        regulariser=_build_regulariser(cfg, problem.grid),
     )
     # PML split: observations synthesised on a separate forward grid are
     # reduced to receiver traces; otherwise use full observed wavefields.
@@ -352,12 +353,13 @@ def run_frequency_band(
     )
 
 
-def _build_regulariser(cfg: RunConfig):
+def _build_regulariser(cfg: RunConfig, grid: Grid):
     """Build the configured :class:`~odil_wave.loss.Regulariser`, or ``None``.
 
     The regulariser is active iff ``loss.weights['reg'] > 0``; then
     ``loss.regulariser.name`` selects the penalty kind (``tv_iso`` /
-    ``tikhonov`` / ``tv_aniso``) and ``eps`` the ``tv_iso`` smoothing floor.
+    ``tikhonov`` / ``tv_aniso``) and ``eps`` the ``tv_iso`` smoothing floor;
+    ``grid`` supplies the spacing and the scales ``L0`` and ``c0``.
     Returns ``None`` otherwise, so :class:`~odil_wave.loss.LossConfig` omits the
     reg term. The scalar weight itself is applied by
     :class:`~odil_wave.optimisation.JointFreqODIL` in its objective.
@@ -365,7 +367,7 @@ def _build_regulariser(cfg: RunConfig):
     if float(cfg.loss.weights["reg"]) <= 0.0:
         return None
     reg = cfg.loss.regulariser
-    return Regulariser(kind=reg.name, eps=reg.eps)
+    return Regulariser(kind=reg.name, eps=reg.eps, grid=grid)
 
 
 # --------------------------------------------------------------------------- #

@@ -15,4 +15,4 @@ continuation:
       n_iter: 20
 
 loss:
-  weights: {reg: 1.0e-6}
+  weights: {reg: 0.42}

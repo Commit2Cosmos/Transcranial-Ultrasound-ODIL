@@ -12,8 +12,10 @@ single discrete loss
 L(u, c) = w_pde · mean|r_pde|²  +  w_data · mean|r_data|²  +  w_reg · R(c)
 ```
 
-where `r_pde` is the discrete wave-equation residual and `r_data` is the misfit
-at the receivers. The PDE is a *soft* penalty, so `u` and `c` are recovered
+where `r_pde` is the discrete wave-equation residual, `r_data` is the misfit
+at the receivers and `R(c)` is the interior mean of `|∇'c'|^p` in the grid's
+dimensionless units (`c' = c/c0`, `∇' = L0·∇`), so its size does not depend on
+the resolution. The PDE is a *soft* penalty, so `u` and `c` are recovered
 jointly.
 
 ---
@@ -120,7 +122,7 @@ or removed keys are rejected.
 | `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s`, `source_spatial` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. The source is a density that integrates to 1 on any grid: a Gaussian of width `sigma_s` (metres, default 3.4 mm) or a point `1/(dx·dy)`; see below. |
 | `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
-| `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`). |
+| `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`): the dimensionless, resolution-independent interior mean of `\|∇'c'\|^p`; `eps` (default 1e-4) is `tv_iso`'s smoothing floor, a squared dimensionless gradient. |
 | `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
 | `metrics`      | `ssim.sigma` | Gaussian window of the tape's `ssim_brain`; the truth must have brain and skull regions (`shepp_logan`/`shepp_logan_skull`). |
 
