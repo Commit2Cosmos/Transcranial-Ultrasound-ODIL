@@ -22,7 +22,13 @@ from odil_wave.experiment import (
     runner,
 )
 
-from conftest import make_geometry, make_grid, make_model, make_source
+from conftest import (
+    make_geometry,
+    make_grid,
+    make_model,
+    make_source,
+    rel_interior_error,
+)
 
 
 def _saved_c(band_dir) -> np.ndarray:
@@ -194,6 +200,13 @@ def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
             "optimiser": {"n_iter": 1, "inner_max_iter": 2},
         },
     )
+    built = _spy_built_optimisers(monkeypatch)
+    assert run_inverse(resolve_config(user_cfg), run_directory).status == "completed"
+    return built[0]
+
+
+def _spy_built_optimisers(monkeypatch) -> list:
+    """A list that collects every optimiser ``runner.build_optimiser`` builds."""
     built = []
     original = runner.build_optimiser
 
@@ -202,8 +215,7 @@ def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
         return built[-1]
 
     monkeypatch.setattr(runner, "build_optimiser", spy)
-    assert run_inverse(resolve_config(user_cfg), run_directory).status == "completed"
-    return built[0]
+    return built
 
 
 def _objective_off_truth(opt):
@@ -302,3 +314,39 @@ def test_pde_diagonal_preconditioner_runs_end_to_end(tiny_run_config, new_run):
     info = summary["optimiser_result"]["scale_info"]
     assert info["model_preconditioner"] == "pde_diagonal"
     assert np.isfinite(info["precond_target"]) and info["precond_target"] > 0
+
+
+@pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
+def test_run_inverse_started_at_the_truth_stays_there(
+    tiny_run_config, monkeypatch, new_run, mode
+):
+    """With init = truth (inverse crime, no regulariser), the warm start seeds
+    the true wavefield as the initial wavefield, and the run leaves (c, u) at
+    the truth. Measured: objective
+    2.0e-29 (threshold 1e-20); c and u errors 6e-17 / 7e-17 (threshold 1e-8)."""
+    user_cfg = deep_merge(
+        tiny_run_config,
+        {
+            "init": tiny_run_config["truth"],
+            "loss": {"weights": {"reg": 0.0}},
+            "optimiser": {"model_preconditioner": mode},
+        },
+    )
+    cfg = resolve_config(user_cfg)
+    assert cfg.init == cfg.truth and cfg.runtime.dtype == "float64"
+    problem = build_problem(cfg)
+    (band,) = cfg.continuation.bands
+    u_true = torch.stack(
+        [w.amplitude for w in problem.make_band(list(band.frequencies_hz)).observed_wfs]
+    )
+
+    built = _spy_built_optimisers(monkeypatch)
+    assert run_inverse(cfg, new_run()).status == "completed"
+
+    (opt,) = built
+    assert opt.loss.callback.result["loss"] < 1e-20
+    grid = problem.grid
+    final = opt.final_state
+    c_true = problem.truth_velocity.c
+    assert rel_interior_error(final["c_full_final"], c_true, grid) < 1e-8
+    assert rel_interior_error(final["u_final"], u_true, grid) < 1e-8

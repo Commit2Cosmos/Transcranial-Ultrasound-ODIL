@@ -17,7 +17,16 @@ from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
 from odil_wave.optimisation.joint_odil import preconditioner_scale
 
-from conftest import C_MAX, C_MIN, F0, make_geometry, make_grid, make_model, make_source
+from conftest import (
+    C_MAX,
+    C_MIN,
+    F0,
+    make_geometry,
+    make_grid,
+    make_model,
+    make_source,
+    rel_interior_error,
+)
 
 
 @pytest.fixture(scope="module")
@@ -440,3 +449,62 @@ def test_reported_model_gradient_is_with_respect_to_z_m(mode):
     if mode == "pde_diagonal":
         g_y_norm = float((opt.model_scale * g_z).norm())
         assert logged[-1].grad_z_norm != pytest.approx(g_y_norm, rel=1e-3)
+
+
+# --------------------------------------------------------------------------- #
+# Sanity checks at the truth (inverse crime, no regulariser, float64)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
+def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode):
+    """Started at (true model, true wavefield), the full outer-iteration budget
+    leaves both unchanged. Measured: objective 1.3e-29 (threshold 1e-20); c and
+    u change by exactly 0 (threshold 1e-8)."""
+    opt = _make_optimiser(truth_problem, model_preconditioner=mode)
+    logged = []
+    opt.minimise(on_log=logged.append)
+    start, final = logged[0], logged[-1]
+    assert final.iter == opt.n_iter
+    assert final.loss < 1e-20
+    grid = opt.grid
+    assert rel_interior_error(final.c_full, start.c_full, grid) < 1e-8
+    assert rel_interior_error(final.u, start.u, grid) < 1e-8
+
+
+def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem):
+    """L-BFGS over the model latent alone, with the optimiser's settings and the
+    wavefield held at the true wavefield, recovers the true model from a
+    homogeneous initial model. Measured: c error 3.25e-2 -> 2.6e-6 (threshold
+    1e-4)."""
+    p = truth_problem
+    wf = p.wavefield
+    homogeneous = Wavefield(
+        wf.grid, wf.frequency_selection, velocity_model=make_model(wf.grid)
+    )
+    opt = _make_optimiser(
+        SimpleNamespace(wavefield=homogeneous, geometry=p.geometry, observed=p.observed)
+    )
+    u_re, u_im, z0 = (t.detach() for t in opt.init_params())
+    u_re0, u_im0 = u_re.clone(), u_im.clone()
+    z = torch.nn.Parameter(z0.clone())
+    lbfgs = torch.optim.LBFGS(
+        [z],
+        lr=opt.lbfgs_lr,
+        max_iter=opt.inner_max_iter,
+        history_size=opt.history_size,
+        line_search_fn=opt.line_search_fn,
+        tolerance_grad=opt.tolerance_grad,
+        tolerance_change=opt.tolerance_change,
+    )
+
+    def closure():
+        lbfgs.zero_grad()
+        L = opt.objective(u_re, u_im, z, record=False)
+        L.backward()
+        return L
+
+    for _ in range(opt.n_iter):
+        lbfgs.step(closure)
+
+    c_full = opt.c_full_of_z(z.detach())
+    assert rel_interior_error(c_full, wf.velocity_model.c, wf.grid) < 1e-4
+    assert torch.equal(u_re, u_re0) and torch.equal(u_im, u_im0)
