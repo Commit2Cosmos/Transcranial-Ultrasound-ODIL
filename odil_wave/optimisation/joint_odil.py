@@ -64,6 +64,23 @@ Formulation
   matrix-free (one conv2d Laplacian per evaluation); ``A(c)`` is never factorised
   inside optimisation.
 
+* Optional model-block preconditioner (``model_preconditioner="pde_diagonal"``;
+  default ``"none"``). L-BFGS models the Hessian outside its history as one
+  ``gamma * I`` over both blocks, so the model block is rescaled per cell to the
+  wavefield block's curvature: L-BFGS optimises ``y`` with ``z_m = s * y``,
+
+      H_kk[i] = pde_weight * sum_{s,f} |lap(u)[s,f,i] / pde_scale[s,f]|^2
+                / (N_int n_s n_f)                         (r is linear in k)
+      H_zz[i] = (dk/dz_m[i])^2 * H_kk[i]                  (exact where r = 0)
+      T       = median of the weighted PDE term's diagonal over u_re (all
+                shots, frequencies and nodes, PML included)
+      s[i]    = sqrt(T / max(H_zz[i], eps_precond * median(H_zz)))
+
+  with ``k = (c / c0)^2``, evaluated once per band at the warm start (never
+  refreshed, which would invalidate the L-BFGS history). The data term and the
+  regulariser are left out of both curvatures. ``z_scale`` cancels from
+  ``z_scale * s``.
+
 The class is pure library code (no file IO). Per-iteration diagnostics are
 exposed on :attr:`diag_rows` and mirrored into the loss callback history; the
 ``sandbox/joint_odil`` drivers persist the full §10 artifact set.
@@ -115,6 +132,39 @@ def rms_abs(x: torch.Tensor, dim=None) -> torch.Tensor:
     else:
         v = x.square()
     return v.mean(dim=dim).sqrt() if dim is not None else v.mean().sqrt()
+
+
+def abs_sq(x: torch.Tensor) -> torch.Tensor:
+    """Elementwise ``|x|^2`` (complex-aware, no sqrt)."""
+    if x.is_complex():
+        return x.real.square() + x.imag.square()
+    return x.square()
+
+
+# --------------------------------------------------------------------------- #
+# Model-block preconditioner
+# --------------------------------------------------------------------------- #
+MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
+
+
+def preconditioner_scale(
+    H_zz: torch.Tensor, target: float, eps: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Per-cell scale ``s = sqrt(target / max(H_zz, eps * median(H_zz)))``.
+
+    Every unfloored cell gets preconditioned curvature ``s**2 * H_zz == target``;
+    the floor keeps ``s`` finite where the curvature vanishes and bounds
+    ``max(s) / median(s)`` by ``1 / sqrt(eps)``. Returns ``(s, floored)``, the
+    second a boolean mask of the floored cells.
+    """
+    floor = eps * H_zz.median()
+    if not float(floor) > 0.0:
+        raise ValueError(
+            "model preconditioner needs a positive median model-block curvature "
+            "(is the PDE weight zero?)"
+        )
+    floored = H_zz < floor
+    return (target / H_zz.clamp_min(floor)).sqrt(), floored
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +267,7 @@ class JointFreqODIL(Optimiser):
         reg_weight: float,
         log_every: int,
         verbose: bool,
+        model_preconditioner: str,
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
@@ -224,6 +275,7 @@ class JointFreqODIL(Optimiser):
         z_scale: float = 1.0,
         logit_clip: float = 1e-6,
         eps_grad: float = 1e-30,
+        eps_precond: float = 1e-2,
     ) -> None:
         super().__init__(wavefield, loss)
         if not isinstance(loss, InverseLoss):
@@ -234,6 +286,11 @@ class JointFreqODIL(Optimiser):
             raise ValueError(
                 "JointFreqODIL requires a warm-start wavefield u_init "
                 "(e.g. a Helmholtz solve on the current model)"
+            )
+        if model_preconditioner not in MODEL_PRECONDITIONERS:
+            raise ValueError(
+                f"model_preconditioner must be one of {list(MODEL_PRECONDITIONERS)}, "
+                f"got {model_preconditioner!r}"
             )
 
         grid = wavefield.grid
@@ -310,8 +367,8 @@ class JointFreqODIL(Optimiser):
         )  # (n_shots, nf)
         self.pde_scale = pde_scale.view(self.n_shots, self.nf, 1, 1)
         # Full-grid mean -> sum over interior + PML / N_int.
-        n_int = u_int.shape[-2] * u_int.shape[-1]
-        self.pde_node_factor = (self.Nx * self.Ny) / n_int
+        self.n_int = u_int.shape[-2] * u_int.shape[-1]
+        self.pde_node_factor = (self.Nx * self.Ny) / self.n_int
         data_scale = rms_abs(self._obs_traces, dim=(2,)).clamp_min(eps_data)
         self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
         # ||d_obs||_2 over shots x frequencies x receivers, for rel_data_residual.
@@ -325,6 +382,14 @@ class JointFreqODIL(Optimiser):
         self.diag_rows: List[Dict[str, float]] = []
         self.scale_info: Dict[str, object] = {}
         self._build_diag_scale_info(u_ref, pde_scale, data_scale)
+
+        # Model-block preconditioner: z_m = model_scale * y (None: z_m = y).
+        self.model_preconditioner = model_preconditioner
+        self.eps_precond = float(eps_precond)
+        self.model_scale: Optional[torch.Tensor] = None
+        self.scale_info["model_preconditioner"] = model_preconditioner
+        if model_preconditioner == "pde_diagonal":
+            self._build_model_scale()
 
     # ------------------------------------------------------------------ #
     def _stack_u_init(self) -> torch.Tensor:
@@ -374,6 +439,91 @@ class JointFreqODIL(Optimiser):
             "data_scale_rule": "RMS(|d_obs|) per (shot, freq), fixed",
         }
 
+    def _build_model_scale(self) -> None:
+        """Set ``model_scale`` from the warm-start curvatures (see module doc)."""
+        _, H_zz = self.model_curvature()
+        target = float(self.wavefield_curvature().median())
+        s, floored = preconditioner_scale(H_zz, target, self.eps_precond)
+        self.model_scale = s
+        self.scale_info.update(
+            {
+                "precond_eps": self.eps_precond,
+                "precond_target": target,
+                "H_zz_min": float(H_zz.min()),
+                "H_zz_median": float(H_zz.median()),
+                "H_zz_max": float(H_zz.max()),
+                "model_scale_min": float(s.min()),
+                "model_scale_median": float(s.median()),
+                "model_scale_max": float(s.max()),
+                "precond_floored_frac": float(floored.double().mean()),
+            }
+        )
+
+    # ------------------------------------------------------------------ #
+    # Block curvatures of the weighted PDE term at the warm start
+    # ------------------------------------------------------------------ #
+    def model_curvature(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Diagonal ``(H_kk, H_zz)`` of the weighted PDE term on interior cells.
+
+        At the warm start ``(u_seed, z0)``: ``H_kk`` is w.r.t. ``k = (c/c0)^2``
+        (exact, as ``r`` is linear in ``k``), ``H_zz`` w.r.t. ``z_m`` (exact where
+        the PDE residual vanishes, i.e. for a Helmholtz warm start).
+        """
+        z0 = self.init_params()[2]
+        c_full = self.c_full_of_z(z0)
+        no_src = torch.zeros_like(self.u_seed)
+        with torch.no_grad():
+            # dr/dk = -lap(u): the residual at k = 0 minus the residual at k = 1.
+            lap_u = self.wave_eq.residual(
+                self.u_seed, torch.zeros_like(c_full), no_src
+            ) - self.wave_eq.residual(
+                self.u_seed, torch.full_like(c_full, self.c0), no_src
+            )
+            lap_u = lap_u[:, :, self._interior_slice[0], self._interior_slice[1]]
+            H_kk = (abs_sq(lap_u) / self.pde_scale.square()).sum(dim=(0, 1))
+            H_kk = self.pde_weight * H_kk / (self.n_int * self.n_shots * self.nf)
+            lat = self.latent
+            m = lat.m_of_z(z0)
+            dk_dz = -(
+                (lat.m_max - lat.m_min)
+                * lat.z_scale
+                * lat.sigmoid_deriv(z0)
+                / (self.c0**2 * m.square())
+            )
+        return H_kk, dk_dz.square() * H_kk
+
+    def wavefield_curvature(self) -> torch.Tensor:
+        """Diagonal of the weighted PDE term w.r.t. ``u_re`` (equal for ``u_im``).
+
+        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at the band's start model.
+        ``r`` is affine in ``u``, so this is ``pde_weight * sum_i |A_ij|^2
+        (u_ref / pde_scale)^2 / (N_int n_s n_f)`` with the column norms of ``A``
+        taken exactly from the solver's own operator: combs of unit impulses
+        spaced past the stencil's footprint (half-width ``space_order // 2`` per
+        axis, reflect boundaries included), each summed over its own box.
+        """
+        c_full = self.c_full_of_z(self.init_params()[2])
+        half = self.wave_eq.space_order // 2
+        stride = 2 * half + 1
+        shape = (1, self.nf, self.Nx, self.Ny)
+        no_src = torch.zeros(shape, dtype=self.cdtype, device=self.device)
+        box = torch.ones(1, 1, stride, stride, dtype=self.dtype, device=self.device)
+        col_sq = torch.zeros(shape[1:], dtype=self.dtype, device=self.device)
+        with torch.no_grad():
+            for a in range(stride):
+                for b in range(stride):
+                    comb = torch.zeros(shape, dtype=self.cdtype, device=self.device)
+                    comb[..., a::stride, b::stride] = 1.0
+                    Ae_sq = abs_sq(self.wave_eq.residual(comb, c_full, no_src))
+                    boxed = torch.nn.functional.conv2d(
+                        Ae_sq.view(self.nf, 1, self.Nx, self.Ny), box, padding=half
+                    ).view(shape[1:])
+                    col_sq[:, a::stride, b::stride] = boxed[:, a::stride, b::stride]
+        scale_sq = (self.u_ref / self.pde_scale).square()
+        return (
+            self.pde_weight * col_sq * scale_sq / (self.n_int * self.n_shots * self.nf)
+        )
+
     # ------------------------------------------------------------------ #
     # Parameter <-> physical helpers
     # ------------------------------------------------------------------ #
@@ -391,6 +541,14 @@ class JointFreqODIL(Optimiser):
             u_tilde0.imag.contiguous().to(dtype=self.dtype),
             z0.contiguous().to(dtype=self.dtype),
         )
+
+    def z_of_y(self, y: torch.Tensor) -> torch.Tensor:
+        """Physical latent ``z_m`` of the optimised model variable ``y``."""
+        return y if self.model_scale is None else self.model_scale * y
+
+    def y_of_z(self, z_m: torch.Tensor) -> torch.Tensor:
+        """Optimised model variable ``y`` of the physical latent ``z_m``."""
+        return z_m if self.model_scale is None else z_m / self.model_scale
 
     def physical_u(self, u_re: torch.Tensor, u_im: torch.Tensor) -> torch.Tensor:
         return self.u_ref * torch.complex(u_re, u_im)
@@ -552,10 +710,11 @@ class JointFreqODIL(Optimiser):
         u_re0, u_im0, z0 = self.init_params()
         u_re = torch.nn.Parameter(u_re0)
         u_im = torch.nn.Parameter(u_im0)
-        z_param = torch.nn.Parameter(z0)
+        # L-BFGS optimises y; the objective and diagnostics see z_m = z_of_y(y).
+        z_param = torch.nn.Parameter(self.y_of_z(z0))
 
         def z_of():
-            return z_param
+            return self.z_of_y(z_param)
 
         opt = torch.optim.LBFGS(
             [u_re, u_im, z_param],

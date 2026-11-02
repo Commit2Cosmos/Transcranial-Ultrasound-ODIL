@@ -64,6 +64,7 @@ EXPECTED_SHAPE = {
         "lbfgs_lr",
         "tolerance_grad",
         "tolerance_change",
+        "model_preconditioner",
     ],
     "metrics": ["ssim"],
 }
@@ -258,6 +259,11 @@ def test_supported_space_orders_validate(order):
         {"optimiser": {"inner_max_iter": 0}},
         {"optimiser": {"history_size": 0}},
         {"optimiser": {"line_search_fn": "backtracking"}},
+        {"optimiser": {"model_preconditioner": "diagonal"}},
+        {
+            "optimiser": {"model_preconditioner": "pde_diagonal"},
+            "loss": {"weights": {"pde": 0.0}},
+        },
         {"continuation": {"bands": []}},
         {"continuation": {"bands": [{"frequencies_hz": [-1.0]}]}},
         {"metrics": {"ssim": {"sigma": 0.0}}},
@@ -445,6 +451,13 @@ def test_every_loss_weight_is_required(missing):
     weights = {k: 1.0 for k in ("pde", "data", "reg") if k != missing}
     with pytest.raises(ConfigError, match=missing):
         validate_config(resolve_config({}, [f"loss.weights={json.dumps(weights)}"]))
+
+
+def test_model_preconditioner_defaults_to_none_and_accepts_pde_diagonal():
+    assert resolve_config({}).optimiser.model_preconditioner == "none"
+    validate_config(
+        resolve_config({"optimiser": {"model_preconditioner": "pde_diagonal"}})
+    )
 
 
 def test_pde_weight_zero_is_allowed():

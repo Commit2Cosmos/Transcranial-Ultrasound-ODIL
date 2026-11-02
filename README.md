@@ -134,6 +134,12 @@ or removed keys are rejected.
   weights from `loss.weights`. The L-BFGS
   settings (`inner_max_iter`, `history_size`, …) live under `optimiser`; the
   latent velocity bounds are `grid.c_min` / `grid.c_max`.
+- **`optimiser.model_preconditioner`** — `none` (default) or `pde_diagonal`.
+  L-BFGS uses one initial-Hessian scalar for both blocks, so `pde_diagonal`
+  rescales the model latent per cell (`z_m = s·y`, fixed per band) so that its
+  PDE-term curvature at the warm start matches the wavefield block's median
+  curvature (floored at `1e-2` of the median, so `s` stays within 10x of its
+  median). The tape's `grad_z_norm` stays with respect to `z_m`.
 
 ### Objective balance
 

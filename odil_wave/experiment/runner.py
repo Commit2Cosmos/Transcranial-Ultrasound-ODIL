@@ -215,6 +215,7 @@ def build_optimiser(
         reg_weight=float(w["reg"]),
         log_every=opt.log_every,
         verbose=cfg.runtime.verbose,
+        model_preconditioner=opt.model_preconditioner,
     )
 
 

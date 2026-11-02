@@ -66,6 +66,7 @@ JOINT_KW = dict(
     reg_weight=0.0,
     log_every=1,
     verbose=False,
+    model_preconditioner="none",
 )
 
 
