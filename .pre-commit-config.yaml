@@ -6,6 +6,15 @@ repos:
         types_or: [python, pyi]
       - id: ruff-format
         types_or: [python, pyi]
+  - repo: local
+    hooks:
+      - id: private-names
+        name: no cross-module private imports
+        entry: uv run pytest -q -p no:cacheprovider tests/test_private_names.py
+        language: system
+        types: [python]
+        pass_filenames: false
 
 # this defines pre-commit hooks to be run locally before each commit
-# ruff lints (ruff-check) and formats (ruff-format)
+# ruff lints (ruff-check) and formats (ruff-format); private-names runs the
+# AST check of tests/test_private_names.py (ruff's PLC2701 exempts same-package imports)

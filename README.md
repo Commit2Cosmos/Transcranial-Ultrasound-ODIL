@@ -202,6 +202,7 @@ the library building blocks directly (`grid`, `source`, `geometry`, `models`,
 
 ```bash
 pytest                              # full suite
+pytest -n auto                      # full suite in parallel (pytest-xdist, dev extra)
 pytest tests/test_optimisation.py   # a single module
 ```
 
@@ -220,7 +221,7 @@ one-owner-per-parameter rule for library constructors
 
 ```bash
 pip install -e .           # editable install; see pyproject.toml for the full dependency list
-pip install -e ".[dev]"    # + ruff, pre-commit, ipykernel, torchinfo
+pip install -e ".[dev]"    # + ruff, pre-commit, pytest-xdist, ipykernel, torchinfo
 ```
 
 Requires Python ≥ 3.12.
