@@ -34,6 +34,11 @@ the user decides.
    `main.py`, read the diff against each `current` record's `variable`,
    `baseline`, `answer` and Conclusions supported.
    - If its conclusions hold, write nothing.
+   - To settle whether the change alters results at all,
+     `python -m odil_wave.experiment.compare main` runs the tiny config
+     (`configs/checks/tiny.yaml`, or `--config <file>`) at `main` and on your
+     tree and compares the results exactly. Identical results leave every
+     conclusion standing; quote its output in the PR.
    - If you can name a conclusion and a reason the change could break it, add a
      Validity entry in that PR:
      `YYYY-MM-DD · note · <PR> · affects <conclusion bullets> · <why>`.
