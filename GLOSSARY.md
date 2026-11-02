@@ -107,13 +107,17 @@ _Avoid_: interior, intracranial ROI, head ROI
 
 **PML**:
 The absorbing layer around the interior that suppresses reflections from the grid boundary. Its size that matters physically is its thickness in metres.
-_Avoid_: sponge, absorbing boundary
+_Avoid_: sponge, absorbing boundary, PML ring (ring is the transducer ring)
 
 **PDE term**:
 The part of the objective that penalises the wave-equation residual over the interior and the PML, measured relative to the size of the wave term itself.
 
 **Data term**:
 The part of the objective that penalises the mismatch between the wavefield at the receivers and the observed data.
+
+**Regularisation term**:
+The part of the objective that penalises roughness of the velocity model, averaged over the interior in dimensionless units so that its size does not depend on the grid resolution.
+_Avoid_: penalty, smoothing term
 
 **Wavefield block**:
 The wavefield unknowns of the joint objective: one complex field per shot and frequency.
