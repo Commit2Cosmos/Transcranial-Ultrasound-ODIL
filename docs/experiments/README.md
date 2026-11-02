@@ -43,8 +43,9 @@ the user decides.
      Validity entry in that PR:
      `YYYY-MM-DD · note · <PR> · affects <conclusion bullets> · <why>`.
      `status` is unchanged.
-   - Fill the PR template's "Experiment bank" line. PRs touching only docs,
-     tests, notebooks or dependencies are skipped.
+   - State the outcome on an `**Experiment bank:**` line in the PR body (notes
+     added, or why none were needed). PRs touching only docs, tests, notebooks
+     or dependencies are skipped.
    - **Only the user writes `invalidated`** (usually in review of a PR that
      added a note): `YYYY-MM-DD · invalidated by <PR or commit> · <what changed> ·
      affects <conclusion bullets | all> · <why this breaks them>`, flipping
