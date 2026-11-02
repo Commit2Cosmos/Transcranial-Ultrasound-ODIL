@@ -115,6 +115,15 @@ The part of the objective that penalises the wave-equation residual over the int
 **Data term**:
 The part of the objective that penalises the mismatch between the wavefield at the receivers and the observed data.
 
+**Wavefield block**:
+The wavefield unknowns of the joint objective: one complex field per shot and frequency.
+_Also_: u-block
+
+**Model block**:
+The sound-speed unknowns of the joint objective.
+_Also_: c-block
+_Avoid_: z block
+
 **Same physical problem**:
 Two discretisations with the same domain, source shape and PML thickness, all measured in metres, differing only in grid spacing.
 
