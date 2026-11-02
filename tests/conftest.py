@@ -97,6 +97,15 @@ def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
     return VelocityModel(grid, profile=profile, **kw)
 
 
+def rel_interior_error(x, ref, grid) -> float:
+    """Relative L2 of ``x - ref`` over the interior (the last two axes are the
+    full grid)."""
+    sl = (...,) + grid.interior_slice
+    return float(
+        torch.linalg.vector_norm(x[sl] - ref[sl]) / torch.linalg.vector_norm(ref[sl])
+    )
+
+
 # Run config for a tiny single-band joint inversion: names only the values
 # that differ from the default config. Shared with the run comparison.
 TINY_RUN_CONFIG = yaml.safe_load((REPO_ROOT / "configs/checks/tiny.yaml").read_text())
