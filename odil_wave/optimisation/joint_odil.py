@@ -125,20 +125,17 @@ def mean_real_sq(x: torch.Tensor) -> torch.Tensor:
     return ssq / real_scalar_count(x)
 
 
-def rms_abs(x: torch.Tensor, dim=None) -> torch.Tensor:
-    """RMS of ``|x|`` = sqrt(mean(|x|^2)) over ``dim`` (complex-aware)."""
-    if x.is_complex():
-        v = x.real.square() + x.imag.square()
-    else:
-        v = x.square()
-    return v.mean(dim=dim).sqrt() if dim is not None else v.mean().sqrt()
-
-
 def abs_sq(x: torch.Tensor) -> torch.Tensor:
     """Elementwise ``|x|^2`` (complex-aware, no sqrt)."""
     if x.is_complex():
         return x.real.square() + x.imag.square()
     return x.square()
+
+
+def rms_abs(x: torch.Tensor, dim=None) -> torch.Tensor:
+    """RMS of ``|x|`` = sqrt(mean(|x|^2)) over ``dim`` (complex-aware)."""
+    v = abs_sq(x)
+    return v.mean(dim=dim).sqrt() if dim is not None else v.mean().sqrt()
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +192,10 @@ class SlownessLatent:
     def sigmoid_deriv(self, z: torch.Tensor) -> torch.Tensor:
         s = torch.sigmoid(self.z_scale * z)
         return s * (1.0 - s)
+
+    def dm_dz(self, z: torch.Tensor) -> torch.Tensor:
+        """Elementwise derivative of ``m_of_z``."""
+        return (self.m_max - self.m_min) * self.z_scale * self.sigmoid_deriv(z)
 
     def z_of_m(self, m: torch.Tensor) -> torch.Tensor:
         """Stable inverse (logit) so that ``m(z_of_m(m)) == m`` (clipped)."""
@@ -441,17 +442,18 @@ class JointFreqODIL(Optimiser):
 
     def _build_model_scale(self) -> None:
         """Set ``model_scale`` from the warm-start curvatures (see module doc)."""
-        _, H_zz = self.model_curvature()
-        target = float(self.wavefield_curvature().median())
+        z0 = self.init_params()[2]
+        _, H_zz = self.model_curvature(z0)
+        target = float(self.wavefield_curvature(self.c_full_of_z(z0)).median())
         s, floored = preconditioner_scale(H_zz, target, self.eps_precond)
         self.model_scale = s
         self.scale_info.update(
             {
                 "precond_eps": self.eps_precond,
                 "precond_target": target,
-                "H_zz_min": float(H_zz.min()),
-                "H_zz_median": float(H_zz.median()),
-                "H_zz_max": float(H_zz.max()),
+                "h_zz_min": float(H_zz.min()),
+                "h_zz_median": float(H_zz.median()),
+                "h_zz_max": float(H_zz.max()),
                 "model_scale_min": float(s.min()),
                 "model_scale_median": float(s.median()),
                 "model_scale_max": float(s.max()),
@@ -462,14 +464,14 @@ class JointFreqODIL(Optimiser):
     # ------------------------------------------------------------------ #
     # Block curvatures of the weighted PDE term at the warm start
     # ------------------------------------------------------------------ #
-    def model_curvature(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def model_curvature(self, z0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Diagonal ``(H_kk, H_zz)`` of the weighted PDE term on interior cells.
 
-        At the warm start ``(u_seed, z0)``: ``H_kk`` is w.r.t. ``k = (c/c0)^2``
-        (exact, as ``r`` is linear in ``k``), ``H_zz`` w.r.t. ``z_m`` (exact where
-        the PDE residual vanishes, i.e. for a Helmholtz warm start).
+        At ``(u_seed, z0)``, ``z0`` the band's start latent (``init_params``):
+        ``H_kk`` is w.r.t. ``k = (c/c0)^2`` (exact, as ``r`` is linear in ``k``),
+        ``H_zz`` w.r.t. ``z_m`` (exact where the PDE residual vanishes, i.e. for
+        a Helmholtz warm start).
         """
-        z0 = self.init_params()[2]
         c_full = self.c_full_of_z(z0)
         no_src = torch.zeros_like(self.u_seed)
         with torch.no_grad():
@@ -482,27 +484,22 @@ class JointFreqODIL(Optimiser):
             lap_u = lap_u[:, :, self._interior_slice[0], self._interior_slice[1]]
             H_kk = (abs_sq(lap_u) / self.pde_scale.square()).sum(dim=(0, 1))
             H_kk = self.pde_weight * H_kk / (self.n_int * self.n_shots * self.nf)
-            lat = self.latent
-            m = lat.m_of_z(z0)
-            dk_dz = -(
-                (lat.m_max - lat.m_min)
-                * lat.z_scale
-                * lat.sigmoid_deriv(z0)
-                / (self.c0**2 * m.square())
-            )
+            # k = 1 / (c0^2 m)
+            m = self.latent.m_of_z(z0)
+            dk_dz = -self.latent.dm_dz(z0) / (self.c0**2 * m.square())
         return H_kk, dk_dz.square() * H_kk
 
-    def wavefield_curvature(self) -> torch.Tensor:
+    def wavefield_curvature(self, c_full: torch.Tensor) -> torch.Tensor:
         """Diagonal of the weighted PDE term w.r.t. ``u_re`` (equal for ``u_im``).
 
-        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at the band's start model.
+        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at the full-grid model
+        ``c_full`` (the band's start model when building the preconditioner).
         ``r`` is affine in ``u``, so this is ``pde_weight * sum_i |A_ij|^2
         (u_ref / pde_scale)^2 / (N_int n_s n_f)`` with the column norms of ``A``
         taken exactly from the solver's own operator: combs of unit impulses
         spaced past the stencil's footprint (half-width ``space_order // 2`` per
         axis, reflect boundaries included), each summed over its own box.
         """
-        c_full = self.c_full_of_z(self.init_params()[2])
         half = self.wave_eq.space_order // 2
         stride = 2 * half + 1
         shape = (1, self.nf, self.Nx, self.Ny)

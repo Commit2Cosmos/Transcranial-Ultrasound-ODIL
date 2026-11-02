@@ -286,8 +286,8 @@ def test_model_curvature_in_k_matches_the_autograd_hessian(space_order):
     interior (the data term does not depend on k): diagonal, including
     pde_scale and pde_weight."""
     opt = _small_two_frequency_optimiser(space_order)
-    H_kk, _ = opt.model_curvature()
     u_re, u_im, z0 = opt.init_params()
+    H_kk, _ = opt.model_curvature(z0)
     k0 = (opt.latent.c_of_z(z0) / opt.c0).square()
 
     def phi(k):
@@ -309,8 +309,8 @@ def test_model_curvature_in_z_matches_autograd_at_the_warm_start(space_order):
     """At the Helmholtz warm start (r = 0) H_zz is the diagonal of the
     objective's Hessian w.r.t. the physical latent z_m."""
     opt = _small_two_frequency_optimiser(space_order)
-    _, H_zz = opt.model_curvature()
     u_re, u_im, z0 = opt.init_params()
+    _, H_zz = opt.model_curvature(z0)
     H = torch.autograd.functional.hessian(
         lambda z: opt.objective(u_re, u_im, z.view_as(z0), record=False),
         z0.reshape(-1),
@@ -326,8 +326,8 @@ def test_wavefield_curvature_matches_the_autograd_hessian_diagonal(space_order, 
     term w.r.t. u_re (and u_im), at every node of both frequencies, PML and
     the reflect boundary included. data_weight = 0 leaves only the PDE term."""
     opt = _small_two_frequency_optimiser(space_order, data_weight=0.0)
-    H_uu = opt.wavefield_curvature()
     u_re, u_im, z0 = opt.init_params()
+    H_uu = opt.wavefield_curvature(opt.c_full_of_z(z0))
     assert H_uu.shape == u_re.shape == (3, 2, opt.Nx, opt.Ny)
 
     def phi(v):
@@ -369,8 +369,9 @@ def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
     """The built model scale puts every unfloored cell at the wavefield block's
     median curvature T and is summarised in scale_info."""
     opt = _small_two_frequency_optimiser(4, model_preconditioner="pde_diagonal")
-    _, H_zz = opt.model_curvature()
-    T = float(opt.wavefield_curvature().median())
+    z0 = opt.init_params()[2]
+    _, H_zz = opt.model_curvature(z0)
+    T = float(opt.wavefield_curvature(opt.c_full_of_z(z0)).median())
     info = opt.scale_info
     assert info["model_preconditioner"] == "pde_diagonal"
     assert info["precond_eps"] == 1e-2
@@ -385,7 +386,7 @@ def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
     assert info["precond_floored_frac"] == pytest.approx(
         float((~unfloored).double().mean())
     )
-    for key in ("H_zz", "model_scale"):
+    for key in ("h_zz", "model_scale"):
         lo, mid, hi = (info[f"{key}_{q}"] for q in ("min", "median", "max"))
         assert 0.0 < lo <= mid <= hi
     assert info["model_scale_median"] == pytest.approx(float(s.median()))
@@ -394,7 +395,7 @@ def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
 def test_no_preconditioner_reports_only_the_mode(truth_problem):
     info = _make_optimiser(truth_problem).scale_info
     assert info["model_preconditioner"] == "none"
-    assert not any(k.startswith(("precond_", "H_zz", "model_scale")) for k in info)
+    assert not any(k.startswith(("precond_", "h_zz", "model_scale")) for k in info)
 
 
 def test_unknown_model_preconditioner_is_rejected(truth_problem):
