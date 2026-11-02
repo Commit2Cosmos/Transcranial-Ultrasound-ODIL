@@ -206,7 +206,6 @@ def test_an_on_demand_plot_returns_a_figure_and_solves_nothing(
         (JointFreqODIL, "__init__"),
         (JointFreqODIL, "minimise"),
         (HelmholtzSolver, "solve"),
-        (HelmholtzSolver, "factorize"),
         (Problem, "make_band"),
         (Problem, "warm_start"),
     ]:

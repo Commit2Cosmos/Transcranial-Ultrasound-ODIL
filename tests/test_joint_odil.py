@@ -47,7 +47,6 @@ def _make_optimiser(
         config=LossConfig(
             wave_eq=wave_eq,
             geometry=problem.geometry,
-            weights={"pde": 1.0, "data": 1.0},
             regulariser=regulariser,
         ),
     )
@@ -256,7 +255,6 @@ def _small_two_frequency_optimiser(
         config=LossConfig(
             wave_eq=WaveEquation(wf, **operator),
             geometry=geom,
-            weights={"pde": pde_weight, "data": data_weight},
             regulariser=None,
         ),
     )

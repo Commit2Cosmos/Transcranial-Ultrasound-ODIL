@@ -283,63 +283,6 @@ class Grid:
         sigma_y = sigma_y_1d.view(1, -1).expand(self.nx, self.ny).contiguous()
         return sigma_x, sigma_y
 
-    # Alternative constructor
-    # TODO: don't allow to set interior_shape
-    @classmethod
-    def from_frequency(
-        cls,
-        f_max: float,
-        c_min: float,
-        interior_extent: Tuple[Tuple[float, float], Tuple[float, float]],
-        n_ppw: int = 5,
-        **kwargs,
-    ) -> "Grid":
-        """Construct a Grid with ``dx`` set by the points-per-wavelength rule.
-
-        Parameters
-        ----------
-        f_max : float
-            Maximum source frequency in Hz.
-        c_min : float
-            Minimum medium velocity in m/s.
-        interior_extent : tuple
-            Physical extent of the interior, x then y.
-        n_ppw : int, optional
-            Points per wavelength; sets ``dx = c_min / (f_max * n_ppw)``.
-        **kwargs
-            Forwarded to the ``Grid`` constructor (every other required
-            field except ``init_nt``).
-
-        Returns
-        -------
-        Grid
-            Grid whose interior shape resolves the shortest wavelength at
-            ``n_ppw`` points.
-
-        Notes
-        -----
-        Raises ``ValueError`` if ``init_nt`` is passed: the timestep count
-        must follow from the CFL condition once ``dx`` is fixed. Pass
-        ``t_max`` instead.
-        """
-        if "init_nt" in kwargs:
-            raise ValueError(
-                "init_nt cannot be passed to Grid.from_frequency: the number "
-                "of timesteps must be determined by the CFL condition once dx "
-                "is set from frequency. Pass t_max instead."
-            )
-        dx = c_min / (f_max * n_ppw)
-        (ix_min, ix_max), (iy_min, iy_max) = interior_extent
-        nx = round((ix_max - ix_min) / dx) + 1
-        ny = round((iy_max - iy_min) / dx) + 1
-        return cls(
-            interior_shape=(nx, ny),
-            interior_extent=interior_extent,
-            c_min=c_min,
-            init_nt=None,
-            **kwargs,
-        )
-
     def cfl(self, c_max: float) -> float:
         """Courant number at a given maximum velocity.
 

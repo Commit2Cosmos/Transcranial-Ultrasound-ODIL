@@ -112,13 +112,13 @@ The low-frequency transcranial ring device paper reportedly scores phantom accur
 Current state (read from code):
 - `FIELDNAMES` is in `odil_wave/experiment/recorder.py`.
 - Final recovery metrics come from `_final_recovery_metrics` in `odil_wave/experiment/runner.py`.
-- Residuals come from `InverseLoss.evaluate` in `odil_wave/loss/inverse.py`.
+- Residuals come from `JointFreqODIL.residuals` in `odil_wave/optimisation/joint_odil.py` (the loss module's own residual path was removed in #31).
 - SSIM lives in `odil_wave/metrics/metrics.py`.
 
 How the current metrics are computed:
 - `data_rms` = √mean|syn − obs|² over all shots × frequencies × receivers, absolute.
 - `pde_rms` is absolute.
-- `pde_src_ratio` = pde_rms / src_rms.
+- PDE-to-source ratio = pde_rms / src_rms (no longer recorded since #31; the tape's `pde_rel_residual` is the normalised PDE residual).
 - `rel_c_error` = ‖c−c*‖/‖c*‖ over the whole interior.
 - `ssim_head_roi`: the per-pixel SSIM map is computed over the interior and averaged inside `head_mask`. Defaults are win 7, no Gaussian, skimage's default sample covariance; `data_range` is the truth's peak-to-peak inside the mask.
 
@@ -127,8 +127,8 @@ How the current metrics are computed:
 | `loss_total`, `pde_term`, `data_term`, `reg_term` | **Keep** | Optimiser bookkeeping. Joint methods need both terms tracked separately [Aghamiry19]. |
 | `pde_loss`, `data_loss` (unweighted MSE) | **Keep or drop** (redundant with `*_rms` squared) | Same information as `pde_rms`/`data_rms`. |
 | `data_rms` | **Change**: add a relative form ‖d_syn−d_obs‖/‖d_obs‖ per band | Absolute misfit is not comparable across bands or configs [Lucka22, Aghamiry19 use absolute; our inference]. skimage NRMSE 'euclidean' is this normalisation [skimage]. |
-| `pde_rms` | **Keep as raw, prefer `pde_src_ratio` for comparison** | Absolute; depends on grid and source scale. |
-| `pde_src_ratio` | **Keep** (it is the normalised PDE residual; ‖Au−b‖/‖b‖-like) | Matches the wave-equation-misfit diagnostic of joint methods [Aghamiry19]. |
+| `pde_rms` | **Keep as raw, prefer the PDE-to-source ratio for comparison** | Absolute; depends on grid and source scale. |
+| PDE-to-source ratio | **Keep** (it is the normalised PDE residual; ‖Au−b‖/‖b‖-like) | Matches the wave-equation-misfit diagnostic of joint methods [Aghamiry19]. |
 | (none) | **Add**: data residual **per frequency** and **per Offset bin** at band end | Cycle skipping depends on offset and frequency (half-period rule) [VirieuxOperto09, Guasch20]. |
 | (none) | **Add**: (data residual, PDE residual) trajectory plot per band | Shows whether data fit is being bought with PDE violation [Aghamiry19 Fig. 3]. |
 | (none) | **Add (if wavefield truth is cheap)**: relative wavefield error ‖u−u*‖/‖u*‖ | Reported alongside model error by WRI [Aghamiry19]. Depends on #51's save rule. |

@@ -1,25 +1,41 @@
-from typing import Tuple
-
 import torch
 
 from odil_wave.wavefield import Wavefield
 
-from .base import DiscreteLoss, mean_abs_sq
 from .utils import LossConfig, LossTape
 
 
-class InverseLoss(DiscreteLoss):
-    """Joint (u, c) inverse-problem loss in the frequency domain.
+def mean_abs_sq(x: torch.Tensor, dim=None) -> torch.Tensor:
+    """Real mean of ``|x|**2`` (works for real or complex ``x``).
 
-    L = pde_weight  * mean(|r_pde|²)   # over shots, frequencies, space
-      + data_weight * mean(|r_data|²)  # over shots, frequencies, receivers
-      + w_reg  * R(c_interior)
+    Parameters
+    ----------
+    x : torch.Tensor
+        Real or complex tensor.
+    dim : int or tuple of int, optional
+        Dimensions to reduce; reduces over all elements when omitted.
 
-    Global means keep the loss / gradient scale invariant to ``N_f`` and
-    ``N_s`` so fair comparisons do not conflate more data with a larger loss.
+    Returns
+    -------
+    torch.Tensor
+        Real-valued mean of the squared magnitude.
+    """
+    if x.is_complex():
+        val = x.real.square() + x.imag.square()
+    else:
+        val = x.square()
+    if dim is None:
+        return val.mean()
+    return val.mean(dim=dim)
 
-    ``c_interior`` is the field passed to the regulariser; the PDE always uses
-    physical ``c_full``.
+
+class InverseLoss:
+    """Per-band inverse-problem data: operator, sources and observations.
+
+    Holds what :class:`~odil_wave.optimisation.JointFreqODIL` reads to build
+    its objective: the config's wave equation, geometry and regulariser, the
+    ``t0**2``-scaled per-shot ``sources``, the observations
+    (:meth:`obs_traces`) and the diagnostics ``callback`` tape.
 
     Observations: full complex wavefields ``(n_shots, nf, nx, ny)`` or
     complex receiver traces ``(n_shots, nf, n_transducers - 1)``; a shot is
@@ -53,7 +69,24 @@ class InverseLoss(DiscreteLoss):
         Raises ``ValueError`` unless exactly one of ``observed_wavefield`` or
         ``observed_traces`` is supplied, or if traces are not 3-D.
         """
-        super().__init__(config, callback)
+        self.config = config
+        self.callback = callback if callback is not None else LossTape()
+
+        # Precompute complex source fields per shot; f' = t0**2 * f.
+        t0 = self.config.wave_eq.wavefield.grid.t0
+        cdtype = self.config.wave_eq.wavefield.cdtype
+        self.sources = (
+            torch.stack(
+                [
+                    self.config.geometry.source_field(i).to(
+                        dtype=cdtype, device=self.config.device
+                    )
+                    for i in range(self.config.geometry.n_shots)
+                ]
+            )
+            * t0**2
+        )
+        self.src_rms = float(mean_abs_sq(self.sources).sqrt())
 
         has_wf = observed_wavefield is not None
         has_tr = observed_traces is not None
@@ -62,7 +95,6 @@ class InverseLoss(DiscreteLoss):
                 "Supply exactly one of observed_wavefield or observed_traces."
             )
 
-        cdtype = self.config.wave_eq.wavefield.cdtype
         self._trace_mode = has_tr
         if has_tr:
             tr = torch.as_tensor(observed_traces, dtype=cdtype)
@@ -109,84 +141,3 @@ class InverseLoss(DiscreteLoss):
         if self._trace_mode:
             return self.d_obs
         return self.config.geometry.extract_observations(self.d_obs)
-
-    def _residuals(
-        self, amp: torch.Tensor, wsp: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute the PDE and data residuals for the current state.
-
-        Parameters
-        ----------
-        amp : torch.Tensor
-            Complex wavefield amplitudes ``(n_shots, nf, nx, ny)``.
-        wsp : torch.Tensor
-            Full-grid velocity field ``c_full``.
-
-        Returns
-        -------
-        tuple of torch.Tensor
-            ``(r_pde, r_data)`` residuals.
-        """
-        pde = self.config.wave_eq.residual(amp, wsp, self.sources)
-
-        syn_tr = self.config.geometry.extract_observations(amp)
-        data = syn_tr - self.obs_traces()
-        return pde, data
-
-    def evaluate(
-        self,
-        amp: torch.Tensor,
-        c_full: torch.Tensor,
-        c_interior: torch.Tensor | None = None,
-        weights_override: dict | None = None,
-    ) -> torch.Tensor:
-        """Joint ``(u, c)`` inverse loss for the current wavefield and velocity.
-
-        Parameters
-        ----------
-        amp : torch.Tensor
-            Complex wavefield amplitudes ``(n_shots, nf, nx, ny)``.
-        c_full : torch.Tensor
-            Full-grid velocity field (PDE uses physical ``c``).
-        c_interior : torch.Tensor, optional
-            Interior velocity passed to the regulariser.
-        weights_override : dict, optional
-            Per-block weights overriding ``config.weights`` for this call.
-
-        Returns
-        -------
-        torch.Tensor
-            Real scalar loss ``w_pde * mean(|r_pde|**2) +
-            w_data * mean(|r_data|**2) + w_reg * R(c_interior)``.
-        """
-        r_pde, r_data = self._residuals(amp, c_full)
-
-        w = self.config.weights
-        if weights_override is not None:
-            w = {**w, **weights_override}
-        # Global mean (not sum-over-shots): scale-invariant in N_f and N_s.
-        pde_terms = mean_abs_sq(r_pde)
-        data_terms = mean_abs_sq(r_data)
-        L = w["pde"] * pde_terms + w["data"] * data_terms
-
-        if self.config.regulariser is not None and c_interior is not None:
-            L = L + w.get("reg", 0.0) * self.config.regulariser(c_interior)
-
-        if L.is_complex():
-            L = L.real
-
-        self.evaluations += 1
-        with torch.no_grad():
-            pde_rms = float(mean_abs_sq(r_pde).sqrt().detach().cpu())
-            data_rms = float(mean_abs_sq(r_data).sqrt().detach().cpu())
-            src_rms = float(mean_abs_sq(self.sources).sqrt().detach().cpu())
-
-        self.last_residuals = {
-            "pde_rms": pde_rms,
-            "data_rms": data_rms,
-            "pde_loss": float(pde_terms.detach().cpu()),
-            "data_loss": float(data_terms.detach().cpu()),
-            "pde_src_ratio": pde_rms / max(src_rms, 1e-30),
-        }
-
-        return L

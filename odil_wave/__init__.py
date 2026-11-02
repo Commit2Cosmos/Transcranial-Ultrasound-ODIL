@@ -12,7 +12,6 @@ from odil_wave.operator import WaveEquation, HelmholtzSolver
 from odil_wave.loss import (
     LossConfig,
     LossTape,
-    ForwardLoss,
     InverseLoss,
     Regulariser,
 )
@@ -29,7 +28,6 @@ __all__ = [
     "HelmholtzSolver",
     "LossConfig",
     "LossTape",
-    "ForwardLoss",
     "InverseLoss",
     "Regulariser",
     "JointFreqODIL",

@@ -1,24 +1,23 @@
-"""Tests for :mod:`odil_wave.loss` — LossConfig, LossTape, ForwardLoss,
-InverseLoss and the Regulariser.
+"""Tests for :mod:`odil_wave.loss` — LossConfig, LossTape, InverseLoss and
+the Regulariser.
 
 These affirm:
 * ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
   (zero on a constant field) and rejects unknown kinds.
-* ``LossConfig`` keeps the given weights and derives the packed wavefield DOF
-  offset.
+* ``LossConfig`` derives device and dtype from the wave equation's grid.
 * ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
   c-history cadence, and rebuilds from saved records.
-* ``ForwardLoss`` / ``InverseLoss`` are (near) zero at the true wavefield+model,
-  scale with the PDE/data weights, support trace observations and weight
-  overrides, and validate their inputs.
+* ``InverseLoss`` sources make the PDE residual vanish at the true wavefield
+  and model, its observations (wavefield or trace mode) match the true
+  wavefield at the receivers, and it validates its inputs.
 """
 
 import numpy as np
 import pytest
 import torch
 
-from odil_wave import ForwardLoss, InverseLoss, LossConfig, LossTape, Regulariser
-from odil_wave.loss.base import mean_abs_sq
+from odil_wave import InverseLoss, LossConfig, LossTape, Regulariser
+from odil_wave.loss.inverse import mean_abs_sq
 
 
 # --------------------------------------------------------------------------- #
@@ -63,20 +62,14 @@ def test_regulariser_unknown_kind_raises():
 # --------------------------------------------------------------------------- #
 # LossConfig
 # --------------------------------------------------------------------------- #
-def test_loss_config_weights_and_offset(wave_stack):
-    """LossConfig keeps the given weights as-is; speed_offset packs u DOFs."""
+def test_loss_config_device_and_dtype(wave_stack):
+    """LossConfig takes device and dtype from the wave equation's grid."""
     cfg = LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        weights={"pde": 2.0, "data": 3.0},
-        regulariser=None,
+        wave_eq=wave_stack.wave_eq, geometry=wave_stack.geometry, regulariser=None
     )
-    assert cfg.weights == {"pde": 2.0, "data": 3.0}
     g = wave_stack.grid
-    nf = wave_stack.freq.n_frequencies
-    expected = wave_stack.geometry.n_shots * nf * g.nx * g.ny * 2
-    assert cfg.speed_offset == expected
     assert cfg.dtype == g.dtype
+    assert cfg.device == g.device
 
 
 # --------------------------------------------------------------------------- #
@@ -132,66 +125,38 @@ def test_loss_tape_result_property():
 
 
 # --------------------------------------------------------------------------- #
-# ForwardLoss
-# --------------------------------------------------------------------------- #
-def test_forward_loss_zero_at_solution(wave_stack):
-    """The PDE-residual loss is ~0 at the Helmholtz solution of the truth model."""
-    cfg = LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        weights={"pde": 1.0, "data": 1.0},
-        regulariser=None,
-    )
-    loss = ForwardLoss(cfg)
-    L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
-    assert float(L) < 1e-18
-    assert not torch.is_complex(L)
-    assert loss.evaluations == 1
-
-
-def test_forward_loss_scales_with_pde_weight(wave_stack):
-    """Doubling the PDE weight doubles the forward loss."""
-    base = LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        weights={"pde": 1.0},
-        regulariser=None,
-    )
-    dbl = LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        weights={"pde": 2.0},
-        regulariser=None,
-    )
-    # perturb the field so the residual is non-zero.
-    amp = wave_stack.amp * 1.1
-    L1 = ForwardLoss(base).evaluate(amp, wave_stack.model.c)
-    L2 = ForwardLoss(dbl).evaluate(amp, wave_stack.model.c)
-    assert float(L2) == pytest.approx(2.0 * float(L1), rel=1e-6)
-
-
-# --------------------------------------------------------------------------- #
 # InverseLoss
 # --------------------------------------------------------------------------- #
-def _inverse_config(wave_stack, weights=None):
+def _inverse_config(wave_stack, regulariser=None):
     return LossConfig(
         wave_eq=wave_stack.wave_eq,
         geometry=wave_stack.geometry,
-        weights=weights or {"pde": 1.0, "data": 1.0},
-        regulariser=None,
+        regulariser=regulariser,
     )
 
 
-def test_inverse_loss_zero_at_truth(wave_stack):
-    """PDE + data misfit is ~0 at the true wavefield and model."""
+def test_inverse_loss_sources_satisfy_pde_at_truth(wave_stack):
+    """The loss's t0**2-scaled sources make the PDE residual ~0 at the
+    Helmholtz solution of the true model."""
     loss = InverseLoss(
-        observed_wavefield=wave_stack.sols,
-        config=_inverse_config(wave_stack),
+        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
     )
-    L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
-    assert float(L) < 1e-18
-    # diagnostics are recorded on last_residuals.
-    assert set(loss.last_residuals) >= {"pde_rms", "data_rms", "pde_src_ratio"}
+    r = wave_stack.wave_eq.residual(wave_stack.amp, wave_stack.model.c, loss.sources)
+    assert float(mean_abs_sq(r).sqrt()) < 1e-8 * loss.src_rms
+
+
+@pytest.mark.parametrize("mode", ["wavefield", "traces"])
+def test_inverse_loss_observations_match_truth_at_receivers(wave_stack, mode):
+    """Both observation modes give the true wavefield's receiver traces."""
+    obs = (
+        {"observed_wavefield": wave_stack.sols}
+        if mode == "wavefield"
+        else {"observed_traces": wave_stack.obs_traces}
+    )
+    loss = InverseLoss(**obs, config=_inverse_config(wave_stack))
+    syn = wave_stack.geometry.extract_observations(wave_stack.amp)
+    assert loss.obs_traces().shape == syn.shape
+    assert torch.equal(syn - loss.obs_traces(), torch.zeros_like(syn))
 
 
 def test_inverse_loss_requires_exactly_one_observation(wave_stack):
@@ -214,64 +179,29 @@ def test_inverse_loss_rejects_non_3d_traces(wave_stack):
         InverseLoss(observed_traces=wave_stack.obs_traces[0], config=cfg)
 
 
-def test_inverse_loss_trace_mode_zero_at_truth(wave_stack):
-    """Trace-observation mode is also ~0 at the true wavefield/model."""
-    loss = InverseLoss(
-        observed_traces=wave_stack.obs_traces,
-        config=_inverse_config(wave_stack),
-    )
-    L = loss.evaluate(wave_stack.amp, wave_stack.model.c)
-    assert float(L) < 1e-18
-
-
-def test_inverse_loss_data_misfit_positive_when_wrong(wave_stack):
-    """A wrong wavefield produces a positive data misfit."""
-    cfg = _inverse_config(wave_stack, weights={"pde": 0.0, "data": 1.0})
-    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
-    L = loss.evaluate(wave_stack.amp * 0.5, wave_stack.model.c)
-    assert float(L) > 0
-
-
-def test_inverse_loss_data_term_ignores_the_transmitting_transducer(wave_stack):
+def test_inverse_loss_data_residual_ignores_the_transmitting_transducer(wave_stack):
     """Perturbing u only at each shot's own transducer node leaves the data
-    term unchanged."""
-    cfg = _inverse_config(wave_stack, weights={"pde": 0.0, "data": 1.0})
-    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
+    residual against the observations at zero."""
+    loss = InverseLoss(
+        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
+    )
     geom = wave_stack.geometry
     amp = wave_stack.amp.clone()
     for s in range(geom.n_shots):
         i, j = geom.transducer_ij[s]
         amp[s, :, i, j] += 10.0
-    loss.evaluate(amp, wave_stack.model.c)
-    assert loss.last_residuals["data_loss"] < 1e-30
+    r_data = geom.extract_observations(amp) - loss.obs_traces()
+    assert float(mean_abs_sq(r_data)) < 1e-30
 
 
-def test_inverse_loss_weights_override(wave_stack):
-    """weights_override replaces config weights for a single evaluation."""
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols,
-        config=_inverse_config(wave_stack, {"pde": 1.0, "data": 1.0}),
+def test_inverse_loss_default_callback_is_a_fresh_tape(wave_stack):
+    """Without a callback, each loss gets its own empty LossTape."""
+    a = InverseLoss(
+        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
     )
-    amp = wave_stack.amp * 0.5
-    full = float(loss.evaluate(amp, wave_stack.model.c))
-    data_only = float(
-        loss.evaluate(amp, wave_stack.model.c, weights_override={"pde": 0.0})
+    b = InverseLoss(
+        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
     )
-    assert data_only < full  # dropping the PDE term lowers the loss
-
-
-def test_inverse_loss_regulariser_term(wave_stack):
-    """A configured regulariser adds a positive penalty for a varying c_interior."""
-    cfg = LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        weights={"pde": 1.0, "data": 1.0, "reg": 1.0},
-        regulariser=Regulariser(kind="tikhonov", eps=1e-8),
-    )
-    loss = InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
-    g = wave_stack.grid
-    c_int = wave_stack.model.c[g.interior_slice].clone()
-    c_int[0, 0] += 100.0  # introduce a gradient
-    L_with = float(loss.evaluate(wave_stack.amp, wave_stack.model.c, c_interior=c_int))
-    L_without = float(loss.evaluate(wave_stack.amp, wave_stack.model.c))
-    assert L_with > L_without
+    assert isinstance(a.callback, LossTape)
+    assert a.callback is not b.callback
+    assert a.callback.history["loss"] == []
