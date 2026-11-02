@@ -119,4 +119,4 @@ The part of the objective that penalises the mismatch between the wavefield at t
 Two discretisations with the same domain, source shape and PML thickness, all measured in metres, differing only in grid spacing.
 
 **Grid independence**:
-The property that the balance between the objective's terms does not change when the same physical problem is discretised at a different resolution.
+The property that the balance between the objective's terms does not change when the same physical problem is discretised at a different resolution, or when only the PML thickness changes.

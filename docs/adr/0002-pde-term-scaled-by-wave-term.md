@@ -6,3 +6,4 @@ The PDE residual of each (shot, frequency) is divided by `ω'²·u_ref`, the RMS
 
 - The scale needs a non-zero warm-start wavefield, so every band is warm-started by a Helmholtz solve; a solver-free cold start (`u = 0`) is not supported.
 - The PDE residual is summed over interior and PML nodes and normalised by the interior node count, so the PML counts in proportion to its physical size and grid size does not enter the balance.
+- Same-physical-problem scaling keeps `N_int/N` constant, so a PML-width drift shows only at a fixed resolution with a thicker PML. The balance check (`odil_wave/experiment/balance.py`) tests both axes: case `k` scales interior and PML, case `k:p` the PML alone.
