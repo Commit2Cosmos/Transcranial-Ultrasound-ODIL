@@ -394,8 +394,10 @@ experiments are written" above):
 - **`band_summary.json`**: `frequencies_hz`, `fft_bins`, `t_start_epoch_s`,
   `wall_s` / `warm_start_s` / `optimise_s`, `n_iter_requested`,
   `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
-  `n_outer_iter`, `n_closure`, `n_evaluations`), `warnings`, `worst_fit_shot`
-  and `saved_shots`.
+  `n_outer_iter`, `n_closure`, `n_evaluations`; `scale_info`, the band's fixed
+  scales, with `model_preconditioner` and, for `pde_diagonal`, `precond_eps`,
+  `precond_target`, min/median/max of `h_zz` and `model_scale`, and
+  `precond_floored_frac`), `warnings`, `worst_fit_shot` and `saved_shots`.
 - **Optimiser-health warnings** (fixed in code, `health.py`): `c` within 1% of
   a speed bound (`grid.c_min` / `grid.c_max`), `sat_frac` above 1%, and
   `grad_u_norm` or `grad_z_norm` rising at 3 consecutive logged rows. Each

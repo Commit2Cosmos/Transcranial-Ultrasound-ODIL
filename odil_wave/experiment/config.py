@@ -314,6 +314,10 @@ class OptimiserCfg:
     * ``line_search_fn``: ``"strong_wolfe"`` | ``"none"``.
     * ``lbfgs_lr``: L-BFGS learning rate.
     * ``tolerance_grad`` / ``tolerance_change``: L-BFGS stopping tolerances.
+    * ``model_preconditioner``: ``"none"`` | ``"pde_diagonal"``. ``pde_diagonal``
+      rescales the model latent per cell so its PDE-term curvature at the band's
+      warm start matches the wavefield block's median curvature (needs
+      ``loss.weights.pde > 0``).
     """
 
     n_iter: int = 20
@@ -324,6 +328,7 @@ class OptimiserCfg:
     lbfgs_lr: float = 1.0
     tolerance_grad: float = 1e-12
     tolerance_change: float = 1e-14
+    model_preconditioner: str = "none"
 
 
 @dataclass(frozen=True)
@@ -577,6 +582,7 @@ def apply_overrides(
 # the VelocityModel profiles / profile kwargs.
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
 _LINE_SEARCHES = ("strong_wolfe", "none")
+_MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
@@ -688,6 +694,16 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             raise ConfigError(f"loss.weights.{key} must be >= 0, got {val}")
     if float(weights["data"]) <= 0:
         raise ConfigError(f"loss.weights.data must be > 0, got {weights['data']}")
+    if opt.model_preconditioner not in _MODEL_PRECONDITIONERS:
+        raise ConfigError(
+            f"optimiser.model_preconditioner must be one of "
+            f"{list(_MODEL_PRECONDITIONERS)}, got {opt.model_preconditioner!r}"
+        )
+    if opt.model_preconditioner == "pde_diagonal" and float(weights["pde"]) <= 0:
+        raise ConfigError(
+            "optimiser.model_preconditioner 'pde_diagonal' needs "
+            "loss.weights.pde > 0 (the model-block curvature comes from the PDE term)"
+        )
     if loss.regulariser.name not in _REGULARISERS:
         raise ConfigError(
             f"loss.regulariser.name must be one of {list(_REGULARISERS)}, "

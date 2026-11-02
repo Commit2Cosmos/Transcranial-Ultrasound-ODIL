@@ -56,6 +56,7 @@ def test_print_defaults_prints_the_default_config(tmp_path, capsys):
 
     resolved = resolve_config(load_config_file(printed)).to_dict()
     assert resolved == resolve_config({}).to_dict()
+    assert "model_preconditioner: none" in printed.read_text()
 
 
 def test_dry_run_default_config(capsys):

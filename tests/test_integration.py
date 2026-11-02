@@ -260,3 +260,28 @@ def test_optimiser_result_loss_is_at_the_final_iterate(
         "n_outer_budget",
     } & set(result)
     assert {"n_outer_iter", "n_closure", "n_evaluations"} <= set(result)
+
+
+def test_pde_diagonal_preconditioner_runs_end_to_end(tiny_run_config, new_run):
+    """The tiny config with optimiser.model_preconditioner = pde_diagonal
+    completes with finite tape values and reports its scale (no recovery
+    claim)."""
+    user_cfg = deep_merge(
+        tiny_run_config,
+        {"optimiser": {"n_iter": 3, "model_preconditioner": "pde_diagonal"}},
+    )
+    result = run_inverse(resolve_config(user_cfg), new_run())
+    assert result.status == "completed"
+
+    with open(result.run_dir / "tape.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 4  # start row + 3 outer iterations
+    for key in ("loss_total", "rmse_brain", "grad_z_norm"):
+        values = [float(r[key]) for r in rows]
+        assert np.all(np.isfinite(values)), key
+
+    (band_dir,) = (p for p in (result.run_dir / "bands").iterdir() if p.is_dir())
+    summary = json.loads((band_dir / "band_summary.json").read_text())
+    info = summary["optimiser_result"]["scale_info"]
+    assert info["model_preconditioner"] == "pde_diagonal"
+    assert np.isfinite(info["precond_target"]) and info["precond_target"] > 0
