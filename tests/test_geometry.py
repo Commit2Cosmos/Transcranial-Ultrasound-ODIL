@@ -38,6 +38,18 @@ def test_every_other_transducer_records_each_shot(geometry):
         assert sorted(geometry.receivers[s].tolist()) == [r for r in range(n) if r != s]
 
 
+def test_receiver_offsets_count_ring_steps_either_way(geometry):
+    """Each (shot, receiver) pair's Offset in transducer steps along the ring,
+    the shorter way round: 1 for neighbours, n // 2 for the opposite one."""
+    n = geometry.n_transducers
+    off = geometry.receiver_offsets
+    assert off.shape == (n, n - 1)
+    for s in range(n):
+        for k, r in enumerate(geometry.receivers[s].tolist()):
+            assert off[s, k] == min((r - s) % n, (s - r) % n)
+    assert int(off.min()) == 1 and int(off.max()) == n // 2
+
+
 def test_default_ring_center_is_interior_center(grid, source, freq_selection):
     """ring_center=None centres the ring on the interior region."""
     geom = make_geometry(grid, source, freq_selection, ring_center=None)

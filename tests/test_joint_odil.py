@@ -36,7 +36,11 @@ def truth_problem() -> SimpleNamespace:
 
 
 def _make_optimiser(
-    problem, regulariser=None, reg_weight=0.0, model_preconditioner="none"
+    problem,
+    regulariser=None,
+    reg_weight=0.0,
+    model_preconditioner="none",
+    trace_weighting="per_shot",
 ) -> JointFreqODIL:
     """Joint optimiser on the truth model, warm-started at the observed fields.
 
@@ -67,6 +71,7 @@ def _make_optimiser(
         log_every=1,
         verbose=False,
         model_preconditioner=model_preconditioner,
+        trace_weighting=trace_weighting,
     )
 
 
@@ -169,6 +174,43 @@ def test_data_term_ignores_the_transmitting_transducer(truth_problem):
     _, r_bumped = opt.residuals(bumped, u_im, z)
     assert r_data.shape == (n, opt.nf, n - 1)
     assert torch.equal(r_bumped, r_data)
+
+
+@pytest.mark.parametrize("weighting", ["per_shot", "per_trace", "per_offset"])
+def test_trace_weighting_scales_observed_traces_to_mean_square_one(
+    truth_problem, weighting
+):
+    """Every weighting divides each observed trace by a fixed scale so the
+    traces it pools (a shot's receivers, one trace, or every trace at one
+    Offset) have mean square 1 at each frequency."""
+    opt = _make_optimiser(truth_problem, trace_weighting=weighting)
+    n = opt.geometry.n_transducers
+    weighted = (opt._obs_traces / opt.data_scale).abs().square()
+    if weighting == "per_shot":
+        assert opt.data_scale.shape == (n, opt.nf, 1)
+        groups = torch.arange(n).view(-1, 1).expand(n, n - 1)
+    elif weighting == "per_trace":
+        groups = torch.arange(n * (n - 1)).view(n, n - 1)
+    else:
+        groups = opt.geometry.receiver_offsets
+    for g in groups.unique():
+        ms = weighted.transpose(0, 1)[:, groups == g].mean(dim=-1)
+        assert torch.allclose(ms, torch.ones_like(ms), rtol=1e-10)
+    assert opt.scale_info["trace_weighting"] == weighting
+
+
+def test_per_offset_scale_is_shared_by_every_trace_at_one_offset(truth_problem):
+    opt = _make_optimiser(truth_problem, trace_weighting="per_offset")
+    off = opt.geometry.receiver_offsets
+    scale = opt.data_scale.expand_as(opt._obs_traces)
+    for k in off.unique():
+        at_k = scale.transpose(0, 1)[:, off == k]
+        assert torch.equal(at_k, at_k[:, :1].expand_as(at_k))
+
+
+def test_unknown_trace_weighting_is_rejected(truth_problem):
+    with pytest.raises(ValueError, match="trace_weighting"):
+        _make_optimiser(truth_problem, trace_weighting="per_receiver")
 
 
 def _directional_check(opt, block):

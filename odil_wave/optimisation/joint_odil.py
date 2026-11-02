@@ -36,7 +36,16 @@ Formulation
   fixed scales ``pde_scale[s, w] = max(|lambda_tt[w]| * u_ref[s, w], eps_p)``
   (the wave term's magnitude, ADR-0002: independent of the source
   normalisation, grid spacing and PML width; NOT the near-zero warm-start PDE
-  residual) and ``data_scale[s, w] = max(RMS|d_obs[s, w]|, eps_d)``.
+  residual) and a fixed per-trace ``data_scale``, the **trace weighting**
+  (``trace_weighting``), each ``max(RMS|d_obs|, eps_d)`` over the traces it
+  pools at one frequency:
+
+      per_shot   (default)  the receivers of shot s:  data_scale[s, w]
+      per_trace             the trace alone:          data_scale[s, w, r] = |d_obs|
+      per_offset            every trace at the same Offset (ring steps, the
+                            shorter way round), over all shots
+
+  so every weighting scales the observed traces to mean square 1.
 
 * Objective:
 
@@ -138,10 +147,41 @@ def rms_abs(x: torch.Tensor, dim=None) -> torch.Tensor:
     return v.mean(dim=dim).sqrt() if dim is not None else v.mean().sqrt()
 
 
+def trace_scale(
+    obs: torch.Tensor, offsets: torch.Tensor, weighting: str, eps: float
+) -> torch.Tensor:
+    """Fixed data-term scale of each observed trace under ``weighting``.
+
+    ``obs`` is ``(n_shots, nf, n_recv)`` and ``offsets`` ``(n_shots, n_recv)``
+    (the geometry's ``receiver_offsets``). Returns ``max(RMS|obs|, eps)`` over
+    the traces ``weighting`` pools at each frequency, broadcastable to ``obs``:
+    ``(n_shots, nf, 1)`` for ``per_shot``, ``(n_shots, nf, n_recv)`` otherwise.
+    """
+    if weighting == "per_shot":
+        scale = rms_abs(obs, dim=(2,)).unsqueeze(-1)
+    elif weighting == "per_trace":
+        scale = obs.abs()
+    elif weighting == "per_offset":
+        sq = abs_sq(obs).transpose(0, 1).reshape(obs.shape[1], -1)  # (nf, s*r)
+        key = offsets.reshape(-1).to(obs.device)
+        n_keys = int(key.max()) + 1
+        sums = sq.new_zeros(sq.shape[0], n_keys).index_add_(1, key, sq)
+        counts = torch.bincount(key, minlength=n_keys).clamp_min(1).to(sq.dtype)
+        ms = (sums / counts)[:, key].view(obs.shape[1], obs.shape[0], obs.shape[2])
+        scale = ms.transpose(0, 1).sqrt()
+    else:
+        raise ValueError(
+            f"trace_weighting must be one of {list(TRACE_WEIGHTINGS)}, "
+            f"got {weighting!r}"
+        )
+    return scale.clamp_min(eps)
+
+
 # --------------------------------------------------------------------------- #
 # Model-block preconditioner
 # --------------------------------------------------------------------------- #
 MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
+TRACE_WEIGHTINGS = ("per_shot", "per_trace", "per_offset")
 
 
 def preconditioner_scale(
@@ -269,6 +309,7 @@ class JointFreqODIL(Optimiser):
         log_every: int,
         verbose: bool,
         model_preconditioner: str,
+        trace_weighting: str = "per_shot",
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
@@ -293,6 +334,12 @@ class JointFreqODIL(Optimiser):
                 f"model_preconditioner must be one of {list(MODEL_PRECONDITIONERS)}, "
                 f"got {model_preconditioner!r}"
             )
+        if trace_weighting not in TRACE_WEIGHTINGS:
+            raise ValueError(
+                f"trace_weighting must be one of {list(TRACE_WEIGHTINGS)}, "
+                f"got {trace_weighting!r}"
+            )
+        self.trace_weighting = trace_weighting
 
         grid = wavefield.grid
         self.grid = grid
@@ -370,8 +417,13 @@ class JointFreqODIL(Optimiser):
         # Full-grid mean -> sum over interior + PML / N_int.
         self.n_int = u_int.shape[-2] * u_int.shape[-1]
         self.pde_node_factor = (self.Nx * self.Ny) / self.n_int
-        data_scale = rms_abs(self._obs_traces, dim=(2,)).clamp_min(eps_data)
-        self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
+        self.data_scale = trace_scale(
+            self._obs_traces,
+            self.geometry.receiver_offsets,
+            trace_weighting,
+            eps_data,
+        )
+        data_scale = self.data_scale
         # ||d_obs||_2 over shots x frequencies x receivers, for rel_data_residual.
         self.obs_norm = float(torch.linalg.vector_norm(self._obs_traces))
         # Fixed model reference for reporting: c_ref = homogeneous background.
@@ -437,7 +489,8 @@ class JointFreqODIL(Optimiser):
             "data_scale_min": float(data_scale.min()),
             "data_scale_max": float(data_scale.max()),
             "data_scale_mean": float(data_scale.mean()),
-            "data_scale_rule": "RMS(|d_obs|) per (shot, freq), fixed",
+            "data_scale_rule": f"RMS(|d_obs|) {self.trace_weighting}, fixed",
+            "trace_weighting": self.trace_weighting,
         }
 
     def _build_model_scale(self) -> None:

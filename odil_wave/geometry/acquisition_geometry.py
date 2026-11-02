@@ -112,6 +112,10 @@ class AcquisitionGeometry:
         )
         # (n_shots, n_transducers - 1, 2) grid nodes of each shot's receivers.
         self.receiver_ij = self.transducer_ij[self.receivers]
+        # Offset of each (shot, receiver) pair in transducer steps along the
+        # ring, the shorter way round (1 .. n_transducers // 2).
+        step = (self.receivers - ids.view(-1, 1)) % self.n_transducers
+        self.receiver_offsets = torch.minimum(step, self.n_transducers - step)
 
     @property
     def n_shots(self) -> int:

@@ -54,7 +54,7 @@ EXPECTED_SHAPE = {
         "extra",
     ],
     "continuation": ["bands"],
-    "loss": ["weights", "regulariser"],
+    "loss": ["weights", "regulariser", "trace_weighting"],
     "optimiser": [
         "n_iter",
         "log_every",
@@ -283,6 +283,7 @@ def test_supported_space_orders_validate(order):
         {"loss": {"regulariser": {"name": None}}},
         {"loss": {"regulariser": {"name": "tv"}}},
         {"loss": {"regulariser": {"name": "l2"}}},
+        {"loss": {"trace_weighting": "per_receiver"}},
         {"truth": {"profile": "skull"}},
         {"init": {"profile": "skull"}},
         {"init": {"extra": {"skull_smooth": 1.0}}},
@@ -464,6 +465,12 @@ def test_model_preconditioner_defaults_to_none_and_accepts_pde_diagonal():
     validate_config(
         resolve_config({"optimiser": {"model_preconditioner": "pde_diagonal"}})
     )
+
+
+def test_trace_weighting_defaults_to_per_shot_and_accepts_the_others():
+    assert resolve_config({}).loss.trace_weighting == "per_shot"
+    for weighting in ("per_trace", "per_offset"):
+        validate_config(resolve_config({"loss": {"trace_weighting": weighting}}))
 
 
 def test_pde_weight_zero_is_allowed():

@@ -216,6 +216,7 @@ def build_optimiser(
         log_every=opt.log_every,
         verbose=cfg.runtime.verbose,
         model_preconditioner=opt.model_preconditioner,
+        trace_weighting=cfg.loss.trace_weighting,
     )
 
 

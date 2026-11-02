@@ -296,12 +296,17 @@ class LossCfg:
       ``data`` and ``reg`` (all required); each >= 0 and ``data`` > 0.
       ``reg`` > 0 activates the regulariser.
     * ``regulariser``: :class:`RegulariserCfg`.
+    * ``trace_weighting``: ``"per_shot"`` | ``"per_trace"`` | ``"per_offset"``,
+      the data term's **trace weighting**: each observed trace is divided by
+      the RMS of ``|d_obs|`` over its shot's receivers, itself alone, or every
+      trace at its Offset, at each frequency.
     """
 
     weights: Dict[str, float] = field(
         default_factory=lambda: {"pde": 1.0, "data": 1.0, "reg": 0.0}
     )
     regulariser: RegulariserCfg = field(default_factory=RegulariserCfg)
+    trace_weighting: str = "per_shot"
 
 
 @dataclass(frozen=True)
@@ -590,6 +595,7 @@ def apply_overrides(
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
 _LINE_SEARCHES = ("strong_wolfe", "none")
 _MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
+_TRACE_WEIGHTINGS = ("per_shot", "per_trace", "per_offset")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
@@ -710,6 +716,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             "optimiser.model_preconditioner 'pde_diagonal' needs "
             "loss.weights.pde > 0 (the model-block curvature comes from the PDE term)"
+        )
+    if loss.trace_weighting not in _TRACE_WEIGHTINGS:
+        raise ConfigError(
+            f"loss.trace_weighting must be one of {list(_TRACE_WEIGHTINGS)}, "
+            f"got {loss.trace_weighting!r}"
         )
     if loss.regulariser.name not in _REGULARISERS:
         raise ConfigError(
