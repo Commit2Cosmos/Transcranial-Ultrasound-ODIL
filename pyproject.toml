@@ -29,6 +29,7 @@ dev = [
     # pinned to the .pre-commit-config.yaml revs so local runs match CI
     "ruff==0.17.2",
     "pre-commit>=3.0",
+    "pytest-xdist",
     "ipykernel",
     "nbconvert",
     "torchinfo",
