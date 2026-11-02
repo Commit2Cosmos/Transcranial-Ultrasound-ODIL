@@ -22,28 +22,19 @@ from odil_wave.grid import FrequencySelection
 from odil_wave.wavefield import Wavefield
 
 from odil_wave.operator.base import DenseOperator
-from odil_wave.operator.conditions import (
-    Conditions,
-    NeumannMirrorBC2nd,
-    NeumannMirrorBC4th,
-    Sponge,
-)
+from odil_wave.operator.conditions import Conditions, Sponge
 from odil_wave.operator.spatial import (
     Laplacian2ndOrder,
     Laplacian4thOrder,
     Laplacian6thOrder,
     Laplacian8thOrder,
     Laplacian10thOrder,
-    C6,
-    C6_CENTER,
     _apply_conv_laplacian,
-    _cross_laplacian_kernel,
-    _fourth_derivative_1d,
+    laplacian_stencil,
 )
 from odil_wave.operator.utils import WaveEquation
 from odil_wave.operator.helmholtz import (
     HelmholtzSolver,
-    _laplacian_kernel,
     _reflect_index,
     assemble_laplacian_csr,
     np_complex_dtype,
@@ -105,62 +96,6 @@ def test_dense_operator_is_abstract():
 def test_conditions_is_abstract():
     with pytest.raises(TypeError):
         Conditions()
-
-
-def test_neumann_mirror_bc_2nd_patches_boundary_neighbours():
-    bc = NeumannMirrorBC2nd()
-    n_shots, nx, ny = 1, 5, 4
-    utm = torch.arange(n_shots * nx * ny, dtype=torch.float64).reshape(n_shots, nx, ny)
-    uxm = -torch.ones(n_shots, nx, ny)
-    uxp = -torch.ones(n_shots, nx, ny)
-    uym = -torch.ones(n_shots, nx, ny)
-    uyp = -torch.ones(n_shots, nx, ny)
-
-    out_uxm, out_uxp, out_uym, out_uyp = bc.patch_spatial_neighbors(
-        uxm, uxp, uym, uyp, utm
-    )
-
-    assert torch.equal(out_uxm[:, 0, :], utm[:, 1, :])
-    assert torch.equal(out_uxm[:, 1:, :], uxm[:, 1:, :])  # untouched elsewhere
-    assert torch.equal(out_uxp[:, -1, :], utm[:, -2, :])
-    assert torch.equal(out_uxp[:, :-1, :], uxp[:, :-1, :])
-    assert torch.equal(out_uym[:, :, 0], utm[:, :, 1])
-    assert torch.equal(out_uym[:, :, 1:], uym[:, :, 1:])
-    assert torch.equal(out_uyp[:, :, -1], utm[:, :, -2])
-    assert torch.equal(out_uyp[:, :, :-1], uyp[:, :, :-1])
-
-
-def test_neumann_mirror_bc_2nd_apply_matches_patch_spatial_neighbors():
-    bc = NeumannMirrorBC2nd()
-    tensors = [torch.randn(1, 5, 4) for _ in range(5)]
-    assert all(
-        torch.equal(a, b)
-        for a, b in zip(bc.apply(*tensors), bc.patch_spatial_neighbors(*tensors))
-    )
-
-
-def test_neumann_mirror_bc_4th_patches_boundary_neighbours():
-    bc = NeumannMirrorBC4th()
-    n_shots, nx, ny = 1, 7, 6
-    utm = torch.arange(n_shots * nx * ny, dtype=torch.float64).reshape(n_shots, nx, ny)
-    ghosts = [-torch.ones(n_shots, nx, ny) for _ in range(8)]
-    uxm2, uxm, uxp, uxp2, uym2, uym, uyp, uyp2 = bc.patch_spatial_neighbors(
-        *ghosts, utm
-    )
-
-    assert torch.equal(uxm[:, 0, :], utm[:, 1, :])
-    assert torch.equal(uxp[:, -1, :], utm[:, -2, :])
-    assert torch.equal(uxm2[:, 0, :], utm[:, 2, :])
-    assert torch.equal(uxm2[:, 1, :], utm[:, 1, :])
-    assert torch.equal(uxp2[:, -2, :], utm[:, -2, :])
-    assert torch.equal(uxp2[:, -1, :], utm[:, -3, :])
-
-    assert torch.equal(uym[:, :, 0], utm[:, :, 1])
-    assert torch.equal(uyp[:, :, -1], utm[:, :, -2])
-    assert torch.equal(uym2[:, :, 0], utm[:, :, 2])
-    assert torch.equal(uym2[:, :, 1], utm[:, :, 1])
-    assert torch.equal(uyp2[:, :, -2], utm[:, :, -2])
-    assert torch.equal(uyp2[:, :, -1], utm[:, :, -3])
 
 
 def test_sponge_apply_residual_matches_manual_formula():
@@ -246,40 +181,30 @@ def test_apply_conv_laplacian_complex_matches_real_imag_split():
     assert torch.allclose(out, expected)
 
 
-def test_fourth_derivative_1d_exact_for_quadratic():
-    # u(x) = x^2 sampled at -2h..2h (h=1): u'' = 2 exactly, stencil is exact
-    # up to degree-5 polynomials so this must match to machine precision.
-    samples = [4.0, 1.0, 0.0, 1.0, 4.0]  # (-2)^2, (-1)^2, 0^2, 1^2, 2^2
-    out = _fourth_derivative_1d(*[torch.tensor(s) for s in samples])
-    assert out.item() == pytest.approx(2.0)  # unscaled; caller divides by h^2
-
-
-def test_fourth_derivative_1d_matches_manual_stencil_formula():
-    vals = [2.0, -1.0, 3.0, 0.5, -4.0]
-    um2, um1, u, up1, up2 = [torch.tensor(v) for v in vals]
-    out = _fourth_derivative_1d(um2, um1, u, up1, up2)
-    expected = (-vals[0] + 16 * vals[1] - 30 * vals[2] + 16 * vals[3] - vals[4]) / 12.0
-    assert out.item() == pytest.approx(expected)
-
-
-def test_cross_laplacian_kernel_6th_order_matches_known_coefficients():
-    K = _cross_laplacian_kernel(
-        C6, C6_CENTER, cx=1.0, cy=1.0, dtype=torch.float64, device="cpu"
-    )
-    p = len(C6)  # 3 -> 7x7 kernel
-    assert K.shape == (1, 1, 7, 7)
-    assert K[0, 0, p, p].item() == pytest.approx(C6_CENTER * 2.0)
-    for k, ck in enumerate(C6):
-        offset = k + 1
-        assert K[0, 0, p - offset, p].item() == pytest.approx(ck)
-        assert K[0, 0, p + offset, p].item() == pytest.approx(ck)
-        assert K[0, 0, p, p - offset].item() == pytest.approx(ck)
-        assert K[0, 0, p, p + offset].item() == pytest.approx(ck)
+def test_laplacian_stencil_6th_order_matches_known_coefficients():
+    """The 6th-order cross stencil carries the textbook 1D coefficients,
+    scaled by 1/dx**2 on the x arm and 1/dy**2 on the y arm."""
+    K, pad = laplacian_stencil(6, dx_nd=1.0, dy_nd=0.5)
+    assert pad == 3 and K.shape == (7, 7)
+    # 1D coefficients (Fornberg): offsets 1..3, then the centre; cy = 1/0.5**2.
+    for k, ck in enumerate([3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0], start=1):
+        assert K[pad - k, pad] == pytest.approx(ck)
+        assert K[pad + k, pad] == pytest.approx(ck)
+        assert K[pad, pad - k] == pytest.approx(4.0 * ck)
+        assert K[pad, pad + k] == pytest.approx(4.0 * ck)
+    assert K[pad, pad] == pytest.approx(-49.0 / 18.0 * 5.0)
     # everything off the cross is zero
-    mask = torch.ones(7, 7, dtype=torch.bool)
-    mask[p, :] = False
-    mask[:, p] = False
-    assert torch.all(K[0, 0][mask] == 0.0)
+    off = K.copy()
+    off[pad, :] = 0.0
+    off[:, pad] = 0.0
+    assert (off == 0.0).all()
+
+
+@pytest.mark.parametrize("space_order", [3, 12])
+def test_laplacian_stencil_unsupported_order_raises(space_order):
+    """Orders without a coefficient table are rejected."""
+    with pytest.raises(ValueError):
+        laplacian_stencil(space_order, 1.0, 1.0)
 
 
 @pytest.mark.parametrize(
@@ -311,25 +236,11 @@ def test_laplacian_orders_are_exact_on_a_quadratic_interior(cls, pad):
     assert torch.allclose(center, torch.full_like(center, 4.0), atol=1e-6)
 
 
-def test_laplacian_2nd_order_kernel_matches_helmholtz_dense_kernel():
-    # cross-check odil_wave.operator.spatial's dense kernel against the
-    # sparse Helmholtz kernel builder that claims to match it (helmholtz.py's
-    # docstring for _laplacian_kernel).
-    grid = _make_grid(pml_width=0, interior_shape=(6, 6))
-    wf = _make_wavefield(grid)
-    dense_kernel = Laplacian2ndOrder(wf)._kernel
-    sparse_kernel, pad = _laplacian_kernel(2, grid.dx_nd, grid.dy_nd)
-    assert pad == 1
-    assert torch.allclose(
-        dense_kernel[0, 0], torch.as_tensor(sparse_kernel, dtype=dense_kernel.dtype)
-    )
-
-
 # --------------------------------------------------------------------------- #
 # utils.py: WaveEquation
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
-def test_wave_equation_selects_matching_laplacian_and_bc(space_order):
+def test_wave_equation_selects_matching_laplacian(space_order):
     grid = _make_grid()
     wf = _make_wavefield(grid)
     we = WaveEquation(wf, space_order=space_order, damping_scale=1.0)
@@ -340,9 +251,7 @@ def test_wave_equation_selects_matching_laplacian_and_bc(space_order):
         8: Laplacian8thOrder,
         10: Laplacian10thOrder,
     }[space_order]
-    expected_bc = NeumannMirrorBC2nd if space_order == 2 else NeumannMirrorBC4th
     assert isinstance(we._lap, expected_lap)
-    assert isinstance(we._bc, expected_bc)
 
 
 def test_wave_equation_invalid_space_order_raises():
@@ -379,7 +288,7 @@ def test_wave_equation_residual_matches_manual_assembly():
     lambda_t = lambda_t.to(dtype=amp.dtype)
     lambda_tt = lambda_tt.to(dtype=amp.dtype)
     wsp_nd = (c / grid.c0).to(amp.dtype)
-    lap = Laplacian2ndOrder(wf).apply(amp, bc=NeumannMirrorBC2nd())
+    lap = Laplacian2ndOrder(wf).apply(amp)
     core = lambda_tt * amp - wsp_nd**2 * lap - source
     sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
     sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
@@ -427,17 +336,11 @@ def test_reflect_index_raises_for_nonpositive_n():
         _reflect_index(0, 0)
 
 
-def test_laplacian_kernel_unsupported_order_raises():
-    with pytest.raises(ValueError):
-        _laplacian_kernel(3, 1.0, 1.0)
-
-
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
 def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
-    """The whole point of _laplacian_kernel/assemble_laplacian_csr is to
-    match odil_wave.operator.spatial's matrix-free Laplacian exactly (per
-    helmholtz.py's own docstring) -- this is the key correctness invariant
-    the sparse Helmholtz assembly depends on."""
+    """The sparse Laplacian the Helmholtz assembly uses equals the torch conv
+    Laplacian (reflect boundaries) on a random field -- the key correctness
+    invariant the sparse Helmholtz assembly depends on."""
     grid = _make_grid(pml_width=0, interior_shape=(9, 9), dtype=torch.float64)
     wf = _make_wavefield(grid)
     dense_cls = {
@@ -452,8 +355,9 @@ def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
     u = torch.randn(grid.nx, grid.ny, dtype=torch.float64)
     dense_out = dense_cls(wf).apply(u)
 
-    kernel, pad = _laplacian_kernel(space_order, grid.dx_nd, grid.dy_nd)
-    L = assemble_laplacian_csr(grid.nx, grid.ny, kernel, pad)
+    L = HelmholtzSolver(
+        wf, None, space_order=space_order, damping_scale=1.0
+    )._laplacian_csr()
     sparse_out = (L @ u.numpy().reshape(-1)).reshape(grid.nx, grid.ny)
 
     assert torch.allclose(dense_out, torch.as_tensor(sparse_out), atol=1e-8)
@@ -461,71 +365,11 @@ def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
 
 def test_assemble_laplacian_csr_shape():
     grid = _make_grid(pml_width=0, interior_shape=(5, 6))
-    kernel, pad = _laplacian_kernel(2, grid.dx_nd, grid.dy_nd)
+    kernel, pad = laplacian_stencil(2, grid.dx_nd, grid.dy_nd)
     L = assemble_laplacian_csr(grid.nx, grid.ny, kernel, pad)
     n = grid.nx * grid.ny
     assert L.shape == (n, n)
     assert L.nnz > 0
-
-
-def test_helmholtz_factor_cache_matvec_rejects_wrong_shape(tiny_setup):
-    solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
-    )
-    cache = solver.factorize(tiny_setup.vm.c.detach())
-    bad = torch.zeros(
-        2, 3, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
-    )
-    with pytest.raises(ValueError):
-        cache.matvec(bad)
-
-
-def test_helmholtz_factor_cache_solve_rejects_bad_trans(tiny_setup):
-    solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
-    )
-    cache = solver.factorize(tiny_setup.vm.c.detach())
-    rhs = torch.zeros(
-        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
-    )
-    with pytest.raises(ValueError):
-        cache.solve(rhs, trans="X")
-
-
-def test_helmholtz_factor_cache_solve_inverts_matvec(tiny_setup):
-    solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
-    )
-    cache = solver.factorize(tiny_setup.vm.c.detach())
-    torch.manual_seed(1)
-    u = torch.randn(
-        2, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64
-    ).to(tiny_setup.wf.cdtype)
-    z = cache.matvec(u)
-    u_recovered = cache.solve(z, trans="N")
-    assert torch.allclose(u_recovered, u, atol=1e-4, rtol=1e-4)
-
-
-def test_helmholtz_factor_cache_solve_counters(tiny_setup):
-    solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
-    )
-    cache = solver.factorize(tiny_setup.vm.c.detach())
-    rhs = torch.zeros(
-        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=tiny_setup.wf.cdtype
-    )
-
-    assert cache.n_forward_solves == 0
-    assert cache.n_adjoint_solves == 0
-    cache.solve(rhs, trans="N")
-    assert cache.n_forward_solves == cache.nf
-    assert cache.n_adjoint_solves == 0
-    cache.solve(rhs, trans="H")
-    assert cache.n_adjoint_solves == cache.nf
-
-    cache.reset_counters()
-    assert cache.n_forward_solves == 0
-    assert cache.n_adjoint_solves == 0
 
 
 def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_setup):

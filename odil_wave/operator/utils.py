@@ -13,7 +13,7 @@ from .spatial import (
     Laplacian8thOrder,
     Laplacian10thOrder,
 )
-from .conditions import Conditions, NeumannMirrorBC2nd, NeumannMirrorBC4th, Sponge
+from .conditions import Sponge
 
 
 @dataclass
@@ -45,11 +45,10 @@ class WaveEquation:
     damping_scale: float = field(kw_only=True)
 
     _lap: DenseOperator = field(init=False)
-    _bc: Conditions = field(init=False)
     _sponge: Sponge = field(init=False)
 
     def __post_init__(self):
-        """Select the Laplacian and boundary condition for ``space_order``.
+        """Select the Laplacian for ``space_order`` and build the sponge.
 
         Notes
         -----
@@ -57,19 +56,14 @@ class WaveEquation:
         """
         if self.space_order == 2:
             self._lap = Laplacian2ndOrder(self.wavefield)
-            self._bc = NeumannMirrorBC2nd()
         elif self.space_order == 4:
             self._lap = Laplacian4thOrder(self.wavefield)
-            self._bc = NeumannMirrorBC4th()
         elif self.space_order == 6:
             self._lap = Laplacian6thOrder(self.wavefield)
-            self._bc = NeumannMirrorBC4th()
         elif self.space_order == 8:
             self._lap = Laplacian8thOrder(self.wavefield)
-            self._bc = NeumannMirrorBC4th()
         elif self.space_order == 10:
             self._lap = Laplacian10thOrder(self.wavefield)
-            self._bc = NeumannMirrorBC4th()
         else:
             raise ValueError(f"Invalid space order: {self.space_order}")
         self._sponge = Sponge(self.wavefield, self.damping_scale)
@@ -101,6 +95,6 @@ class WaveEquation:
         lambda_t = lambda_t.to(dtype=amp.dtype, device=amp.device)
         lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
 
-        lap = self._lap.apply(amp, bc=self._bc)
+        lap = self._lap.apply(amp)
         r = lambda_tt * amp - wsp_nd**2 * lap - source
         return self._sponge.apply(r, amp, lambda_t)

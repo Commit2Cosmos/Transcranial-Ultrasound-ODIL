@@ -9,6 +9,7 @@ from odil_wave import (
     FrequencySelection,
     HelmholtzSolver,
     InverseLoss,
+    JointFreqODIL,
     LossConfig,
     WaveEquation,
     Wavefield,
@@ -38,7 +39,8 @@ def _rel_c_error(c, truth, grid) -> float:
 
 
 def test_forward_to_loss_gradient_flows():
-    """A Helmholtz forward solve feeds a differentiable inverse loss in ``c``."""
+    """A Helmholtz forward solve feeds the joint objective, differentiable in
+    the model."""
     grid = make_grid(interior_shape=(16, 16))
     fs = FrequencySelection.from_frequencies(grid, [40e3])
     src = make_source(grid)
@@ -64,21 +66,36 @@ def test_forward_to_loss_gradient_flows():
     )
 
     wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
-    cfg = LossConfig(
-        wave_eq=wave_eq,
-        geometry=geom,
-        weights={"pde": 1.0, "data": 100.0},
-        regulariser=None,
-    )
+    cfg = LossConfig(wave_eq=wave_eq, geometry=geom, regulariser=None)
     loss = InverseLoss(observed_wavefield=sols, config=cfg)
+    opt = JointFreqODIL(
+        wf,
+        loss,
+        u_init=u0,
+        n_iter=1,
+        inner_max_iter=1,
+        history_size=1,
+        line_search_fn=None,
+        tolerance_grad=1e-12,
+        tolerance_change=1e-14,
+        lbfgs_lr=1.0,
+        pde_weight=1.0,
+        data_weight=100.0,
+        reg_weight=0.0,
+        log_every=1,
+        verbose=False,
+        model_preconditioner="none",
+    )
 
-    c = init.c.clone().requires_grad_(True)
-    L = loss.evaluate(u0, c)
+    u_re, u_im, z_m = opt.init_params()
+    z_m.requires_grad_(True)
+    L = opt.objective(u_re, u_im, z_m)
     L.backward()
-    # The data misfit is non-zero (wrong model) and its gradient reaches c.
-    assert float(L.detach()) > 0
-    assert c.grad is not None
-    assert float(c.grad.abs().max()) > 0
+    # The data misfit is non-zero (wrong model) and its gradient reaches the
+    # model latent z_m (and so c).
+    assert opt.last_record["data_loss"] > 0
+    assert z_m.grad is not None
+    assert float(z_m.grad.abs().max()) > 0
 
 
 def test_run_inverse_tiny_problem_recovers(tiny_run_config, new_run):

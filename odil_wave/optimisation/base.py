@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Tuple
 
-from odil_wave.loss import DiscreteLoss
+from odil_wave.loss import InverseLoss
 from odil_wave.loss.utils import LossTape
 from odil_wave.wavefield import Wavefield
 
@@ -9,7 +9,7 @@ from odil_wave.wavefield import Wavefield
 class Optimiser(ABC):
     """Base optimiser class."""
 
-    def __init__(self, wavefield: Wavefield, loss: DiscreteLoss) -> None:
+    def __init__(self, wavefield: Wavefield, loss: InverseLoss) -> None:
         """Store the wavefield to optimise and the loss to minimise it against."""
         self.loss = loss
         self.wavefield = wavefield

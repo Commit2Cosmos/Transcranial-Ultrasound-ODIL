@@ -358,14 +358,14 @@ def test_observed_data_satisfy_inverse_operator_on_truth(tiny_run_config):
                 damping_scale=problem.damping_scale,
             ),
             band.geom,
-            weights={"pde": 1.0, "data": 1.0, "reg": 0.0},
             regulariser=None,
         ),
     )
     amp = torch.stack([w.amplitude for w in band.observed_wfs])
-    loss.evaluate(amp, problem.truth_velocity.c)
-    assert loss.last_residuals["pde_src_ratio"] < 1e-8
-    assert loss.last_residuals["data_rms"] == 0.0
+    r_pde = loss.config.wave_eq.residual(amp, problem.truth_velocity.c, loss.sources)
+    assert float(r_pde.abs().square().mean().sqrt()) < 1e-8 * loss.src_rms
+    r_data = band.geom.extract_observations(amp) - loss.obs_traces()
+    assert torch.equal(r_data, torch.zeros_like(r_data))
 
 
 def _amplitudes(wavefields) -> torch.Tensor:

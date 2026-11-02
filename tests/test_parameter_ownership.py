@@ -139,17 +139,14 @@ def inverse_loss(wave_stack) -> InverseLoss:
     cfg = LossConfig(
         wave_stack.wave_eq,
         wave_stack.geometry,
-        weights={"pde": 1.0, "data": 1.0},
         regulariser=None,
     )
     return InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
 
 
-@pytest.mark.parametrize("name", ["weights", "regulariser"])
-def test_loss_config_requires_configured_params(name, wave_stack):
-    kw = dict(weights={"pde": 1.0, "data": 1.0}, regulariser=None)
-    with pytest.raises(TypeError, match=name):
-        LossConfig(wave_stack.wave_eq, wave_stack.geometry, **_without(kw, name))
+def test_loss_config_requires_configured_params(wave_stack):
+    with pytest.raises(TypeError, match="regulariser"):
+        LossConfig(wave_stack.wave_eq, wave_stack.geometry)
 
 
 @pytest.mark.parametrize("name", list(JOINT_KW))

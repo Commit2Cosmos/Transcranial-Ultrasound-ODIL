@@ -18,14 +18,9 @@ from .regulariser import Regulariser
 class LossConfig:
     """Configuration for the loss function.
 
-    `weights` multiplies the (already mean-reduced) per-block losses:
-    `pde_weight * mean(r_pde**2) + data_weight * mean(r_data**2) + w_reg * R(c_int)`.
-    ``weights`` and ``regulariser`` are set by the run config's ``loss`` block
-    and are required keywords (ADR 0001): keys ``pde`` / ``data`` / ``reg``
-    (:class:`ForwardLoss` reads only ``pde``; the ``reg`` term is added only
-    when a ``regulariser`` is set).
-    (This is the unscaled :class:`InverseLoss` form; ``JointFreqODIL`` applies
-    the same weights to per-(shot, freq) scaled relative terms.)
+    ``regulariser`` is set by the run config's ``loss`` block and is a
+    required keyword (ADR 0001). The objective weights are not part of it:
+    ``JointFreqODIL`` takes them directly from ``loss.weights``.
 
     The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
     the interior of c is the optimisation variable. Pad with
@@ -34,28 +29,14 @@ class LossConfig:
 
     wave_eq: WaveEquation
     geometry: AcquisitionGeometry
-    weights: dict = field(kw_only=True)
     regulariser: Optional[Regulariser] = field(kw_only=True)
 
-    speed_offset: int = field(init=False)
     device: torch.device = field(init=False)
     dtype: torch.dtype = field(init=False)
 
     def __post_init__(self):
-        """Derive device, dtype and DOF offsets.
-
-        Notes
-        -----
-        Computes
-        ``speed_offset``, the number of real wavefield DOFs preceding the
-        velocity parameters in a packed optimisation vector.
-        """
+        """Derive device and dtype from the wave equation's grid."""
         wf = self.wave_eq.wavefield
-        Nx, Ny = wf.grid.shape
-        nf = wf.n_frequencies
-
-        # Real/imag packing: 2 * n_shots * nf * nx * ny free u DOFs.
-        self.speed_offset = self.geometry.n_shots * nf * Nx * Ny * 2
         self.device = wf.grid.device
         self.dtype = wf.grid.dtype
 
@@ -80,7 +61,6 @@ class LossTape:
     """
 
     name: str = "Default LossTape"
-    log_every: int = 1
     store_c_history: bool = True
     c_history_every: int = 1
 

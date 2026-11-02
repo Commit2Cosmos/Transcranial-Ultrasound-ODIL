@@ -3,7 +3,7 @@ import math
 import pytest
 import torch
 
-from odil_wave import FrequencySelection, Grid
+from odil_wave import FrequencySelection
 from odil_wave.grid import complex_dtype, discrete_lambda_t, discrete_lambda_tt
 
 from conftest import make_grid
@@ -113,37 +113,6 @@ def test_natural_source_amplitude(grid):
     assert grid.natural_source_amplitude(10.0) == pytest.approx(200.0)
     with pytest.raises(ValueError):
         grid.natural_source_amplitude(0.0)
-
-
-def test_from_frequency_sets_resolution_and_guards_init_nt():
-    """from_frequency picks dx by the points-per-wavelength rule; init_nt banned."""
-    f_max, c_min, n_ppw = 40e3, 1400.0, 5
-    g = Grid.from_frequency(
-        f_max=f_max,
-        c_min=c_min,
-        interior_extent=((0.0, 0.05), (0.0, 0.05)),
-        n_ppw=n_ppw,
-        c_max=1600.0,
-        pml_width=4,
-        pml_power=3,
-        pml_R0=1e-6,
-        t_max=6e-5,
-        cfl_safety=0.9,
-        device=torch.device("cpu"),
-        dtype=torch.float64,
-    )
-    dx_target = c_min / (f_max * n_ppw)
-    # The realised dx rounds to an integer node count, so it lands within a step.
-    assert g.dx == pytest.approx(dx_target, abs=dx_target)
-    assert g.interior_nx == round(0.05 / dx_target) + 1
-    assert g.c_min == c_min
-    with pytest.raises(ValueError):
-        Grid.from_frequency(
-            f_max=f_max,
-            c_min=c_min,
-            interior_extent=((0.0, 0.05), (0.0, 0.05)),
-            init_nt=100,
-        )
 
 
 def test_summary_is_string(grid):

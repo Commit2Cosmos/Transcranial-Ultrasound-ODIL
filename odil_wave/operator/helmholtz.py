@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import scipy.sparse as sp
 import torch
-from scipy.sparse.linalg import SuperLU, splu
+from scipy.sparse.linalg import splu
 
 from odil_wave.wavefield import Wavefield
-from .spatial import C6, C6_CENTER, C8, C8_CENTER, C10, C10_CENTER
+from .spatial import laplacian_stencil
 from .utils import WaveEquation
 
 
@@ -20,112 +20,6 @@ def np_complex_dtype(torch_cdtype: torch.dtype):
     if torch_cdtype == torch.complex128:
         return np.complex128
     raise ValueError(f"Unsupported complex dtype for Helmholtz LU: {torch_cdtype}")
-
-
-class HelmholtzFactorCache:
-    """Cached SuperLU factors of ``H(c, omega_k)`` for a fixed medium ``c``."""
-
-    def __init__(self, solver: "HelmholtzSolver", c: torch.Tensor) -> None:
-        """Factorise H at c for every frequency bin, one SuperLU LU per bin."""
-        self.solver = solver
-        wf = solver.wavefield
-        grid = wf.grid
-        self.nx, self.ny = grid.nx, grid.ny
-        self.n = self.nx * self.ny
-        self.nf = wf.frequency_selection.n_frequencies
-        self.cdtype = wf.cdtype
-        self.np_cdtype = np_complex_dtype(self.cdtype)
-        self.device = grid.device
-        self._H: list[sp.csr_matrix] = []
-        self._lu: list[SuperLU] = []
-        self.n_factor = 0
-        self.n_forward_solves = 0
-        self.n_adjoint_solves = 0
-
-        c_det = c.detach()
-        for k in range(self.nf):
-            H = solver.assemble_H_sparse(c_det, k)
-            lu = splu(H.tocsc())
-            self.n_factor += 1
-            self._H.append(H.tocsr())
-            self._lu.append(lu)
-
-    def reset_counters(self) -> None:
-        """Zero the forward/adjoint solve counters."""
-        self.n_forward_solves = 0
-        self.n_adjoint_solves = 0
-
-    def matvec(self, u: torch.Tensor) -> torch.Tensor:
-        """Apply sparse ``H`` (no solve): ``z = H u``.
-
-        ``u`` shape ``(n_shots, nf, nx, ny)`` complex.
-        """
-        if u.ndim != 4 or u.shape[1] != self.nf:
-            raise ValueError(
-                f"expected u shape (n_shots, {self.nf}, {self.nx}, {self.ny}), "
-                f"got {tuple(u.shape)}"
-            )
-        n_shots = u.shape[0]
-        out = torch.empty_like(u)
-        for k in range(self.nf):
-            U = (
-                u[:, k]
-                .detach()
-                .cpu()
-                .numpy()
-                .reshape(n_shots, self.n)
-                .T.astype(self.np_cdtype, copy=False)
-            )
-            Z = self._H[k] @ U
-            out[:, k] = torch.as_tensor(
-                Z.T.reshape(n_shots, self.nx, self.ny),
-                dtype=self.cdtype,
-                device=self.device,
-            )
-        return out
-
-    def solve(
-        self,
-        rhs: torch.Tensor,
-        *,
-        trans: str = "N",
-    ) -> torch.Tensor:
-        """Solve ``H X = RHS`` (``trans='N'``) or ``H^H X = RHS`` (``trans='H'``).
-
-        ``rhs`` / return shape ``(n_shots, nf, nx, ny)`` complex. Each frequency
-        uses one batched multi-RHS SuperLU call (counts as one linear solve per
-        frequency toward ``n_forward_solves`` / ``n_adjoint_solves``).
-        """
-        if trans not in ("N", "H", "T"):
-            raise ValueError(f"trans must be 'N', 'H', or 'T'; got {trans!r}")
-        if rhs.ndim != 4 or rhs.shape[1] != self.nf:
-            raise ValueError(
-                f"expected rhs shape (n_shots, {self.nf}, {self.nx}, {self.ny}), "
-                f"got {tuple(rhs.shape)}"
-            )
-        n_shots = rhs.shape[0]
-        out = torch.empty_like(rhs)
-        is_adj = trans in ("H", "T")
-        for k in range(self.nf):
-            F = (
-                rhs[:, k]
-                .detach()
-                .cpu()
-                .numpy()
-                .reshape(n_shots, self.n)
-                .T.astype(self.np_cdtype, copy=False)
-            )
-            X = self._lu[k].solve(F, trans=trans)
-            out[:, k] = torch.as_tensor(
-                X.T.reshape(n_shots, self.nx, self.ny),
-                dtype=self.cdtype,
-                device=self.device,
-            )
-        if is_adj:
-            self.n_adjoint_solves += self.nf
-        else:
-            self.n_forward_solves += self.nf
-        return out
 
 
 def _reflect_index(idx: int, n: int) -> int:
@@ -143,51 +37,6 @@ def _reflect_index(idx: int, n: int) -> int:
         else:
             idx = 2 * n - 2 - idx
     return idx
-
-
-def _laplacian_kernel(
-    space_order: int, dx_nd: float, dy_nd: float
-) -> Tuple[np.ndarray, int]:
-    """Return ``(kernel[hx, hy], pad)`` matching :mod:`odil_wave.operator.spatial`."""
-    cx = 1.0 / dx_nd**2
-    cy = 1.0 / dy_nd**2
-    if space_order == 2:
-        pad = 1
-        K = np.zeros((3, 3), dtype=np.float64)
-        K[0, 1] = cx
-        K[2, 1] = cx
-        K[1, 0] = cy
-        K[1, 2] = cy
-        K[1, 1] = -2.0 * cx - 2.0 * cy
-        return K, pad
-    if space_order == 4:
-        pad = 2
-        K = np.zeros((5, 5), dtype=np.float64)
-        K[0, 2] = -1.0 / 12.0 * cx
-        K[1, 2] = 16.0 / 12.0 * cx
-        K[3, 2] = 16.0 / 12.0 * cx
-        K[4, 2] = -1.0 / 12.0 * cx
-        K[2, 0] = -1.0 / 12.0 * cy
-        K[2, 1] = 16.0 / 12.0 * cy
-        K[2, 3] = 16.0 / 12.0 * cy
-        K[2, 4] = -1.0 / 12.0 * cy
-        K[2, 2] = -30.0 / 12.0 * (cx + cy)
-        return K, pad
-    wide = {6: (C6, C6_CENTER), 8: (C8, C8_CENTER), 10: (C10, C10_CENTER)}
-    if space_order in wide:
-        coeffs, center = wide[space_order]
-        pad = len(coeffs)
-        n = 2 * pad + 1
-        K = np.zeros((n, n), dtype=np.float64)
-        for k, ck in enumerate(coeffs):
-            offset = k + 1
-            K[pad - offset, pad] = ck * cx
-            K[pad + offset, pad] = ck * cx
-            K[pad, pad - offset] = ck * cy
-            K[pad, pad + offset] = ck * cy
-        K[pad, pad] = center * (cx + cy)
-        return K, pad
-    raise ValueError(f"Unsupported space_order for sparse Helmholtz: {space_order}")
 
 
 def assemble_laplacian_csr(
@@ -246,10 +95,6 @@ class HelmholtzSolver:
         )
         self._L_csr: Optional[sp.csr_matrix] = None
 
-    def factorize(self, c: torch.Tensor) -> HelmholtzFactorCache:
-        """Build a :class:`HelmholtzFactorCache` for fixed ``c`` (all frequencies)."""
-        return HelmholtzFactorCache(self, c)
-
     def _sources(self) -> torch.Tensor:
         """Stack per-shot injection sources, scaled by t0^2 for non-dimensional time."""
         grid = self.wavefield.grid
@@ -269,7 +114,7 @@ class HelmholtzSolver:
         """Return the cached sparse Laplacian CSR, building it on first call."""
         if self._L_csr is None:
             grid = self.wavefield.grid
-            K, pad = _laplacian_kernel(
+            K, pad = laplacian_stencil(
                 self.space_order, float(grid.dx_nd), float(grid.dy_nd)
             )
             self._L_csr = assemble_laplacian_csr(grid.nx, grid.ny, K, pad)

@@ -139,7 +139,6 @@ def build_band_loss(
     loss_config = LossConfig(
         wave_eq=wave_eq,
         geometry=band_ctx.geom,
-        weights=dict(cfg.loss.weights),
         regulariser=_build_regulariser(cfg),
     )
     # PML split: observations synthesised on a separate forward grid are
@@ -260,7 +259,6 @@ def run_frequency_band(
     # tape rows come from ``record_row``.
     loss_tape = LossTape(
         name=f"{SOLVER_NAME}_{label}",
-        log_every=cfg.optimiser.log_every,
         store_c_history=False,
     )
     wf_inv, loss = build_band_loss(problem, velocity_model, band_ctx, loss_tape)
