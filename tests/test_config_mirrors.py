@@ -13,10 +13,10 @@ from odil_wave.optimisation.joint_odil import MODEL_PRECONDITIONERS
 from conftest import make_model
 
 
-def test_regulariser_kinds_match_library():
+def test_regulariser_kinds_match_library(grid):
     assert set(config._REGULARISERS) == set(get_args(RegKind))
     for kind in config._REGULARISERS:
-        Regulariser(kind=kind, eps=1e-8)
+        Regulariser(kind=kind, eps=1e-4, grid=grid)
 
 
 def test_model_preconditioners_match_library():

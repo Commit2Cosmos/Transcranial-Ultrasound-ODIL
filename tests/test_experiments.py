@@ -245,6 +245,12 @@ def test_sigma_s_must_be_a_positive_length(value):
         validate_config(resolve_config({}, [f"acquisition.sigma_s={value}"]))
 
 
+@pytest.mark.parametrize("value", ["0", "-1e-4"])
+def test_regulariser_eps_must_be_positive(value):
+    with pytest.raises(ConfigError, match="regulariser.eps"):
+        validate_config(resolve_config({}, [f"loss.regulariser.eps={value}"]))
+
+
 @pytest.mark.parametrize("order", [2, 4, 6, 8, 10])
 def test_supported_space_orders_validate(order):
     """Every supported stencil order (including 10) is accepted."""

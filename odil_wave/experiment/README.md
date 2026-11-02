@@ -217,10 +217,10 @@ sweep:
 - **One sweep, one key.** A value is applied at `key` like a run config:
   **dicts deep-merge, lists replace.** A feature touching several keys is swept
   at their common parent, e.g. `key: loss`,
-  `values: [{weights: {reg: 0}}, {weights: {reg: 1e-6}, regulariser: {name: tv_iso}}]`;
+  `values: [{weights: {reg: 0}}, {weights: {reg: 0.4}, regulariser: {name: tv_iso}}]`;
   a band ablation is `key: continuation.bands` with whole schedules as values.
 - **Labels** name the runs (directory, `summary.csv`, plot legends). A scalar
-  value gets `<last key segment, kebab-case>-<value>` (e.g. `reg-1e-6`);
+  value gets `<last key segment, kebab-case>-<value>` (e.g. `reg-0.4`);
   `labels` are required when any value is a list or dict.
 - **The baseline is one of the runs**: exactly one value must resolve to the
   baseline's resolved config; it is marked `is_baseline` in `summary.csv`.
@@ -467,7 +467,7 @@ each band's final row (`per_band`).
 | `loss_total` | total objective exactly as the solver reports it |
 | `pde_term` | `w_pde · Σ\|r_pde / (\|λ_tt\|·u_ref)\|² / (2 · N_int · n_shots · n_freq)`: the weighted **PDE term**, summed over interior + PML and normalised by the interior node count `N_int`; `\|λ_tt\|·u_ref` is fixed per (shot, frequency) at the band's warm start (ADR-0002) |
 | `data_term` | `w_data · Σ\|r_data / RMS(d_obs)\|² / (2 · n_shots · n_freq · n_receivers)`, the weighted **Data term**: a mean over traces, so independent of `n_transducers`, with `RMS(d_obs)` per (shot, frequency) and no noise model (the inverse crime) |
-| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point; `0.0` without a regulariser or with `w_reg = 0` |
+| `reg_term` | `w_reg · R(c_interior)` evaluated at the logged point, where `R` is the interior mean of `\|∇'c'\|^p` with `c' = c/c0`, `∇' = L0·∇` (dimensionless, independent of resolution; `tv_iso` subtracts `√eps` so a constant model gives 0); `0.0` without a regulariser or with `w_reg = 0` |
 
 #### Normalised residuals (comparable across bands and configs)
 

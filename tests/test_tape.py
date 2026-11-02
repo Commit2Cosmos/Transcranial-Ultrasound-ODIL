@@ -303,7 +303,7 @@ def test_reg_term_and_model_update_at_each_row(tmp_path, git_repo):
     c_final = torch.as_tensor(saved_final_model(final_band_dir(run_dir), problem))[
         sl
     ].double()
-    reg = Regulariser(kind="tikhonov", eps=1e-8)  # eps is unused by tikhonov
+    reg = Regulariser(kind="tikhonov", eps=1e-4, grid=problem.grid)  # eps unused
     for row, c in zip(rows, (c_start, c_final)):
         # The saved c is float32: its cell-to-cell differences carry ~1e-4 error.
         assert row["reg_term"] == pytest.approx(w_reg * float(reg(c)), rel=1e-3)
