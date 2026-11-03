@@ -6,14 +6,14 @@ Before starting, re-check the Protocol's two gates (one variable, config-selecta
 
 ## 1. Reserve the id
 
-The experiment id is `NNNN-slug`: the next number not used in `configs/experiments/` on `main` or on any `exp/*` branch, so parallel experiments can't collide. `exp/*` branch names count too, so a branch holding a feature under test reserves its id before its spec exists, and so do launch tags, which cover a dropped branch since deleted:
+The experiment id is `NNNN-slug`: the lowest number not used in `configs/experiments/` on `main` or on any `exp/*` branch, so parallel experiments can't collide. `exp/*` branch names count too, so a branch holding a feature under test reserves its id before its spec exists, and so do launch tags, which cover a dropped branch since deleted. A voided launch's number is free again (`docs/experiments/README.md`, "Voiding a launch"):
 
 ```bash
 git fetch origin --tags --prune
 { for ref in origin/main $(git for-each-ref --format='%(refname:short)' refs/heads/exp/ refs/remotes/origin/exp/); do
     git ls-tree --name-only "$ref" configs/experiments/
   done; git for-each-ref --format='%(refname:short)' refs/heads/exp/ refs/remotes/origin/exp/; git tag -l 'launch/*'; } \
-  | sed -nE 's|.*/([0-9]{4})-.*|\1|p' | sort -n | tail -1 | awk '{n=$1} END {printf "%04d\n", n+1}'
+  | sed -nE 's|.*/([0-9]{4})-.*|\1|p' | sort -nu | awk '$1 == n + 1 {n++; next} {exit} END {printf "%04d\n", n + 1}'
 ```
 
 The slug is a few lowercase kebab-case words from the Question. The launch's own `id` check only sees the current tree, so this rule is the one that matters.
