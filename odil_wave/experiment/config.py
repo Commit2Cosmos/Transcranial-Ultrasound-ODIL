@@ -325,9 +325,6 @@ class OptimiserCfg:
       rescales the model latent per cell so its PDE-term curvature at the band's
       warm start matches the wavefield block's median curvature (needs
       ``loss.weights.pde > 0``).
-    * ``wavefield_preconditioner``: ``"none"`` | ``"initial_model"``.
-      ``initial_model`` optimises ``v`` with ``u_tilde = A(c0)^-1 v``, ``c0`` the
-      band's initial model, reusing the warm start's ``splu`` factors.
     """
 
     n_iter: int = 20
@@ -339,7 +336,6 @@ class OptimiserCfg:
     tolerance_grad: float = 1e-12
     tolerance_change: float = 1e-14
     model_preconditioner: str = "none"
-    wavefield_preconditioner: str = "none"
 
 
 @dataclass(frozen=True)
@@ -594,7 +590,6 @@ def apply_overrides(
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
 _LINE_SEARCHES = ("strong_wolfe", "none")
 _MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
-_WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
@@ -715,11 +710,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             "optimiser.model_preconditioner 'pde_diagonal' needs "
             "loss.weights.pde > 0 (the model-block curvature comes from the PDE term)"
-        )
-    if opt.wavefield_preconditioner not in _WAVEFIELD_PRECONDITIONERS:
-        raise ConfigError(
-            f"optimiser.wavefield_preconditioner must be one of "
-            f"{list(_WAVEFIELD_PRECONDITIONERS)}, got {opt.wavefield_preconditioner!r}"
         )
     if loss.regulariser.name not in _REGULARISERS:
         raise ConfigError(

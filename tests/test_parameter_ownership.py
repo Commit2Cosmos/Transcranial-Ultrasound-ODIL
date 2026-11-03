@@ -67,7 +67,6 @@ JOINT_KW = dict(
     log_every=1,
     verbose=False,
     model_preconditioner="none",
-    wavefield_preconditioner="none",
 )
 
 

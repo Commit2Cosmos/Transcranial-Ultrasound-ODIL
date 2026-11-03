@@ -8,10 +8,7 @@ import pytest
 from odil_wave import Regulariser, WaveEquation
 from odil_wave.experiment import config
 from odil_wave.loss.regulariser import RegKind
-from odil_wave.optimisation.joint_odil import (
-    MODEL_PRECONDITIONERS,
-    WAVEFIELD_PRECONDITIONERS,
-)
+from odil_wave.optimisation.joint_odil import MODEL_PRECONDITIONERS
 
 from conftest import make_model
 
@@ -24,10 +21,6 @@ def test_regulariser_kinds_match_library(grid):
 
 def test_model_preconditioners_match_library():
     assert config._MODEL_PRECONDITIONERS == MODEL_PRECONDITIONERS
-
-
-def test_wavefield_preconditioners_match_library():
-    assert config._WAVEFIELD_PRECONDITIONERS == WAVEFIELD_PRECONDITIONERS
 
 
 @pytest.mark.parametrize("order", range(1, 13))

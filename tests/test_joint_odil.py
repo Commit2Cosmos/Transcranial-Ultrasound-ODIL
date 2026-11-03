@@ -15,7 +15,7 @@ from odil_wave import (
 )
 from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
-from odil_wave.optimisation.joint_odil import FactorSolve, preconditioner_scale
+from odil_wave.optimisation.joint_odil import preconditioner_scale
 
 from conftest import (
     C_MAX,
@@ -38,26 +38,18 @@ def truth_problem() -> SimpleNamespace:
     geom = make_geometry(g, src, fs)
     truth = make_model(g, "overdensity", contrast=120.0, radius=0.012)
     wf = Wavefield(g, fs, velocity_model=truth)
-    observed, factors = HelmholtzSolver(
-        wf, geom, space_order=2, damping_scale=1.0
-    ).solve(verbose=False, return_factors=True)
-    return SimpleNamespace(
-        wavefield=wf, geometry=geom, observed=observed, factors=factors
+    observed = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
+        verbose=False
     )
+    return SimpleNamespace(wavefield=wf, geometry=geom, observed=observed)
 
 
 def _make_optimiser(
-    problem,
-    regulariser=None,
-    reg_weight=0.0,
-    model_preconditioner="none",
-    wavefield_preconditioner="none",
+    problem, regulariser=None, reg_weight=0.0, model_preconditioner="none"
 ) -> JointFreqODIL:
     """Joint optimiser on the truth model, warm-started at the observed fields.
 
-    The latent velocity bounds are the grid's (C_MIN, C_MAX). ``problem.u_init``
-    (if any) replaces the warm start and ``problem.factors`` (if any) are passed
-    as the initial model's factors."""
+    The latent velocity bounds are the grid's (C_MIN, C_MAX)."""
     wave_eq = WaveEquation(problem.wavefield, space_order=2, damping_scale=1.0)
     loss = InverseLoss(
         observed_wavefield=problem.observed,
@@ -70,7 +62,7 @@ def _make_optimiser(
     return JointFreqODIL(
         problem.wavefield,
         loss,
-        u_init=getattr(problem, "u_init", problem.observed),
+        u_init=problem.observed,
         n_iter=50,
         inner_max_iter=20,
         history_size=20,
@@ -84,8 +76,6 @@ def _make_optimiser(
         log_every=1,
         verbose=False,
         model_preconditioner=model_preconditioner,
-        wavefield_preconditioner=wavefield_preconditioner,
-        initial_model_factors=getattr(problem, "factors", None),
     )
 
 
@@ -277,16 +267,11 @@ def test_change_of_variables_keeps_the_objective_and_scales_the_gradient(
 
 
 def _small_two_frequency_optimiser(
-    space_order,
-    pde_weight=2.5,
-    data_weight=1.0,
-    model_preconditioner="none",
-    wavefield_preconditioner="none",
+    space_order, pde_weight=2.5, data_weight=1.0, model_preconditioner="none"
 ) -> JointFreqODIL:
     """A 10x10-interior, 3-shot, two-frequency band, warm-started by a
     Helmholtz solve on a homogeneous start model (observations from a
-    heterogeneous truth), small enough for brute-force autograd Hessians. The
-    warm start's factors are passed to the optimiser."""
+    heterogeneous truth), small enough for brute-force autograd Hessians."""
     g = make_grid(interior_shape=(10, 10))
     fs = FrequencySelection.from_frequencies(g, [30e3, F0])
     geom = make_geometry(g, make_source(g), fs, n_transducers=3)
@@ -296,9 +281,7 @@ def _small_two_frequency_optimiser(
         Wavefield(g, fs, velocity_model=truth), geom, **operator
     ).solve(verbose=False)
     wf = Wavefield(g, fs, velocity_model=make_model(g))
-    u_init, factors = HelmholtzSolver(wf, geom, **operator).solve(
-        verbose=False, return_factors=True
-    )
+    u_init = HelmholtzSolver(wf, geom, **operator).solve(verbose=False)
     loss = InverseLoss(
         observed_wavefield=observed,
         config=LossConfig(
@@ -324,8 +307,6 @@ def _small_two_frequency_optimiser(
         log_every=1,
         verbose=False,
         model_preconditioner=model_preconditioner,
-        wavefield_preconditioner=wavefield_preconditioner,
-        initial_model_factors=factors,
     )
 
 
@@ -473,17 +454,12 @@ def test_reported_model_gradient_is_with_respect_to_z_m(mode):
 # --------------------------------------------------------------------------- #
 # Sanity checks at the truth (inverse crime, no regulariser, float64)
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("wavefield_mode", ["none", "initial_model"])
 @pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
-def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode, wavefield_mode):
+def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode):
     """Started at (true model, true wavefield), the full outer-iteration budget
     leaves both unchanged. Measured: objective 1.3e-29 (threshold 1e-20); c and
     u change by exactly 0 (threshold 1e-8)."""
-    opt = _make_optimiser(
-        truth_problem,
-        model_preconditioner=mode,
-        wavefield_preconditioner=wavefield_mode,
-    )
+    opt = _make_optimiser(truth_problem, model_preconditioner=mode)
     logged = []
     opt.minimise(on_log=logged.append)
     start, final = logged[0], logged[-1]
@@ -532,166 +508,3 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
     c_full = opt.c_full_of_z(z.detach())
     assert rel_interior_error(c_full, wf.velocity_model.c, wf.grid) < 1e-4
     assert torch.equal(u_re, u_re0) and torch.equal(u_im, u_im0)
-
-
-# --------------------------------------------------------------------------- #
-# Wavefield preconditioner (``wavefield_preconditioner = "initial_model"``)
-# --------------------------------------------------------------------------- #
-def test_factor_solve_backward_is_the_adjoint_of_its_forward():
-    """u = A(c0)^-1 v from the warm start's splu factors passes gradcheck: its
-    backward (lu.solve with trans="H") is the adjoint of its forward."""
-    g = make_grid(interior_shape=(10, 10))
-    fs = FrequencySelection.from_frequencies(g, [30e3, F0])
-    geom = make_geometry(g, make_source(g), fs, n_transducers=3)
-    wf = Wavefield(g, fs, velocity_model=make_model(g))
-    _, factors = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
-        verbose=False, return_factors=True
-    )
-    assert len(factors) == 2
-    solve = FactorSolve(factors)
-    gen = torch.Generator().manual_seed(3)
-    v = torch.randn((1, 2, g.nx, g.ny), generator=gen, dtype=torch.complex128)
-    assert torch.autograd.gradcheck(solve, (v.requires_grad_(True),), fast_mode=True)
-    assert solve.seconds > 0.0
-
-
-def test_warm_start_maps_to_the_scaled_source_and_back():
-    """With the initial model's factors, L-BFGS starts at v0 = A(c0) u_tilde0,
-    which for a Helmholtz warm start is f / u_ref, and physical_u maps v0 back
-    to the warm-start wavefield."""
-    opt = _small_two_frequency_optimiser(2, wavefield_preconditioner="initial_model")
-    v_re, v_im, _ = opt.init_params()
-    v0 = torch.complex(v_re, v_im)
-    torch.testing.assert_close(v0, opt.sources / opt.u_ref, rtol=0, atol=1e-10)
-    u = opt.physical_u(v_re, v_im)
-    rel = torch.linalg.vector_norm(u - opt.u_seed) / torch.linalg.vector_norm(
-        opt.u_seed
-    )
-    assert float(rel) < 1e-12
-
-
-def test_v_and_u_tilde_round_trip():
-    """v_of_u_tilde inverts u_tilde_of_v for any wavefield, not only the warm
-    start; without the preconditioner both are the identity."""
-    gen = torch.Generator().manual_seed(4)
-    for mode in ("none", "initial_model"):
-        opt = _small_two_frequency_optimiser(2, wavefield_preconditioner=mode)
-        u_tilde = torch.randn(opt.u_seed.shape, generator=gen, dtype=opt.cdtype)
-        v_re, v_im = opt.v_of_u_tilde(u_tilde)
-        back = opt.u_tilde_of_v(v_re, v_im)
-        torch.testing.assert_close(back, u_tilde, rtol=0, atol=1e-10)
-        if mode == "none":
-            assert torch.equal(torch.complex(v_re, v_im), u_tilde)
-
-
-def test_initial_model_preconditioner_needs_the_factors(truth_problem):
-    p = truth_problem
-    no_factors = SimpleNamespace(
-        wavefield=p.wavefield, geometry=p.geometry, observed=p.observed
-    )
-    with pytest.raises(ValueError, match="initial_model_factors"):
-        _make_optimiser(no_factors, wavefield_preconditioner="initial_model")
-
-
-def test_unknown_wavefield_preconditioner_is_rejected(truth_problem):
-    with pytest.raises(ValueError, match="wavefield_preconditioner"):
-        _make_optimiser(truth_problem, wavefield_preconditioner="jacobi")
-
-
-def test_model_scale_target_is_the_curvature_in_v_with_both_preconditioners():
-    """With both preconditioners, T is the median curvature of the weighted PDE
-    term in v: at c = c0 the residual is u_ref v - f, so the curvature is
-    pde_weight / (lambda_tt^2 N_int n_s n_f) at every node of each frequency.
-    The objective is quadratic in v, so a gradient difference along a unit
-    vector gives the Hessian's row sums; data_weight = 0 leaves the PDE term."""
-    opt = _small_two_frequency_optimiser(
-        2,
-        data_weight=0.0,
-        model_preconditioner="pde_diagonal",
-        wavefield_preconditioner="initial_model",
-    )
-    v_re, v_im, z0 = opt.init_params()
-
-    def grad_v_re(v):
-        v = v.clone().requires_grad_(True)
-        return torch.autograd.grad(opt.objective(v, v_im, z0, record=False), v)[0]
-
-    H_rows = grad_v_re(v_re + 1.0) - grad_v_re(v_re)
-    lam_tt = opt.wavefield.frequency_selection.lambda_tt.abs().to(opt.dtype)
-    n_int = opt.grid.interior_nx * opt.grid.interior_ny
-    expected = 2.5 / (lam_tt.square() * n_int * opt.n_shots * opt.nf)
-    torch.testing.assert_close(
-        H_rows, expected.view(1, -1, 1, 1).expand_as(H_rows), rtol=1e-6, atol=0.0
-    )
-    info = opt.scale_info
-    assert info["wavefield_preconditioner"] == "initial_model"
-    assert info["precond_target"] == pytest.approx(float(H_rows.median()), rel=1e-6)
-
-
-def _frozen_model_iterations_to(target, interior, pml_width):
-    """L-BFGS iterations over the wavefield block alone, with the optimiser's
-    settings, the model frozen at the true model and the wavefield
-    preconditioned by the homogeneous initial model's factors, until the
-    interior wavefield error (all shots) is below ``target``; read after each
-    outer step, so exact to within inner_max_iter. ``None`` if never reached."""
-    g = make_grid(interior_shape=(interior, interior), pml_width=pml_width)
-    fs = FrequencySelection.from_frequencies(g, [F0])
-    geom = make_geometry(g, make_source(g), fs)
-    operator = dict(space_order=2, damping_scale=1.0)
-    truth = make_model(g, "overdensity", contrast=120.0, radius=0.012)
-    observed = HelmholtzSolver(
-        Wavefield(g, fs, velocity_model=truth), geom, **operator
-    ).solve(verbose=False)
-    wf = Wavefield(g, fs, velocity_model=make_model(g))
-    u_init, factors = HelmholtzSolver(wf, geom, **operator).solve(
-        verbose=False, return_factors=True
-    )
-    opt = _make_optimiser(
-        SimpleNamespace(
-            wavefield=wf,
-            geometry=geom,
-            observed=observed,
-            u_init=u_init,
-            factors=factors,
-        ),
-        wavefield_preconditioner="initial_model",
-    )
-    v_re0, v_im0, _ = opt.init_params()
-    z_true = opt.latent.z_of_c(truth.c[g.interior_slice])
-    u_true = torch.stack([w.amplitude for w in observed])
-    v_re, v_im = torch.nn.Parameter(v_re0), torch.nn.Parameter(v_im0)
-    lbfgs = torch.optim.LBFGS(
-        [v_re, v_im],
-        lr=opt.lbfgs_lr,
-        max_iter=opt.inner_max_iter,
-        history_size=opt.history_size,
-        line_search_fn=opt.line_search_fn,
-        tolerance_grad=opt.tolerance_grad,
-        tolerance_change=opt.tolerance_change,
-    )
-
-    def closure():
-        lbfgs.zero_grad()
-        L = opt.objective(v_re, v_im, z_true, record=False)
-        L.backward()
-        return L
-
-    for _ in range(opt.n_iter):
-        lbfgs.step(closure)
-        with torch.no_grad():
-            u = opt.physical_u(v_re, v_im)
-        if rel_interior_error(u, u_true, g) < target:
-            return lbfgs.state[v_re]["n_iter"]
-    return None
-
-
-@pytest.mark.parametrize("interior, pml_width", [(20, 4), (39, 8)])
-def test_preconditioned_wavefield_converges_with_the_model_frozen_at_the_truth(
-    interior, pml_width
-):
-    """The same physical problem (0.05 m, 10.53 mm PML, 40 kHz, 8 transducers)
-    at dx = 2.63 and 1.32 mm reaches a 1e-3 wavefield error within 60 L-BFGS
-    iterations. Measured: 37 and 19 (#96: 38 and 19; unpreconditioned 3639 and
-    3660)."""
-    n_iter = _frozen_model_iterations_to(1e-3, interior, pml_width)
-    assert n_iter is not None and n_iter <= 60

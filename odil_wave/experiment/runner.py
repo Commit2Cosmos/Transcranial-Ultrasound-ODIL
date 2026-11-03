@@ -166,7 +166,6 @@ def build_optimiser(
     loss: InverseLoss,
     n_iter: int,
     u_init,
-    factors=None,
 ):
     """Construct the joint optimiser for one band.
 
@@ -184,9 +183,6 @@ def build_optimiser(
         Outer-iteration budget for this band.
     u_init :
         Per-shot Helmholtz warm-start wavefields.
-    factors :
-        The warm start's per-frequency ``splu`` factors; required by
-        ``optimiser.wavefield_preconditioner = "initial_model"``.
 
     Returns
     -------
@@ -220,8 +216,6 @@ def build_optimiser(
         log_every=opt.log_every,
         verbose=cfg.runtime.verbose,
         model_preconditioner=opt.model_preconditioner,
-        wavefield_preconditioner=opt.wavefield_preconditioner,
-        initial_model_factors=factors,
     )
 
 
@@ -258,14 +252,7 @@ def run_frequency_band(
     band_ctx = problem.make_band(freqs)
 
     t_warm = time.perf_counter()
-    # The factors are kept for the band only when the wavefield
-    # preconditioner reuses them.
-    if cfg.optimiser.wavefield_preconditioner == "none":
-        u_init, factors = problem.warm_start(velocity_model, band_ctx), None
-    else:
-        u_init, factors = problem.warm_start(
-            velocity_model, band_ctx, return_factors=True
-        )
+    u_init = problem.warm_start(velocity_model, band_ctx)
     warm_s = time.perf_counter() - t_warm
 
     band_tape = tape.start_band(band_index, band_ctx)
@@ -277,7 +264,7 @@ def run_frequency_band(
     )
     wf_inv, loss = build_band_loss(problem, velocity_model, band_ctx, loss_tape)
 
-    opt = build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init, factors)
+    opt = build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init)
 
     band_arrays = BandArrays(problem, band_ctx, opt.pde_scale)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
@@ -332,7 +319,6 @@ def run_frequency_band(
                 "wall_s": wall_s,
                 "warm_start_s": warm_s,
                 "optimise_s": optimise_s,
-                "wavefield_solve_s": opt.wavefield_solve_s,
                 "start_metrics": start_metrics,
                 "final_metrics": final_metrics,
                 "optimiser_result": opt_result,

@@ -54,7 +54,7 @@ Formulation
   applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
   scaled relative residual above, not the raw ``InverseLoss`` mean.
 
-* One persistent ``torch.optim.LBFGS([v_re, v_im, z_m])`` (strong-Wolfe) — a
+* One persistent ``torch.optim.LBFGS([u_re, u_im, z_m])`` (strong-Wolfe) — a
   single joint optimiser over the full space, no alternation. It is advanced by
   ``n_iter`` outer ``.step`` calls, each running up to ``inner_max_iter`` L-BFGS
   iterations on the shared history (total ~= ``n_iter * inner_max_iter``), so the
@@ -62,21 +62,7 @@ Formulation
   iteration per step, ``inner_max_iter=1``, stalls the strong-Wolfe line search
   and is *not* representative of L-BFGS on this problem.) The objective is
   matrix-free (one conv2d Laplacian per evaluation); ``A(c)`` is never factorised
-  inside optimisation. ``v = u_tilde`` unless the wavefield preconditioner is on.
-
-* Optional wavefield preconditioner (``wavefield_preconditioner="initial_model"``;
-  default ``"none"``). L-BFGS optimises ``v`` with
-
-      u_tilde[s, w] = A(c_init, w)^-1 v[s, w],      v0 = A(c_init) u_tilde0,
-
-  ``c_init`` the band's initial model and ``A`` the operator of
-  ``WaveEquation.residual`` (``HelmholtzSolver.assemble_H_sparse``). For a
-  Helmholtz warm start ``v0 = f / u_ref``. The solve reuses the warm start's
-  ``splu`` factors (``initial_model_factors``; nothing is factorised here) with
-  all shots batched per frequency, on the CPU, and its backward is the adjoint
-  solve. At ``c = c_init`` the wavefield block's PDE term is then the identity
-  up to a scalar per (shot, frequency); with the model frozen at the true
-  model its iteration count stayed flat across resolutions (#96).
+  inside optimisation.
 
 * Optional model-block preconditioner (``model_preconditioner="pde_diagonal"``;
   default ``"none"``). L-BFGS models the Hessian outside its history as one
@@ -86,19 +72,14 @@ Formulation
       H_kk[i] = pde_weight * sum_{s,f} |lap(u)[s,f,i] / pde_scale[s,f]|^2
                 / (N_int n_s n_f)                         (r is linear in k)
       H_zz[i] = (dk/dz_m[i])^2 * H_kk[i]                  (exact where r = 0)
-      T       = median of the weighted PDE term's diagonal over v_re (all
+      T       = median of the weighted PDE term's diagonal over u_re (all
                 shots, frequencies and nodes, PML included)
       s[i]    = sqrt(T / max(H_zz[i], eps_precond * median(H_zz)))
 
   with ``k = (c / c0)^2``, evaluated once per band at the warm start (never
   refreshed, which would invalidate the L-BFGS history). The data term and the
   regulariser are left out of both curvatures. ``z_scale`` cancels from
-  ``z_scale * s``. ``T`` is the curvature in the variable L-BFGS optimises:
-  without the wavefield preconditioner it is that of ``u_tilde``
-  (:meth:`JointFreqODIL.wavefield_curvature`, the column norms of ``A``); with
-  it the residual at ``c_init`` is ``u_ref v - f``, so the curvature is uniform,
-  ``pde_weight (u_ref / pde_scale)^2 / (N_int n_s n_f)``. ``T``, and so
-  ``model_scale``, then differs by about the size of ``A``'s column norms.
+  ``z_scale * s``.
 
 The class is pure library code (no file IO). Per-iteration diagnostics are
 exposed on :attr:`diag_rows` and mirrored into the loss callback history; the
@@ -112,7 +93,6 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import torch
 
 from odil_wave.loss import InverseLoss
@@ -182,58 +162,6 @@ def preconditioner_scale(
         )
     floored = H_zz < floor
     return (target / H_zz.clamp_min(floor)).sqrt(), floored
-
-
-# --------------------------------------------------------------------------- #
-# Wavefield-block preconditioner
-# --------------------------------------------------------------------------- #
-WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
-
-
-class _FactorSolveFn(torch.autograd.Function):
-    """``A^-1 v`` forward, ``A^-H g`` backward (the adjoint of a linear map)."""
-
-    @staticmethod
-    def forward(ctx, v, solve):
-        ctx.solve = solve
-        return solve.apply_factors(v, "N")
-
-    @staticmethod
-    def backward(ctx, grad):
-        return ctx.solve.apply_factors(grad, "H"), None
-
-
-class FactorSolve:
-    """Differentiable ``u = A^-1 v`` from fixed per-frequency ``splu`` factors.
-
-    ``v`` is ``(n_shots, nf, Nx, Ny)`` complex; frequency ``k`` uses
-    ``factors[k]`` with all shots batched as right-hand sides. The solves run
-    on the CPU in SciPy (copied from ``v``'s device and back), so every device
-    works. ``seconds`` accumulates the wall time of all forward and adjoint
-    triangular solves.
-    """
-
-    def __init__(self, factors: Sequence) -> None:
-        self.factors = list(factors)
-        self.seconds = 0.0
-
-    def __call__(self, v: torch.Tensor) -> torch.Tensor:
-        return _FactorSolveFn.apply(v, self)
-
-    def apply_factors(self, v: torch.Tensor, trans: str) -> torch.Tensor:
-        """``A^-1 v`` (``trans="N"``) or ``A^-H v`` (``trans="H"``), no autograd."""
-        n_shots, nf, nx, ny = v.shape
-        if nf != len(self.factors):
-            raise ValueError(f"{len(self.factors)} factors for {nf} frequencies")
-        t0 = time.perf_counter()
-        x = v.detach().cpu().numpy()
-        out = np.empty_like(x)
-        for k, lu in enumerate(self.factors):
-            rhs = np.ascontiguousarray(x[:, k].reshape(n_shots, nx * ny).T)
-            out[:, k] = lu.solve(rhs, trans=trans).T.reshape(n_shots, nx, ny)
-        u = torch.from_numpy(out).to(device=v.device)
-        self.seconds += time.perf_counter() - t0
-        return u
 
 
 # --------------------------------------------------------------------------- #
@@ -319,15 +247,7 @@ class JointFreqODIL(Optimiser):
     observations are read from it, so the PDE / receiver operators are
     identical to truth-data generation). ``u_init`` (per-shot warm-start
     wavefields, normally a Helmholtz solve on the current model) is required:
-    it seeds ``u`` and sets ``u_ref``. ``initial_model_factors`` (the
-    per-frequency ``splu`` factors of ``A`` on the wavefield's velocity model,
-    from ``HelmholtzSolver.solve(return_factors=True)``) is required by
-    ``wavefield_preconditioner="initial_model"``.
-
-    ``init_params``, ``objective``, ``residuals`` and ``physical_u`` take the
-    optimised wavefield variable ``(v_re, v_im)``, as do the ``u_re`` /
-    ``u_im`` entries of ``final_state``; the logged ``Iterate.u`` and the
-    returned wavefields are the physical ``u``.
+    it seeds ``u`` and sets ``u_ref``.
     """
 
     def __init__(
@@ -349,8 +269,6 @@ class JointFreqODIL(Optimiser):
         log_every: int,
         verbose: bool,
         model_preconditioner: str,
-        wavefield_preconditioner: str,
-        initial_model_factors: Optional[Sequence] = None,
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
@@ -374,20 +292,6 @@ class JointFreqODIL(Optimiser):
             raise ValueError(
                 f"model_preconditioner must be one of {list(MODEL_PRECONDITIONERS)}, "
                 f"got {model_preconditioner!r}"
-            )
-        if wavefield_preconditioner not in WAVEFIELD_PRECONDITIONERS:
-            raise ValueError(
-                "wavefield_preconditioner must be one of "
-                f"{list(WAVEFIELD_PRECONDITIONERS)}, got {wavefield_preconditioner!r}"
-            )
-        if (
-            wavefield_preconditioner == "initial_model"
-            and initial_model_factors is None
-        ):
-            raise ValueError(
-                "wavefield_preconditioner 'initial_model' needs "
-                "initial_model_factors (the warm-start HelmholtzSolver's splu "
-                "factors, solve(return_factors=True))"
             )
 
         grid = wavefield.grid
@@ -480,13 +384,6 @@ class JointFreqODIL(Optimiser):
         self.scale_info: Dict[str, object] = {}
         self._build_diag_scale_info(u_ref, pde_scale, data_scale)
 
-        # Wavefield preconditioner: u_tilde = A(c_init)^-1 v (None: u_tilde = v).
-        self.wavefield_preconditioner = wavefield_preconditioner
-        self.wavefield_solve: Optional[FactorSolve] = None
-        if wavefield_preconditioner == "initial_model":
-            self.wavefield_solve = FactorSolve(initial_model_factors)
-        self.scale_info["wavefield_preconditioner"] = wavefield_preconditioner
-
         # Model-block preconditioner: z_m = model_scale * y (None: z_m = y).
         self.model_preconditioner = model_preconditioner
         self.eps_precond = float(eps_precond)
@@ -547,11 +444,7 @@ class JointFreqODIL(Optimiser):
         """Set ``model_scale`` from the warm-start curvatures (see module doc)."""
         z0 = self.init_params()[2]
         _, H_zz = self.model_curvature(z0)
-        if self.wavefield_solve is None:
-            H_ww = self.wavefield_curvature(self.c_full_of_z(z0))
-        else:
-            H_ww = self.preconditioned_wavefield_curvature()
-        target = float(H_ww.median())
+        target = float(self.wavefield_curvature(self.c_full_of_z(z0)).median())
         s, floored = preconditioner_scale(H_zz, target, self.eps_precond)
         self.model_scale = s
         self.scale_info.update(
@@ -628,59 +521,23 @@ class JointFreqODIL(Optimiser):
             self.pde_weight * col_sq * scale_sq / (self.n_int * self.n_shots * self.nf)
         )
 
-    def preconditioned_wavefield_curvature(self) -> torch.Tensor:
-        """Diagonal of the weighted PDE term w.r.t. ``v_re`` at ``c = c_init``.
-
-        With ``u_tilde = A(c_init)^-1 v`` the residual at ``c_init`` is
-        ``u_ref * v - f``, so the curvature is uniform per (shot, frequency):
-        ``pde_weight * (u_ref / pde_scale)^2 / (N_int n_s n_f)``. Shape
-        ``(n_shots, nf, Nx, Ny)``, like :meth:`wavefield_curvature`.
-        """
-        H = self.pde_weight * (self.u_ref / self.pde_scale).square()
-        H = H / (self.n_int * self.n_shots * self.nf)
-        return H.expand(self.n_shots, self.nf, self.Nx, self.Ny)
-
     # ------------------------------------------------------------------ #
     # Parameter <-> physical helpers
     # ------------------------------------------------------------------ #
     def init_params(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Initial ``(v_re, v_im, z_m)`` tensors (not yet Parameters).
-
-        ``v`` is the optimised wavefield variable: ``u_tilde`` itself, or
-        ``A(c_init) u_tilde`` with the wavefield preconditioner.
-        """
-        v_re, v_im = self.v_of_u_tilde(self.u_seed / self.u_ref)
+        """Initial ``(u_re, u_im, z_m)`` tensors (not yet Parameters)."""
+        u_tilde0 = self.u_seed / self.u_ref
         c0_int = (
             self.vm_in.c[self._interior_slice]
             .detach()
             .to(dtype=self.dtype, device=self.device)
         )
         z0 = self.latent.z_of_c(c0_int)
-        return v_re, v_im, z0.contiguous().to(dtype=self.dtype)
-
-    def u_tilde_of_v(self, v_re: torch.Tensor, v_im: torch.Tensor) -> torch.Tensor:
-        """Scaled wavefield ``u_tilde`` of the optimised wavefield variable."""
-        v = torch.complex(v_re, v_im)
-        return v if self.wavefield_solve is None else self.wavefield_solve(v)
-
-    def v_of_u_tilde(self, u_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Optimised wavefield variable ``(v_re, v_im)`` of ``u_tilde``."""
-        if self.wavefield_solve is not None:
-            with torch.no_grad():
-                c_init = self.vm_in.c.detach().to(dtype=self.dtype, device=self.device)
-                u_tilde = self.wave_eq.residual(
-                    u_tilde, c_init, torch.zeros_like(u_tilde)
-                )
         return (
-            u_tilde.real.contiguous().to(dtype=self.dtype),
-            u_tilde.imag.contiguous().to(dtype=self.dtype),
+            u_tilde0.real.contiguous().to(dtype=self.dtype),
+            u_tilde0.imag.contiguous().to(dtype=self.dtype),
+            z0.contiguous().to(dtype=self.dtype),
         )
-
-    @property
-    def wavefield_solve_s(self) -> float:
-        """Wall time of the wavefield preconditioner's triangular solves so far
-        (forward and adjoint); ``0.0`` without it."""
-        return 0.0 if self.wavefield_solve is None else self.wavefield_solve.seconds
 
     def z_of_y(self, y: torch.Tensor) -> torch.Tensor:
         """Physical latent ``z_m`` of the optimised model variable ``y``."""
@@ -690,9 +547,8 @@ class JointFreqODIL(Optimiser):
         """Optimised model variable ``y`` of the physical latent ``z_m``."""
         return z_m if self.model_scale is None else z_m / self.model_scale
 
-    def physical_u(self, v_re: torch.Tensor, v_im: torch.Tensor) -> torch.Tensor:
-        """Physical wavefield ``u`` of the optimised wavefield variable."""
-        return self.u_ref * self.u_tilde_of_v(v_re, v_im)
+    def physical_u(self, u_re: torch.Tensor, u_im: torch.Tensor) -> torch.Tensor:
+        return self.u_ref * torch.complex(u_re, u_im)
 
     def c_full_of_z(self, z_m: torch.Tensor) -> torch.Tensor:
         return self.vm_in.build_full_c(self.latent.c_of_z(z_m))
@@ -706,14 +562,10 @@ class JointFreqODIL(Optimiser):
     # Residuals and objective (the production code path).
     # ------------------------------------------------------------------ #
     def residuals(
-        self, v_re: torch.Tensor, v_im: torch.Tensor, z_m: torch.Tensor
+        self, u_re: torch.Tensor, u_im: torch.Tensor, z_m: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return ``(r_pde, r_data)`` on physical variables (unscaled)."""
-        return self._residuals_of_u(self.physical_u(v_re, v_im), z_m)
-
-    def _residuals_of_u(
-        self, u: torch.Tensor, z_m: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        u = self.physical_u(u_re, u_im)
         c_full = self.c_full_of_z(z_m)
         r_pde = self.wave_eq.residual(u, c_full, self.sources)
         u_recv = self.geometry.extract_observations(u)
@@ -722,19 +574,13 @@ class JointFreqODIL(Optimiser):
 
     def objective(
         self,
-        v_re: torch.Tensor,
-        v_im: torch.Tensor,
+        u_re: torch.Tensor,
+        u_im: torch.Tensor,
         z_m: torch.Tensor,
         *,
         record: bool = True,
     ) -> torch.Tensor:
-        """Phi at the optimised wavefield variable and the physical latent."""
-        return self._objective_of_u(self.physical_u(v_re, v_im), z_m, record=record)
-
-    def _objective_of_u(
-        self, u: torch.Tensor, z_m: torch.Tensor, *, record: bool
-    ) -> torch.Tensor:
-        r_pde, r_data = self._residuals_of_u(u, z_m)
+        r_pde, r_data = self.residuals(u_re, u_im, z_m)
         pde_term = self.pde_node_factor * mean_real_sq(r_pde / self.pde_scale)
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
@@ -802,20 +648,17 @@ class JointFreqODIL(Optimiser):
             "grad_ratio": gz / max(gu, self.eps_grad),
         }
 
-    def _diag_grads(self, v_re_val, v_im_val, z_m_val):
-        """Φ and *physical* block-gradient norms (∇_{u_tilde}, ∇_{z_m}) at a point.
+    def _diag_grads(self, u_re_val, u_im_val, z_m_val):
+        """Φ and *physical* block-gradient norms (∇_u, ∇_{z_m}) at a point.
 
-        Uses fresh leaves on ``u_tilde`` and ``z_m`` so the reported gradients are
-        always with respect to the scaled wavefield and the physical latent —
-        comparable across runs with and without either preconditioner — and
-        records ``self._last``.
+        Uses fresh leaves on ``z_m`` so the reported model-gradient is always with
+        respect to the physical latent — comparable across baseline / preconditioned
+        runs — and records ``self._last``.
         """
-        with torch.no_grad():
-            u_tilde = self.u_tilde_of_v(v_re_val.detach(), v_im_val.detach())
-        a = u_tilde.real.clone().requires_grad_(True)
-        b = u_tilde.imag.clone().requires_grad_(True)
+        a = u_re_val.detach().clone().requires_grad_(True)
+        b = u_im_val.detach().clone().requires_grad_(True)
         c = z_m_val.detach().clone().requires_grad_(True)
-        L = self._objective_of_u(self.u_ref * torch.complex(a, b), c, record=True)
+        L = self.objective(a, b, c, record=True)
         ga, gb, gc = torch.autograd.grad(L, (a, b, c))
         gu = math.sqrt(float(ga.pow(2).sum() + gb.pow(2).sum()))
         gz = float(gc.norm())
