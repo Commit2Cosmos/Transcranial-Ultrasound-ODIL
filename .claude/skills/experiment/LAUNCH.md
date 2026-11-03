@@ -6,13 +6,13 @@ Before starting, re-check the Protocol's two gates (one variable, config-selecta
 
 ## 1. Reserve the id
 
-The experiment id is `NNNN-slug`: the next number not used in `configs/experiments/` on `main` or on any `exp/*` branch, so parallel experiments can't collide. Launch tags count too, which covers a dropped branch since deleted:
+The experiment id is `NNNN-slug`: the next number not used in `configs/experiments/` on `main` or on any `exp/*` branch, so parallel experiments can't collide. `exp/*` branch names count too, so a branch holding a feature under test reserves its id before its spec exists, and so do launch tags, which cover a dropped branch since deleted:
 
 ```bash
-git fetch origin --tags
+git fetch origin --tags --prune
 { for ref in origin/main $(git for-each-ref --format='%(refname:short)' refs/heads/exp/ refs/remotes/origin/exp/); do
     git ls-tree --name-only "$ref" configs/experiments/
-  done; git tag -l 'launch/*'; } \
+  done; git for-each-ref --format='%(refname:short)' refs/heads/exp/ refs/remotes/origin/exp/; git tag -l 'launch/*'; } \
   | sed -nE 's|.*/([0-9]{4})-.*|\1|p' | sort -n | tail -1 | awk '{n=$1} END {printf "%04d\n", n+1}'
 ```
 
