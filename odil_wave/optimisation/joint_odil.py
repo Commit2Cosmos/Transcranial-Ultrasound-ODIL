@@ -67,16 +67,20 @@ Formulation
 * Optional wavefield preconditioner (``wavefield_preconditioner="initial_model"``;
   default ``"none"``). L-BFGS optimises ``v`` with
 
-      u_tilde[s, w] = A(c_init, w)^-1 v[s, w],      v0 = A(c_init) u_tilde0,
+      u_tilde[s, w] = A(c_init, w)^-1 (|lambda_tt| v)[s, w],
+      v0 = A(c_init) u_tilde0 / |lambda_tt|,
 
   ``c_init`` the band's initial model and ``A`` the operator of
-  ``WaveEquation.residual`` (``HelmholtzSolver.assemble_H_sparse``). For a
-  Helmholtz warm start ``v0 = f / u_ref``. The solve reuses the warm start's
-  ``splu`` factors (``initial_model_factors``; nothing is factorised here) with
-  all shots batched per frequency, on the CPU, and its backward is the adjoint
-  solve. At ``c = c_init`` the wavefield block's PDE term is then the identity
-  up to a scalar per (shot, frequency); with the model frozen at the true
-  model its iteration count stayed flat across resolutions (#96).
+  ``WaveEquation.residual`` (``HelmholtzSolver.assemble_H_sparse``). The
+  ``|lambda_tt|`` (``pde_scale / u_ref``) puts ``v`` in the PDE term's own
+  scale (ADR-0002); without it the curvature in ``v`` is ``1 / lambda_tt^2``
+  smaller and float32 can't resolve L-BFGS's first step on the default
+  problem. For a Helmholtz warm start ``v0 = f / pde_scale``. The solve
+  reuses the warm start's ``splu`` factors (``initial_model_factors``; nothing
+  is factorised here) with all shots batched per frequency, on the CPU, and its
+  backward is the adjoint solve. At ``c = c_init`` the wavefield block's PDE
+  term is then the identity up to one scalar; with the model frozen at the
+  true model its iteration count stayed flat across resolutions (#96).
 
 * Optional model-block preconditioner (``model_preconditioner="pde_diagonal"``;
   default ``"none"``). L-BFGS models the Hessian outside its history as one
@@ -96,9 +100,10 @@ Formulation
   ``z_scale * s``. ``T`` is the curvature in the variable L-BFGS optimises:
   without the wavefield preconditioner it is that of ``u_tilde``
   (:meth:`JointFreqODIL.wavefield_curvature`, the column norms of ``A``); with
-  it the residual at ``c_init`` is ``u_ref v - f``, so the curvature is uniform,
-  ``pde_weight (u_ref / pde_scale)^2 / (N_int n_s n_f)``. ``T``, and so
-  ``model_scale``, then differs by about the size of ``A``'s column norms.
+  it the scaled residual at ``c_init`` is ``v - f / pde_scale``, so the
+  curvature is uniform, ``pde_weight / (N_int n_s n_f)``. ``T``, and so
+  ``model_scale``, then differs by about the size of ``A``'s column norms
+  over ``|lambda_tt|``.
 
 The class is pure library code (no file IO). Per-iteration diagnostics are
 exposed on :attr:`diag_rows` and mirrored into the loss callback history; the
@@ -631,14 +636,18 @@ class JointFreqODIL(Optimiser):
     def preconditioned_wavefield_curvature(self) -> torch.Tensor:
         """Diagonal of the weighted PDE term w.r.t. ``v_re`` at ``c = c_init``.
 
-        With ``u_tilde = A(c_init)^-1 v`` the residual at ``c_init`` is
-        ``u_ref * v - f``, so the curvature is uniform per (shot, frequency):
-        ``pde_weight * (u_ref / pde_scale)^2 / (N_int n_s n_f)``. Shape
-        ``(n_shots, nf, Nx, Ny)``, like :meth:`wavefield_curvature`.
+        With ``u_tilde = A(c_init)^-1 (|lambda_tt| v)`` the scaled residual at
+        ``c_init`` is ``v - f / pde_scale``, so the curvature is uniform:
+        ``pde_weight / (N_int n_s n_f)``. Shape ``(n_shots, nf, Nx, Ny)``, like
+        :meth:`wavefield_curvature`.
         """
-        H = self.pde_weight * (self.u_ref / self.pde_scale).square()
-        H = H / (self.n_int * self.n_shots * self.nf)
-        return H.expand(self.n_shots, self.nf, self.Nx, self.Ny)
+        H = self.pde_weight / (self.n_int * self.n_shots * self.nf)
+        return torch.full(
+            (self.n_shots, self.nf, self.Nx, self.Ny),
+            H,
+            dtype=self.dtype,
+            device=self.device,
+        )
 
     # ------------------------------------------------------------------ #
     # Parameter <-> physical helpers
@@ -647,7 +656,7 @@ class JointFreqODIL(Optimiser):
         """Initial ``(v_re, v_im, z_m)`` tensors (not yet Parameters).
 
         ``v`` is the optimised wavefield variable: ``u_tilde`` itself, or
-        ``A(c_init) u_tilde`` with the wavefield preconditioner.
+        ``A(c_init) u_tilde / |lambda_tt|`` with the wavefield preconditioner.
         """
         v_re, v_im = self.v_of_u_tilde(self.u_seed / self.u_ref)
         c0_int = (
@@ -661,7 +670,9 @@ class JointFreqODIL(Optimiser):
     def u_tilde_of_v(self, v_re: torch.Tensor, v_im: torch.Tensor) -> torch.Tensor:
         """Scaled wavefield ``u_tilde`` of the optimised wavefield variable."""
         v = torch.complex(v_re, v_im)
-        return v if self.wavefield_solve is None else self.wavefield_solve(v)
+        if self.wavefield_solve is None:
+            return v
+        return self.wavefield_solve(v * (self.pde_scale / self.u_ref))
 
     def v_of_u_tilde(self, u_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Optimised wavefield variable ``(v_re, v_im)`` of ``u_tilde``."""
@@ -670,7 +681,7 @@ class JointFreqODIL(Optimiser):
                 c_init = self.vm_in.c.detach().to(dtype=self.dtype, device=self.device)
                 u_tilde = self.wave_eq.residual(
                     u_tilde, c_init, torch.zeros_like(u_tilde)
-                )
+                ) / (self.pde_scale / self.u_ref)
         return (
             u_tilde.real.contiguous().to(dtype=self.dtype),
             u_tilde.imag.contiguous().to(dtype=self.dtype),

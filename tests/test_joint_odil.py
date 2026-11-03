@@ -556,13 +556,15 @@ def test_factor_solve_backward_is_the_adjoint_of_its_forward():
 
 
 def test_warm_start_maps_to_the_scaled_source_and_back():
-    """With the initial model's factors, L-BFGS starts at v0 = A(c0) u_tilde0,
-    which for a Helmholtz warm start is f / u_ref, and physical_u maps v0 back
-    to the warm-start wavefield."""
+    """With the initial model's factors, L-BFGS starts at
+    v0 = A(c0) u_tilde0 / |lambda_tt|, which for a Helmholtz warm start is
+    f / pde_scale, and physical_u maps v0 back to the warm-start wavefield."""
     opt = _small_two_frequency_optimiser(2, wavefield_preconditioner="initial_model")
     v_re, v_im, _ = opt.init_params()
     v0 = torch.complex(v_re, v_im)
-    torch.testing.assert_close(v0, opt.sources / opt.u_ref, rtol=0, atol=1e-10)
+    expected = opt.sources / opt.pde_scale
+    atol = 1e-10 * float(expected.abs().max())
+    torch.testing.assert_close(v0, expected, rtol=0, atol=atol)
     u = opt.physical_u(v_re, v_im)
     rel = torch.linalg.vector_norm(u - opt.u_seed) / torch.linalg.vector_norm(
         opt.u_seed
@@ -600,10 +602,12 @@ def test_unknown_wavefield_preconditioner_is_rejected(truth_problem):
 
 def test_model_scale_target_is_the_curvature_in_v_with_both_preconditioners():
     """With both preconditioners, T is the median curvature of the weighted PDE
-    term in v: at c = c0 the residual is u_ref v - f, so the curvature is
-    pde_weight / (lambda_tt^2 N_int n_s n_f) at every node of each frequency.
-    The objective is quadratic in v, so a gradient difference along a unit
-    vector gives the Hessian's row sums; data_weight = 0 leaves the PDE term."""
+    term in v: at c = c0 the scaled residual is v - f / pde_scale, so the
+    curvature is pde_weight / (N_int n_s n_f) at every node, whatever the
+    frequency. (Scaled by 1 / lambda_tt^2 instead, float32 can't resolve the
+    first L-BFGS step on the default problem.) The objective is quadratic in v,
+    so a gradient difference along a unit vector gives the Hessian's row sums;
+    data_weight = 0 leaves the PDE term."""
     opt = _small_two_frequency_optimiser(
         2,
         data_weight=0.0,
@@ -617,11 +621,10 @@ def test_model_scale_target_is_the_curvature_in_v_with_both_preconditioners():
         return torch.autograd.grad(opt.objective(v, v_im, z0, record=False), v)[0]
 
     H_rows = grad_v_re(v_re + 1.0) - grad_v_re(v_re)
-    lam_tt = opt.wavefield.frequency_selection.lambda_tt.abs().to(opt.dtype)
     n_int = opt.grid.interior_nx * opt.grid.interior_ny
-    expected = 2.5 / (lam_tt.square() * n_int * opt.n_shots * opt.nf)
+    expected = 2.5 / (n_int * opt.n_shots * opt.nf)
     torch.testing.assert_close(
-        H_rows, expected.view(1, -1, 1, 1).expand_as(H_rows), rtol=1e-6, atol=0.0
+        H_rows, torch.full_like(H_rows, expected), rtol=1e-6, atol=0.0
     )
     info = opt.scale_info
     assert info["wavefield_preconditioner"] == "initial_model"
