@@ -392,12 +392,17 @@ experiments are written" above):
   transducer order without `s`; `pde_scale` (`(n_shots, n_freq)`, the band's
   fixed `|λ_tt|·u_ref`); `shots`, `u` and `u_star` as below.
 - **`band_summary.json`**: `frequencies_hz`, `fft_bins`, `t_start_epoch_s`,
-  `wall_s` / `warm_start_s` / `optimise_s`, `n_iter_requested`,
+  `wall_s` / `warm_start_s` / `optimise_s` / `wavefield_solve_s` (the part of
+  `optimise_s` spent in the wavefield preconditioner's forward and adjoint
+  triangular solves, device copies included, `0` without it; it also counts the
+  forward solves of the logged rows' diagnostics and of the final iterate, so
+  it is not the L-BFGS evaluations' cost alone), `n_iter_requested`,
   `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
   `n_outer_iter`, `n_closure`, `n_evaluations`; `scale_info`, the band's fixed
-  scales, with `model_preconditioner` and, for `pde_diagonal`, `precond_eps`,
-  `precond_target`, min/median/max of `h_zz` and `model_scale`, and
-  `precond_floored_frac`), `warnings`, `worst_fit_shot` and `saved_shots`.
+  scales, with `wavefield_preconditioner`, `model_preconditioner` and, for
+  `pde_diagonal`, `precond_eps`, `precond_target`, min/median/max of `h_zz`
+  and `model_scale`, and `precond_floored_frac`), `warnings`, `worst_fit_shot`
+  and `saved_shots`.
 - **Optimiser-health warnings** (fixed in code, `health.py`): `c` within 1% of
   a speed bound (`grid.c_min` / `grid.c_max`), `sat_frac` above 1%, and
   `grad_u_norm` or `grad_z_norm` rising at 3 consecutive logged rows. Each
@@ -494,7 +499,7 @@ each band's final row (`per_band`).
 |---|---|
 | `c_min`, `c_max` | extremes of `c` over the interior; blow-up check |
 | `sat_frac` | fraction of cells whose bounded-`c` sigmoid is within `1e-3` of 0 or 1, i.e. pinned at a speed bound |
-| `grad_u_norm` | `‖∇_u L‖₂` over real and imaginary wavefield parts |
+| `grad_u_norm` | `‖∇_u L‖₂` over real and imaginary wavefield parts, with `u` the scaled wavefield `u_tilde` (also under the wavefield preconditioner) |
 | `grad_z_norm` | `‖∇_z L‖₂`, with `z` the unconstrained model variable |
 
 Missing truth, brain mask or an SSIM window too large for the grid is a

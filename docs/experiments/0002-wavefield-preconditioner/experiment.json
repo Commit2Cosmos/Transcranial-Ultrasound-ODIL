@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "0002-wavefield-preconditioner",
+  "issue": 105,
+  "spec": "configs/experiments/0002-wavefield-preconditioner.yaml",
+  "spec_sha256": "f3eb0c1e723c3dc217d70d71103f7b78ccdedeb6a54b862a77e2eadb49a97744",
+  "commit": "a5d4ce3f6a70adcfe69f3b89a86d5e004bedbcc9",
+  "device": "cpu",
+  "sweep_key": "optimiser.wavefield_preconditioner",
+  "status": "completed",
+  "started_utc": "2026-11-03T17:45:25Z",
+  "finished_utc": "2026-11-03T18:07:48Z",
+  "runs": [
+    {
+      "index": 0,
+      "label": "none",
+      "dir": "runs/00_none",
+      "value": "none",
+      "is_baseline": true,
+      "status": "completed"
+    },
+    {
+      "index": 1,
+      "label": "initial-model",
+      "dir": "runs/01_initial-model",
+      "value": "initial_model",
+      "is_baseline": false,
+      "status": "completed"
+    }
+  ]
+}

@@ -91,6 +91,7 @@ def test_forward_to_loss_gradient_flows():
         log_every=1,
         verbose=False,
         model_preconditioner="none",
+        wavefield_preconditioner="none",
     )
 
     u_re, u_im, z_m = opt.init_params()
@@ -313,6 +314,38 @@ def test_pde_diagonal_preconditioner_runs_end_to_end(tiny_run_config, new_run):
     summary = json.loads((band_dir / "band_summary.json").read_text())
     info = summary["optimiser_result"]["scale_info"]
     assert info["model_preconditioner"] == "pde_diagonal"
+    assert np.isfinite(info["precond_target"]) and info["precond_target"] > 0
+
+
+def test_both_preconditioners_run_end_to_end(tiny_run_config, new_run):
+    """The tiny config with both preconditioners completes with finite tape
+    values and reports the wavefield preconditioner and the time spent in its
+    triangular solves (no recovery claim)."""
+    user_cfg = deep_merge(
+        tiny_run_config,
+        {
+            "optimiser": {
+                "n_iter": 3,
+                "model_preconditioner": "pde_diagonal",
+                "wavefield_preconditioner": "initial_model",
+            }
+        },
+    )
+    result = run_inverse(resolve_config(user_cfg), new_run())
+    assert result.status == "completed"
+
+    with open(result.run_dir / "tape.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 4
+    for key in ("loss_total", "rmse_brain", "grad_u_norm", "grad_z_norm"):
+        values = [float(r[key]) for r in rows]
+        assert np.all(np.isfinite(values)), key
+
+    (band_dir,) = (p for p in (result.run_dir / "bands").iterdir() if p.is_dir())
+    summary = json.loads((band_dir / "band_summary.json").read_text())
+    assert 0.0 < summary["wavefield_solve_s"] < summary["optimise_s"]
+    info = summary["optimiser_result"]["scale_info"]
+    assert info["wavefield_preconditioner"] == "initial_model"
     assert np.isfinite(info["precond_target"]) and info["precond_target"] > 0
 
 

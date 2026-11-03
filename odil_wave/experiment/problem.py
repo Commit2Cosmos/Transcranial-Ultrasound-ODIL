@@ -174,10 +174,15 @@ class Problem:
 
     # -- warm start -------------------------------------------------------- #
     def warm_start(
-        self, velocity_model: VelocityModel, band: BandContext
-    ) -> List[Wavefield]:
+        self,
+        velocity_model: VelocityModel,
+        band: BandContext,
+        return_factors: bool = False,
+    ):
         """Helmholtz warm-start wavefields for ``u`` (one per shot) on the
-        current model."""
+        current model; with ``return_factors``, ``(wavefields, factors)``, the
+        per-frequency ``splu`` factors of ``A(c)`` (see
+        :meth:`HelmholtzSolver.solve`)."""
         wf = Wavefield(self.grid, band.freq, velocity_model=velocity_model)
         solver = HelmholtzSolver(
             wf,
@@ -185,7 +190,9 @@ class Problem:
             space_order=self.space_order,
             damping_scale=self.damping_scale,
         )
-        return solver.solve(verbose=self.cfg.runtime.verbose)
+        return solver.solve(
+            verbose=self.cfg.runtime.verbose, return_factors=return_factors
+        )
 
 
 def _build_velocity(
