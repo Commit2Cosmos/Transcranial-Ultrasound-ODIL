@@ -394,15 +394,12 @@ experiments are written" above):
 - **`band_summary.json`**: `frequencies_hz`, `fft_bins`, `t_start_epoch_s`,
   `wall_s` / `warm_start_s` / `optimise_s` / `wavefield_solve_s` (the part of
   `optimise_s` spent in the wavefield preconditioner's forward and adjoint
-  triangular solves, device copies included, `0` without it; it also counts the
-  forward solves of the logged rows' diagnostics and of the final iterate, so
-  it is not the L-BFGS evaluations' cost alone), `n_iter_requested`,
+  triangular solves, `0` without it), `n_iter_requested`,
   `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
   `n_outer_iter`, `n_closure`, `n_evaluations`; `scale_info`, the band's fixed
   scales, with `wavefield_preconditioner`, `model_preconditioner` and, for
   `pde_diagonal`, `precond_eps`, `precond_target`, min/median/max of `h_zz`
-  and `model_scale`, and `precond_floored_frac`), `warnings`, `worst_fit_shot`
-  and `saved_shots`.
+  and `model_scale`, and `precond_floored_frac`), `warnings`, `worst_fit_shot` and `saved_shots`.
 - **Optimiser-health warnings** (fixed in code, `health.py`): `c` within 1% of
   a speed bound (`grid.c_min` / `grid.c_max`), `sat_frac` above 1%, and
   `grad_u_norm` or `grad_z_norm` rising at 3 consecutive logged rows. Each
