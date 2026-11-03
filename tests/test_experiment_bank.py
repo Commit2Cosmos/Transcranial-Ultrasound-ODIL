@@ -76,16 +76,23 @@ def test_check_fails_on_a_missing_frontmatter_field(bank_dir, field, capsys):
 @pytest.mark.parametrize(
     "ids",
     [
-        ["0001-tv-weight", "0003-band-ablation"],  # gap
-        ["0002-tv-weight"],  # doesn't start at 0001
-        ["0001-tv-weight", "0001-band-ablation"],  # number used twice
+        ["0001-tv-weight", "0003-band-ablation"],  # 0002 on another exp/* branch
+        ["0002-tv-weight"],  # 0001 voided, or not merged yet
     ],
 )
-def test_check_fails_on_non_sequential_ids(bank_dir, ids, capsys):
+def test_check_passes_on_ids_with_gaps(bank_dir, ids):
+    """A branch holds only its own records: the other ids are on other exp/*
+    branches or were voided, so gaps are expected."""
     for rec_id in ids:
         _write_record(bank_dir, rec_id)
+    assert _check(bank_dir) == 0
+
+
+def test_check_fails_on_a_number_used_twice(bank_dir, capsys):
+    _write_record(bank_dir, "0001-tv-weight")
+    _write_record(bank_dir, "0001-band-ablation")
     assert _check(bank_dir) == 1
-    assert "sequential" in capsys.readouterr().err
+    assert "0001" in capsys.readouterr().err
 
 
 def test_check_fails_when_the_frontmatter_id_is_not_the_filename(bank_dir, capsys):
@@ -211,7 +218,8 @@ def test_regenerate_writes_the_index_table_from_frontmatter(bank_dir):
 
 def test_regenerate_leaves_the_readme_alone_when_the_check_fails(bank_dir):
     (bank_dir / "README.md").write_text(README)
-    _write_record(bank_dir, "0002-tv-weight")
+    _write_record(bank_dir, "0001-tv-weight")
+    _write_record(bank_dir, "0001-band-ablation")
     assert bank.main(["--bank", str(bank_dir)]) == 1
     assert (bank_dir / "README.md").read_text() == README
 

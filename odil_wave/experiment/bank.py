@@ -93,12 +93,14 @@ def check(bank_dir: Path) -> List[str]:
                 f"{rec.name}: frontmatter id {rec.front['id']!r} is not the filename"
             )
 
-    numbers = [int(rec.name[:4]) for rec in records]
-    if numbers != list(range(1, len(numbers) + 1)):
-        problems.append(
-            "ids are not sequential from 0001 without gaps or repeats: "
-            + ", ".join(rec.name for rec in records)
-        )
+    # Gaps are expected: a branch holds only its own records, and a voided
+    # launch releases its id.
+    by_number: Dict[str, List[str]] = {}
+    for rec in records:
+        by_number.setdefault(rec.name[:4], []).append(rec.name)
+    for number, names in by_number.items():
+        if len(names) > 1:
+            problems.append(f"id number {number} used twice: {', '.join(names)}")
 
     problems += _check_supersession(records)
     return problems
