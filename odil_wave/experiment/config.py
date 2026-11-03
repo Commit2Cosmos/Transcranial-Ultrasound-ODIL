@@ -188,11 +188,12 @@ class AcquisitionCfg:
     * ``sigma_s``: > 0 metres; width of the Gaussian source density
       ``exp(-r**2 / sigma_s**2) / (pi sigma_s**2)``, i.e. a Gaussian with
       standard deviation ``sigma_s / sqrt(2)`` (used when
-      ``source_spatial == "gaussian"``). The default 3.4 mm is just under
-      ``1 / k_max`` = 3.45 mm at 60 kHz in 1300 m/s (1.69 h on the default grid). The
-      config warns when ``sigma_s < 1.5 h`` (under-resolved), when
-      ``k_max * sigma_s > 1`` for the top band frequency (the source low-pass
-      filters it) and when the ring is within ``3 sigma_s`` of the PML.
+      ``source_spatial == "gaussian"``). The default 2.5 mm is just under
+      ``1 / k_max`` = 2.59 mm at 80 kHz in 1300 m/s (1.24 h on the default grid,
+      ring clearance 5 ``sigma_s``). The config warns when ``sigma_s < 1.0 h``
+      (under-resolved), when ``k_max * sigma_s > 1`` for the top band
+      frequency (the source low-pass filters it) and when the ring is within
+      ``3 sigma_s`` of the PML.
     * ``source_spatial``: ``"gaussian"`` | ``"point"``; either is a density
       that integrates to 1 (the point source is ``1 / (dx dy)``).
     """
@@ -201,7 +202,7 @@ class AcquisitionCfg:
     a_frac: float = 0.9
     b_frac: float = 0.9
     ring_center: Union[str, List[float]] = "grid_center"
-    sigma_s: float = 3.4e-3
+    sigma_s: float = 2.5e-3
     source_spatial: str = "gaussian"
 
 
@@ -247,7 +248,7 @@ class BandCfg:
       iteration budget.
     """
 
-    frequencies_hz: List[float] = field(default_factory=lambda: [60e3])
+    frequencies_hz: List[float] = field(default_factory=lambda: [80e3])
     n_iter: Optional[int] = None
 
 
@@ -391,9 +392,7 @@ class RunConfig:
     source: SourceCfg = field(default_factory=SourceCfg)
     acquisition: AcquisitionCfg = field(default_factory=AcquisitionCfg)
     truth: ModelCfg = field(default_factory=ModelCfg)
-    init: ModelCfg = field(
-        default_factory=lambda: ModelCfg(profile="shepp_logan_skull")
-    )
+    init: ModelCfg = field(default_factory=lambda: ModelCfg(profile="homogeneous"))
     continuation: ContinuationCfg = field(default_factory=ContinuationCfg)
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
@@ -764,10 +763,10 @@ def _source_width_warnings(cfg: "RunConfig") -> List[str]:
         f"= {clearance / sigma:.1f} sigma_s)"
     )
     out = []
-    if sigma < 1.5 * h:
+    if sigma < h:
         err = 4.0 * math.exp(-((math.pi * sigma / h) ** 2))
         out.append(
-            f"acquisition.sigma_s={sigma:g} m is under-resolved (< 1.5 h): the "
+            f"acquisition.sigma_s={sigma:g} m is under-resolved (< 1.0 h): the "
             f"source's normalisation is off by ~{err:.0e} {facts}"
         )
     if k_max * sigma > 1.0:

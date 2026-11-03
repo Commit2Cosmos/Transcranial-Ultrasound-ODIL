@@ -86,11 +86,12 @@ def test_default_config_matches_the_documented_shape():
 
 
 def test_resolve_empty_config_gives_the_default_values():
-    """resolve_config({}) is the default config: 64 transducers, one 60 kHz band,
-    and observations on the inversion grid."""
+    """resolve_config({}) is the default config: 64 transducers, one 80 kHz band,
+    a homogeneous initial model and observations on the inversion grid."""
     cfg = resolve_config({})
     assert cfg.acquisition.n_transducers == 64
-    assert [b.frequencies_hz for b in cfg.continuation.bands] == [[60e3]]
+    assert [b.frequencies_hz for b in cfg.continuation.bands] == [[80e3]]
+    assert cfg.init.profile == "homogeneous"
     assert cfg.pml.observation_width is None
 
 
@@ -214,7 +215,7 @@ def test_validate_config_accepts_default():
     [
         # sigma_s / h = 0.50 on the default grid (h = 2.016 mm)
         (["acquisition.sigma_s=1e-3"], ["under-resolved"]),
-        # k_max sigma_s = 1.45 at 60 kHz in 1300 m/s; a small ring keeps clear
+        # k_max sigma_s = 1.93 at 80 kHz in 1300 m/s; a small ring keeps clear
         (
             [
                 "acquisition.sigma_s=5e-3",
@@ -223,7 +224,7 @@ def test_validate_config_accepts_default():
             ],
             ["low-pass"],
         ),
-        # ring 6.25 mm from the PML < 3 sigma_s = 10.2 mm
+        # ring 6.25 mm from the PML < 3 sigma_s = 7.5 mm
         (["acquisition.a_frac=0.95"], ["within 3 sigma_s"]),
         # a point source has no width
         (["acquisition.sigma_s=1e-3", "acquisition.source_spatial=point"], []),
@@ -237,6 +238,18 @@ def test_source_width_warnings(overrides, expected):
     for w, phrase in zip(warnings, expected):
         assert phrase in w
         assert "sigma_s/h =" in w and "k_max*sigma_s =" in w and "clearance" in w
+
+
+@pytest.mark.parametrize("h_frac, warns", [(0.99, True), (1.0, False), (1.2, False)])
+def test_under_resolved_bound_is_one_grid_spacing(h_frac, warns):
+    """The under-resolved warning fires below 1.0 h (h = 2.016 mm on the
+    default grid) and not at or above it."""
+    h = 0.25 / 124  # the default grid spacing: 0.25 m over 125 nodes
+    sigma = h_frac * h
+    warnings = validate_config(resolve_config({}, [f"acquisition.sigma_s={sigma!r}"]))
+    under = [w for w in warnings if "under-resolved" in w]
+    assert len(under) == warns
+    assert all("(< 1.0 h)" in w for w in under)
 
 
 @pytest.mark.parametrize("value", ["null", "0", "-1e-3"])

@@ -9,6 +9,10 @@
 acquisition:
   sigma_s: 3.5e-3   # pinned in metres: the source of the #32 before/after tables
 
+continuation:
+  bands:
+    - frequencies_hz: [60e3]   # pinned: the band of the #32 tables
+
 truth:
   profile: overdensity
   contrast: 150.0   # m/s above base

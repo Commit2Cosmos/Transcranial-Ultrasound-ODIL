@@ -253,3 +253,69 @@ def test_animate_writes_a_nonempty_gif(tmp_path):
     assert returned == str(out_path)
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+# --------------------------------------------------------------------------- #
+# Thin-PML warning
+# --------------------------------------------------------------------------- #
+def _pml_warnings(grid, freqs_hz, model=None):
+    """The thin-PML warnings raised by setting up a Wavefield on ``grid``."""
+    import warnings
+
+    freq = FrequencySelection.from_frequencies(grid, freqs_hz)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        Wavefield(grid, freq, velocity_model=model)
+    return [str(w.message) for w in caught if "PML" in str(w.message)]
+
+
+def test_pml_under_half_the_longest_wavelength_warns():
+    """PML 4 (10.5 mm) at 40 kHz, which the shared test grid bins to
+    33.1 kHz, in 1500 m/s: under the 22.7 mm half-wavelength, so it warns,
+    naming the thickness, half-wavelength, frequency and speed."""
+    grid = make_grid(pml_width=4)
+    (msg,) = _pml_warnings(grid, [40e3], make_model(grid))
+    assert "10.5 mm" in msg and "22.7 mm" in msg
+    assert "33.1 kHz" in msg and "1500 m/s" in msg
+
+
+def test_unit_seam_default_pml_does_not_warn():
+    """The shared test grid's PML 12 (31.6 mm) clears the 22.7 mm half-wavelength."""
+    grid = make_grid()
+    assert _pml_warnings(grid, [40e3], make_model(grid)) == []
+
+
+def test_pml_warning_uses_the_lowest_frequency():
+    """Adding 20 kHz (binned to 16.5 kHz, half-wavelength 45.4 mm in 1500 m/s)
+    makes the PML 12 band warn, citing that frequency."""
+    grid = make_grid()
+    (msg,) = _pml_warnings(grid, [40e3, 20e3], make_model(grid))
+    assert "16.5 kHz" in msg and "45.4 mm" in msg
+
+
+def test_pml_warning_uses_the_fastest_pml_node():
+    """At 16.5 kHz a 1000 m/s medium's half-wavelength (30.3 mm) clears the
+    31.6 mm PML. One 1700 m/s PML node makes it warn; an interior one doesn't."""
+    grid = make_grid()
+    slow = make_model(grid, base=1000.0)
+    assert _pml_warnings(grid, [20e3], slow) == []
+    c_pml, c_interior = slow.c.clone(), slow.c.clone()
+    c_pml[0, 0] = 1700.0
+    c_interior[grid.nx // 2, grid.ny // 2] = 1700.0
+    (msg,) = _pml_warnings(grid, [20e3], VelocityModel.from_field(grid, c_pml))
+    assert "1700 m/s" in msg
+    assert _pml_warnings(grid, [20e3], VelocityModel.from_field(grid, c_interior)) == []
+
+
+@pytest.mark.parametrize("config, warns", [("default", False), ("tiny", True)])
+def test_run_config_pml_warning(config, warns, tiny_run_config):
+    """The default config (PML 80.6 mm, 80 kHz) does not warn; the tiny
+    check config (PML 15.8 mm, 40 kHz) does."""
+    from odil_wave.experiment import build_problem, resolve_config
+
+    cfg = resolve_config(tiny_run_config if config == "tiny" else {})
+    problem = build_problem(cfg)
+    (band,) = cfg.continuation.bands
+    for model in (problem.truth_velocity, problem.init_velocity):
+        found = _pml_warnings(problem.grid, band.frequencies_hz, model)
+        assert bool(found) == warns
