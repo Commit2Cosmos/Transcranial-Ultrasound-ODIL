@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import scipy.sparse as sp
 import torch
-from scipy.sparse.linalg import splu
+from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.wavefield import Wavefield
 from .spatial import laplacian_stencil
@@ -174,7 +174,9 @@ class HelmholtzSolver:
         assert H.shape == (n, n)
         return H.tocsr()
 
-    def solve(self, verbose: bool = True) -> List[Wavefield]:
+    def solve(
+        self, verbose: bool = True, return_factors: bool = False
+    ) -> Union[List[Wavefield], Tuple[List[Wavefield], List[SuperLU]]]:
         """Solve H(c) u = f for every shot and frequency; one Wavefield per shot.
 
         Assembles and factorises H once per frequency, then solves all shots'
@@ -186,12 +188,17 @@ class HelmholtzSolver:
             When True, print per-frequency assemble/factor/solve timings plus
             a final residual/timing summary; also computes that summary
             (an extra residual evaluation), which is skipped when False.
+        return_factors :
+            When True, also return the per-frequency ``splu`` factors of H
+            (the wavefield preconditioner reuses them for the band).
 
         Returns
         -------
         List[Wavefield]
             One solved Wavefield per shot, each holding the amplitude at
-            every selected frequency.
+            every selected frequency; with ``return_factors``, the tuple
+            ``(wavefields, factors)``, ``factors[k]`` the factor at frequency
+            ``k``.
         """
         wf = self.wavefield
         grid = wf.grid
@@ -210,6 +217,7 @@ class HelmholtzSolver:
         assemble_times: list[float] = []
         factor_times: list[float] = []
         solve_times: list[float] = []
+        factors: List[SuperLU] = []
         t_all0 = time.perf_counter()
 
         # Cache Laplacian CSR once (geometry / space_order only).
@@ -227,6 +235,8 @@ class HelmholtzSolver:
             lu = splu(H.tocsc())
             t_fac = time.perf_counter() - t0
             factor_times.append(t_fac)
+            if return_factors:
+                factors.append(lu)
 
             # Batched RHS: columns are shots  (n, n_shots)
             F = (
@@ -292,4 +302,6 @@ class HelmholtzSolver:
             )
             out.amplitude = amp[s]
             outputs.append(out)
+        if return_factors:
+            return outputs, factors
         return outputs
