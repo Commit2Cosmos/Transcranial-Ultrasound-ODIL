@@ -214,3 +214,9 @@ def test_a_linear_scale_spans_the_data_but_a_two_slope_one_does_not():
         1600.0,
         3000.0,
     )
+
+
+def test_an_explicit_norm_overrides_the_profile(grid):
+    norm = Normalize(1450.0, 1550.0)
+    ax = make_model(grid, "shepp_logan", scale=SCALE).show(norm=norm, vcenter=1500.0)
+    assert shown_norm(ax) is norm
