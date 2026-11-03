@@ -71,4 +71,5 @@ the user decides.
 <!-- index:start -->
 | id | question | variable | status | answer |
 |---|---|---|---|---|
+| [0002-wavefield-preconditioner](0002-wavefield-preconditioner.md) | Does the wavefield preconditioner pay off in the joint solve? | optimiser.wavefield_preconditioner | current | Yes at equal outer budget (final rel_wavefield_error 0.23×, rmse_skull −25%, rmse_brain −30%); at equal wall time it misses the 0.5× threshold narrowly (0.54×), so the cost criterion is not met |
 <!-- index:end -->
