@@ -65,6 +65,7 @@ EXPECTED_SHAPE = {
         "tolerance_grad",
         "tolerance_change",
         "model_preconditioner",
+        "wavefield_preconditioner",
     ],
     "metrics": ["ssim"],
 }
@@ -266,6 +267,7 @@ def test_supported_space_orders_validate(order):
         {"optimiser": {"history_size": 0}},
         {"optimiser": {"line_search_fn": "backtracking"}},
         {"optimiser": {"model_preconditioner": "diagonal"}},
+        {"optimiser": {"wavefield_preconditioner": "jacobi"}},
         {
             "optimiser": {"model_preconditioner": "pde_diagonal"},
             "loss": {"weights": {"pde": 0.0}},
@@ -463,6 +465,13 @@ def test_model_preconditioner_defaults_to_none_and_accepts_pde_diagonal():
     assert resolve_config({}).optimiser.model_preconditioner == "none"
     validate_config(
         resolve_config({"optimiser": {"model_preconditioner": "pde_diagonal"}})
+    )
+
+
+def test_wavefield_preconditioner_defaults_to_none_and_accepts_initial_model():
+    assert resolve_config({}).optimiser.wavefield_preconditioner == "none"
+    validate_config(
+        resolve_config({"optimiser": {"wavefield_preconditioner": "initial_model"}})
     )
 
 

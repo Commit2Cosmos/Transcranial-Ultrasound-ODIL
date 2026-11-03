@@ -142,6 +142,13 @@ or removed keys are rejected.
   PDE-term curvature at the warm start matches the wavefield block's median
   curvature (floored at `1e-2` of the median, so `s` stays within 10x of its
   median). The tape's `grad_z_norm` stays with respect to `z_m`.
+- **`optimiser.wavefield_preconditioner`** — `none` (default) or
+  `initial_model`. `initial_model` optimises `v` with `u_tilde = A(c₀)⁻¹ v`,
+  `c₀` the band's initial model, reusing the warm start's `splu` factors (one
+  forward and one adjoint triangular solve per evaluation, on the CPU). With
+  `pde_diagonal` too, the model scale's target becomes the wavefield block's
+  curvature in `v`, which differs by about the size of `A`'s column norms. The
+  tape's `grad_u_norm` stays with respect to `u_tilde`.
 
 ### Objective balance
 
