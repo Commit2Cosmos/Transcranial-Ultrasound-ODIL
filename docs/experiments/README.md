@@ -1,12 +1,11 @@
 # Experiment bank
 
 One **experiment record** per launched experiment (see `GLOSSARY.md`), including
-aborted and inconclusive ones, so negative results are banked and numbering has
-no gaps. Read the index below first; take context primarily from `current`
-records.
+aborted and inconclusive ones, so negative results are banked. Read the index
+below first; take context primarily from `current` records.
 
 - **Record**: `NNNN-slug.md`, copied from [`TEMPLATE.md`](TEMPLATE.md). The
-  **experiment id** `NNNN-slug` is 4-digit and sequential, reserved at launch,
+  **experiment id** `NNNN-slug` is 4-digit and unique, reserved at launch,
   and shared by the experiment spec (`configs/experiments/NNNN-slug.yaml`), the
   experiment directory and `--reproduce NNNN-slug`. An aborted record can be
   brief: the question, what happened and why it stopped.
@@ -22,7 +21,7 @@ records.
   records are never checked or edited again; they remain as context.
 - **Index**: generated from the frontmatter by
   `uv run python -m odil_wave.experiment.bank`. `--check` validates only (required
-  fields, sequential ids, maintained `supersedes` targets) and runs in CI through
+  fields, unique id numbers, maintained `supersedes` targets) and runs in CI through
   `tests/test_experiment_bank.py`.
 
 ## Maintaining the bank
