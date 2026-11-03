@@ -457,7 +457,7 @@ def test_reported_model_gradient_is_with_respect_to_z_m(mode):
 @pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
 def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode):
     """Started at (true model, true wavefield), the full outer-iteration budget
-    leaves both unchanged. Measured: objective 1.3e-29 (threshold 1e-20); c and
+    leaves both unchanged. Measured: objective 2.6e-29 (threshold 1e-20); c and
     u change by exactly 0 (threshold 1e-8)."""
     opt = _make_optimiser(truth_problem, model_preconditioner=mode)
     logged = []
@@ -473,7 +473,7 @@ def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode):
 def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem):
     """L-BFGS over the model latent alone, with the optimiser's settings and the
     wavefield held at the true wavefield, recovers the true model from a
-    homogeneous initial model. Measured: c error 3.25e-2 -> 2.6e-6 (threshold
+    homogeneous initial model. Measured: c error 3.25e-2 -> 1.3e-6 (threshold
     1e-4)."""
     p = truth_problem
     wf = p.wavefield

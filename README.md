@@ -50,7 +50,7 @@ configs** that name only the values they change (see
 From the `odil/` directory:
 
 ```bash
-# The default config: single-band (60 kHz) Shepp-Logan run
+# The default config: single-band (80 kHz) Shepp-Logan run from a homogeneous model
 python main.py
 
 # Print the full default config as YAML
@@ -116,11 +116,11 @@ or removed keys are rejected.
 |-------|-------------|-------|
 | `runtime`      | `device` (`cpu`/`cuda`/`mps`), `dtype` (`float32`/`float64`), `verbose` | f64 reaches far lower loss floors; f32 is faster on MPS/GPU. |
 | `grid`         | `interior_shape` (`[nx, ny]` nodes), `interior_extent` (`[[x0, x1], [y0, y1]]` m), `c_min`/`c_max`, `space_order` (2/4/6/8/10) | Optimization variable lives on the PML-extended grid; higher `space_order` reduces numerical dispersion. |
-| `pml`          | `width`, `power`, `R0`, `damping_scale`, `observation_width` | `observation_width: null` generates the data on the inversion grid (inverse crime); a different width is a deliberate modelling error. |
+| `pml`          | `width`, `power`, `R0`, `damping_scale`, `observation_width` | `observation_width: null` generates the data on the inversion grid (inverse crime); a different width is a deliberate modelling error. Setting up a solve warns when the PML is thinner than half the longest wavelength (fastest PML node over the lowest frequency). |
 | `time`         | `t_max`, `init_nt`, `cfl_safety` | Sets `dt` and the FFT bins the band frequencies snap to. |
 | `source`       | `kind` (`tone_burst`/`ricker`), `f0`, `n_cycles`, `envelope` | Center frequency `f0` drives resolution and cycle-skipping. |
-| `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s`, `source_spatial` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. The source is a density that integrates to 1 on any grid: a Gaussian of width `sigma_s` (metres, default 3.4 mm) or a point `1/(dx·dy)`; see below. |
-| `truth` / `init` | `profile`, `scale`, `pml_c` | Ground truth vs. starting model (e.g. `shepp_logan` vs `…_skull`); the PML ring is always padded with the constant `pml_c`. |
+| `acquisition`  | `n_transducers`, `a_frac`/`b_frac`, `ring_center`, `sigma_s`, `source_spatial` | Ring of transducers (ultrasound-style): each transmits one shot, recorded by all the others. The source is a density that integrates to 1 on any grid: a Gaussian of width `sigma_s` (metres, default 2.5 mm) or a point `1/(dx·dy)`; see below. |
+| `truth` / `init` | `profile`, `scale`, `pml_c` | True model vs. initial model (by default `shepp_logan` vs `homogeneous`); the PML is always padded with the constant `pml_c`. |
 | `continuation` | `bands[]` | Low→high multiscale: each band's recovered `c` warm-starts the next; every band's wavefield is warm-started by a Helmholtz solve on that model. |
 | `loss`         | `weights.{pde,data,reg}`, `regulariser.{name,eps}` | The only objective weights (defaults 1 / 1 / 0); `reg > 0` activates the regulariser (`tv_iso`/`tikhonov`/`tv_aniso`): the dimensionless, resolution-independent interior mean of `\|∇'c'\|^p`; `eps` (default 1e-4) is `tv_iso`'s smoothing floor, a squared dimensionless gradient. |
 | `optimiser`    | `n_iter`, `log_every`, `inner_max_iter`, `history_size`, … | Joint L-BFGS settings; see below. |
@@ -163,12 +163,13 @@ resolution:
   and 125²/80 (case `k` scales interior and PML; `k:p` scales them apart).
 
 **Source width.** `acquisition.sigma_s` is a length in metres. Keep
-`1.5 h ≤ sigma_s ≤ 1/k_max` with `k_max = 2π f_max / grid.c_min`: below 1.5 h
-the Gaussian is under-resolved, above `1/k_max` it low-pass filters the top
-frequency. That window needs ≥ 3π ≈ 9.4 points per wavelength at `f_max`
-(the default grid has 10.7 at 60 kHz, 8.1 at 80 kHz). The config warns, printing
-`sigma_s/h`, `k_max·sigma_s` and the ring's clearance, when either bound is
-crossed or the ring is within 3 `sigma_s` of the PML.
+`1.0 h ≤ sigma_s ≤ 1/k_max` with `k_max = 2π f_max / grid.c_min`: below 1.0 h
+the Gaussian is under-resolved (its normalisation is off by ~2e-4 at 1.0 h),
+above `1/k_max` it low-pass filters the top frequency. That window needs
+≥ 2π ≈ 6.3 points per wavelength at `f_max` (the default grid has 8.1 at
+80 kHz; the default `sigma_s` = 2.5 mm is 1.24 h, `k_max·sigma_s` = 0.97). The
+config warns, printing `sigma_s/h`, `k_max·sigma_s` and the ring's clearance,
+when either bound is crossed or the ring is within 3 `sigma_s` of the PML.
 
 ### Frequency continuation (`bands`)
 

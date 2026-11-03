@@ -86,6 +86,32 @@ class Wavefield:
                 contrast=0.0,
                 pml_c=None,
             )
+        self._warn_if_pml_is_thin()
+
+    def _warn_if_pml_is_thin(self) -> None:
+        """Warn when the PML is thinner than half the longest wavelength: the
+        fastest PML node's speed over the lowest selected frequency."""
+        p = self.grid.pml_width
+        freqs = self.frequency_selection.frequencies.abs()
+        freqs = freqs[freqs > 0]  # the 0 Hz bin has no finite wavelength
+        if p == 0 or freqs.numel() == 0:
+            return
+        f_min = float(freqs.min())
+        pml_nodes = torch.ones(self.grid.shape, dtype=torch.bool, device=self.device)
+        pml_nodes[self.grid.interior_slice] = False
+        c_max = float(self.velocity_model.c[pml_nodes].max())
+        thickness = p * min(self.grid.dx, self.grid.dy)
+        half_wavelength = c_max / f_min / 2.0
+        if thickness < half_wavelength:
+            import warnings
+
+            warnings.warn(
+                f"The PML ({p} cells, {thickness * 1e3:.1f} mm) is thinner than "
+                f"half the longest wavelength ({half_wavelength * 1e3:.1f} mm at "
+                f"{f_min / 1e3:.3g} kHz in {c_max:.0f} m/s): reflections from it "
+                "may contaminate the solve.",
+                RuntimeWarning,
+            )
 
     @property
     def n_frequencies(self) -> int:
