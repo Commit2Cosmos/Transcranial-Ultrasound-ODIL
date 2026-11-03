@@ -76,6 +76,10 @@ _Avoid_: obsolete, replaced
 Said of an experiment record when a later code change means one of its supported conclusions no longer holds.
 _Avoid_: superseded, when no newer record exists
 
+**Voided**:
+Said of a launch whose runs no longer test its protocol, so it is cancelled before any record of it is banked and its id released for reuse.
+_Avoid_: aborted (an aborted experiment ran its protocol and is recorded)
+
 ### Inversion
 
 **Inverse crime**:

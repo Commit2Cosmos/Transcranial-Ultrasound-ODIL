@@ -35,6 +35,6 @@ For an issue:
 | A record on an `exp/*` branch whose PR isn't ready | [FINISH.md](FINISH.md) |
 | A record on `main` | Done: say so and give the record path |
 
-The launch comment's first line names the id; the experiment's branch is the `exp/*` branch containing `launch/<id>` (`git branch -a --contains launch/<id>`).
+A comment starting ``Launch `<id>` voided`` cancels that id's launch comment: read the issue as if neither were there (`docs/experiments/README.md`, "Voiding a launch"). The launch comment's first line names the id; the experiment's branch is the `exp/*` branch containing `launch/<id>` (`git branch -a --contains launch/<id>`).
 
 Read only the stage file you land on. A stage file names the next one when the session may continue into it.
