@@ -135,6 +135,14 @@ The sound-speed unknowns of the joint objective.
 _Also_: c-block
 _Avoid_: z block
 
+**Wavefield preconditioner**:
+A change of variables that the joint solve optimises in place of the wavefield block, to make it converge in fewer iterations.
+_Avoid_: wavefield scaling
+
+**Model preconditioner**:
+A change of variables that the joint solve optimises in place of the model block, to balance its curvature against the wavefield block's.
+_Avoid_: model scaling
+
 **True model**:
 The velocity model the observed data is generated from.
 
