@@ -551,7 +551,7 @@ def test_factor_solve_backward_is_the_adjoint_of_its_forward():
     solve = FactorSolve(factors)
     gen = torch.Generator().manual_seed(3)
     v = torch.randn((1, 2, g.nx, g.ny), generator=gen, dtype=torch.complex128)
-    assert torch.autograd.gradcheck(solve, (v.requires_grad_(True),), fast_mode=True)
+    assert torch.autograd.gradcheck(solve, (v.requires_grad_(True),))
     assert solve.seconds > 0.0
 
 
