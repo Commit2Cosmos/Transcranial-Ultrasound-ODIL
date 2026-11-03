@@ -391,9 +391,7 @@ class RunConfig:
     source: SourceCfg = field(default_factory=SourceCfg)
     acquisition: AcquisitionCfg = field(default_factory=AcquisitionCfg)
     truth: ModelCfg = field(default_factory=ModelCfg)
-    init: ModelCfg = field(
-        default_factory=lambda: ModelCfg(profile="shepp_logan_skull")
-    )
+    init: ModelCfg = field(default_factory=lambda: ModelCfg(profile="homogeneous"))
     continuation: ContinuationCfg = field(default_factory=ContinuationCfg)
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
