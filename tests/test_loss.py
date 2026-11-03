@@ -14,15 +14,17 @@ These affirm:
 
 from typing import get_args
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import torch
+from matplotlib.colors import Normalize, TwoSlopeNorm
 
 from odil_wave import InverseLoss, LossConfig, LossTape, Regulariser
 from odil_wave.loss.inverse import mean_abs_sq
 from odil_wave.loss.regulariser import RegKind
 
-from conftest import make_grid
+from conftest import make_grid, make_model
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +194,34 @@ def test_loss_tape_logs_dict_and_tuple():
     assert tape.history["pde_rms"][0] == pytest.approx(0.5)
     # second entry derived from the tuple: rms of [3,4] = sqrt(12.5).
     assert tape.history["pde_rms"][1] == pytest.approx(np.sqrt(12.5))
+
+
+def recovery_velocity_norms(truth, recovered, geometry) -> list:
+    """The norms of the truth and recovered panels of the recovery figure."""
+    LossTape().show_velocity_recovery(truth, recovered, geometry)
+    fig = plt.gcf()
+    norms = [ax.get_images()[0].norm for ax in fig.axes[:2]]
+    plt.close(fig)
+    return norms
+
+
+def test_recovery_of_a_shepp_logan_truth_is_on_the_two_slope_scale(
+    grid, geometry, homogeneous_model
+):
+    truth = make_model(grid, "shepp_logan", scale=0.9)
+    for norm in recovery_velocity_norms(truth, homogeneous_model, geometry):
+        assert isinstance(norm, TwoSlopeNorm)
+        assert (norm.vmin, norm.vcenter, norm.vmax) == (1400.0, 1600.0, 3000.0)
+
+
+def test_recovery_of_another_truth_shares_a_linear_scale(
+    grid, geometry, homogeneous_model
+):
+    """Truth and recovered share the linear range of both fields."""
+    recovered = make_model(grid, "overdensity", contrast=200.0, radius=0.012)
+    for norm in recovery_velocity_norms(homogeneous_model, recovered, geometry):
+        assert type(norm) is Normalize
+        assert (norm.vmin, norm.vmax) == pytest.approx((1500.0, 1700.0))
 
 
 def test_loss_tape_c_history_cadence():

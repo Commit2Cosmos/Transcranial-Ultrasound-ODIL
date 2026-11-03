@@ -93,7 +93,9 @@ than one:
 | `accuracy_cost.png` | final `rmse_brain` against total `n_evaluations`, one labelled point per run |
 
 **Colour scales come from the truth only**, so they are identical across the
-runs of one experiment: velocity spans `[min, max]` of `c*` over the interior;
+runs of one experiment: velocity is two-slope for a Shepp-Logan truth, so
+1400–1600 and 1600–3000 m/s each fill half the bar, and spans `[min, max]` of
+`c*` over the interior otherwise;
 `c − c*` is symmetric at half of `c*`'s peak-to-peak in the brain region (the
 skull's error saturates it; the profiles show its amplitude).
 

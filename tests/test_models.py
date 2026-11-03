@@ -1,9 +1,9 @@
 import pytest
 import torch
-from matplotlib.colors import TwoSlopeNorm
+from matplotlib.colors import Normalize, TwoSlopeNorm
 
 from odil_wave import VelocityModel
-from odil_wave.models import velocity_norm
+from odil_wave.models import profile_velocity_norm, velocity_norm
 
 from conftest import make_model
 
@@ -152,3 +152,65 @@ def test_velocity_norm_two_slope():
     norm = velocity_norm(vmin=1400.0, vcenter=1600.0, vmax=3000.0)
     assert isinstance(norm, TwoSlopeNorm)
     assert norm.vcenter == 1600.0
+
+
+def bounds(norm) -> tuple:
+    if isinstance(norm, TwoSlopeNorm):
+        return norm.vmin, norm.vcenter, norm.vmax
+    return norm.vmin, norm.vmax
+
+
+@pytest.mark.parametrize("profile", ["shepp_logan", "shepp_logan_skull"])
+def test_shepp_logan_velocity_is_two_slope_at_1400_1600_3000(profile):
+    norm = profile_velocity_norm(profile)
+    assert isinstance(norm, TwoSlopeNorm)
+    assert bounds(norm) == (1400.0, 1600.0, 3000.0)
+
+
+@pytest.mark.parametrize("profile", ["homogeneous", "overdensity"])
+def test_other_velocity_is_linear_and_autoscaled(profile):
+    norm = profile_velocity_norm(profile)
+    assert type(norm) is Normalize
+    # Unset bounds autoscale to the plotted field.
+    assert bounds(norm) == (None, None)
+
+
+def test_explicit_velocity_bounds_override_the_profile():
+    assert bounds(profile_velocity_norm("shepp_logan", vmax=2000.0)) == (
+        1400.0,
+        1600.0,
+        2000.0,
+    )
+    assert bounds(profile_velocity_norm("homogeneous", vmin=1450.0)) == (1450.0, None)
+    # A centre makes any profile two-slope; missing bounds are the defaults.
+    norm = profile_velocity_norm("homogeneous", vcenter=1555.0)
+    assert bounds(norm) == (1400.0, 1555.0, 3000.0)
+
+
+def shown_norm(ax):
+    return ax.get_images()[0].norm
+
+
+def test_a_shepp_logan_model_shows_on_the_two_slope_scale(grid):
+    ax = make_model(grid, "shepp_logan", scale=SCALE).show()
+    assert bounds(shown_norm(ax)) == (1400.0, 1600.0, 3000.0)
+
+
+def test_a_homogeneous_model_shows_on_a_linear_scale(grid):
+    assert type(shown_norm(make_model(grid).show())) is Normalize
+    ax = make_model(grid).show(vmin=1450.0, vmax=1550.0)
+    assert bounds(shown_norm(ax)) == (1450.0, 1550.0)
+
+
+def test_a_linear_scale_spans_the_data_but_a_two_slope_one_does_not():
+    data = [1450.0, 1700.0]
+    assert bounds(profile_velocity_norm("homogeneous", data=data)) == (1450.0, 1700.0)
+    assert bounds(profile_velocity_norm("homogeneous", vmax=1800.0, data=data)) == (
+        1450.0,
+        1800.0,
+    )
+    assert bounds(profile_velocity_norm("shepp_logan", data=data)) == (
+        1400.0,
+        1600.0,
+        3000.0,
+    )

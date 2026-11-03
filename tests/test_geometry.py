@@ -1,9 +1,10 @@
 import pytest
 import torch
+from matplotlib.colors import Normalize, TwoSlopeNorm
 
 from odil_wave import FrequencySelection
 
-from conftest import F0, make_geometry, make_grid, make_source
+from conftest import F0, make_geometry, make_grid, make_model, make_source
 
 
 # --------------------------------------------------------------------------- #
@@ -128,3 +129,19 @@ def test_extract_observations_batched(geometry, grid):
     n = geometry.n_transducers
     U = torch.randn(n, 3, 2, grid.nx, grid.ny)
     assert geometry.extract_observations(U).shape == (n, 3, 2, n - 1)
+
+
+def test_acquisition_on_shepp_logan_is_on_the_two_slope_scale(geometry, grid):
+    ax = geometry.show(make_model(grid, "shepp_logan", scale=0.9))
+    norm = ax.get_images()[0].norm
+    assert isinstance(norm, TwoSlopeNorm)
+    assert (norm.vmin, norm.vcenter, norm.vmax) == (1400.0, 1600.0, 3000.0)
+
+
+def test_acquisition_on_another_profile_is_on_a_linear_scale(
+    geometry, homogeneous_model
+):
+    assert type(geometry.show(homogeneous_model).get_images()[0].norm) is Normalize
+    # A centre asks for the two-slope scale whatever the profile.
+    norm = geometry.show(homogeneous_model, vcenter=1555.0).get_images()[0].norm
+    assert (norm.vmin, norm.vcenter, norm.vmax) == (1400.0, 1555.0, 3000.0)

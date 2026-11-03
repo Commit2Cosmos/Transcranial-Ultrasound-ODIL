@@ -48,6 +48,58 @@ def velocity_norm(vmin: float, vcenter: float, vmax: float):
     return TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
 
 
+# Two-slope velocity colour bounds [m/s] for the Shepp-Logan profiles: tissue
+# in the lower half of the bar, up to the skull in the upper half.
+SHEPP_LOGAN_PROFILES = ("shepp_logan", "shepp_logan_skull")
+VELOCITY_VMIN = 1400.0
+VELOCITY_VCENTER = 1600.0
+VELOCITY_VMAX = 3000.0
+
+
+def profile_velocity_norm(
+    profile: Optional[str],
+    vmin: Optional[float] = None,
+    vcenter: Optional[float] = None,
+    vmax: Optional[float] = None,
+    data=None,
+):
+    """Colour normalisation for a velocity field whose truth is ``profile``.
+
+    Two-slope (:func:`velocity_norm`) for a Shepp-Logan truth or when
+    ``vcenter`` is given, with unset bounds taken from
+    :data:`VELOCITY_VMIN` / :data:`VELOCITY_VCENTER` / :data:`VELOCITY_VMAX`.
+    Linear otherwise, with unset bounds from ``data``, or autoscaled to the
+    plotted field without it.
+
+    Parameters
+    ----------
+    profile : str or None
+        The truth's velocity profile; ``None`` when unknown.
+    vmin, vcenter, vmax : float, optional
+        Explicit bounds in m/s, overriding the defaults.
+    data : array_like, optional
+        Values whose range sets a linear scale's unset bounds (e.g. every
+        field sharing the scale).
+
+    Returns
+    -------
+    matplotlib.colors.Normalize
+        A ``TwoSlopeNorm`` or a linear ``Normalize``.
+    """
+    from matplotlib.colors import Normalize
+
+    if profile in SHEPP_LOGAN_PROFILES or vcenter is not None:
+        return velocity_norm(
+            vmin=VELOCITY_VMIN if vmin is None else vmin,
+            vcenter=VELOCITY_VCENTER if vcenter is None else vcenter,
+            vmax=VELOCITY_VMAX if vmax is None else vmax,
+        )
+    norm = Normalize(vmin, vmax)
+    if data is not None:
+        norm.autoscale_None(data)
+    return norm
+
+
 class VelocityModel:
     """2D velocity field c(x, y) attached to a Grid (full extended grid).
 
@@ -449,9 +501,12 @@ class VelocityModel:
         vmax: Optional[float] = None,
         show_pml: bool = True,
         norm=None,
-        vcenter: float = 1600.0,
+        vcenter: Optional[float] = None,
     ):
         """Plot the velocity field with an optional PML-interior outline.
+
+        The colour scale follows :func:`profile_velocity_norm` for this
+        model's profile: two-slope for Shepp-Logan, linear otherwise.
 
         Parameters
         ----------
@@ -459,14 +514,12 @@ class VelocityModel:
             Axes to draw on; a new figure is created when omitted.
         title : str, optional
             Plot title; defaults to ``c(x, y) [<profile>]``.
-        vmin, vmax : float, optional
-            Colour limits, ignored when ``norm`` is given.
+        vmin, vcenter, vmax : float, optional
+            Colour bounds in m/s, ignored when ``norm`` is given.
         show_pml : bool
             Draw the dashed non-PML interior rectangle.
         norm : matplotlib.colors.Normalize, optional
             Colour normalisation (e.g. :func:`velocity_norm`).
-        vcenter : float
-            Split point retained for API compatibility.
 
         Returns
         -------
@@ -477,19 +530,17 @@ class VelocityModel:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
-        imshow_kw = dict(
+        if norm is None:
+            norm = profile_velocity_norm(
+                self.profile, vmin=vmin, vcenter=vcenter, vmax=vmax
+            )
+        im = ax.imshow(
+            self.c.cpu().numpy().T,
             origin="lower",
             extent=(xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult),
             cmap="viridis",
+            norm=norm,
         )
-        # A `norm` (e.g. the two-slope velocity_norm) fully controls the colour
-        # mapping, so vmin/vmax must not also be passed to imshow.
-        if norm is not None:
-            imshow_kw["norm"] = norm
-        else:
-            imshow_kw["vmin"] = vmin
-            imshow_kw["vmax"] = vmax
-        im = ax.imshow(self.c.cpu().numpy().T, **imshow_kw)
         ax.set_xlabel(f"x [{x_unit}]")
         ax.set_ylabel(f"y [{x_unit}]")
         ax.set_aspect("equal")
