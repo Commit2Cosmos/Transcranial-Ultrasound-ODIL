@@ -5,11 +5,12 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib import animation
+from matplotlib.colors import Normalize
 
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 from odil_wave.geometry import AcquisitionGeometry
-from odil_wave.models import VelocityModel, velocity_norm
+from odil_wave.models import VelocityModel, profile_velocity_norm, velocity_norm
 from odil_wave.plot_utils import length_scale
 from .regulariser import Regulariser
 
@@ -239,6 +240,7 @@ class LossTape:
         title: str = "c(x, y) evolution",
         norm=None,
         frame_labels=None,
+        profile: Optional[str] = None,
     ) -> str:
         """Render the ``c(x, y)`` snapshots in ``c_history`` to an animated GIF.
 
@@ -255,9 +257,15 @@ class LossTape:
         title : str
             Base plot title.
         norm : matplotlib.colors.Normalize, optional
-            Colour normalisation; derived from the data range if omitted.
+            Colour normalisation; derived from ``profile`` and the data range
+            if omitted.
         frame_labels : sequence of str, optional
             Per-frame labels; the frame index is shown when omitted.
+        profile : str, optional
+            The truth's profile. Given, the scale follows
+            :func:`profile_velocity_norm` (two-slope for Shepp-Logan, else
+            linear over every frame); without it, a two-slope scale centred
+            at a quarter of the data range.
 
         Returns
         -------
@@ -282,6 +290,8 @@ class LossTape:
         (xmin, xmax), (ymin, ymax) = grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
 
+        if norm is None and profile is not None:
+            norm = profile_velocity_norm(profile, data=stack)
         if norm is None:
             _vmin = float(stack.min())
             _vmax = float(stack.max())
@@ -343,9 +353,9 @@ class LossTape:
         geom: AcquisitionGeometry,
         title: str = "Velocity recovery",
         norm=None,
-        vmin: float = 1400.0,
-        vcenter: float = 1600.0,
-        vmax: float = 3000.0,
+        vmin: Optional[float] = None,
+        vcenter: Optional[float] = None,
+        vmax: Optional[float] = None,
     ):
         """Plot truth, recovered, difference and c-recovery-error panels.
 
@@ -361,14 +371,16 @@ class LossTape:
             Figure suptitle.
         norm : matplotlib.colors.Normalize, optional
             Colour normalisation for the velocity panels.
-        vmin, vcenter, vmax : float
-            Two-slope normalisation bounds in m/s used when ``norm`` is None.
+        vmin, vcenter, vmax : float, optional
+            Velocity colour bounds in m/s used when ``norm`` is None.
 
         Notes
         -----
-        The velocity colourbar splits ``[vmin, vcenter]`` and
-        ``[vcenter, vmax]`` across its two halves. The error panel prefers the
-        recorded ``rel_c_error`` series and falls back to ``c_history``.
+        The velocity scale follows :func:`profile_velocity_norm` for
+        ``truth.profile``: for a Shepp-Logan truth ``[vmin, vcenter]`` and
+        ``[vcenter, vmax]`` each fill half the bar; otherwise it is linear
+        over both fields. The error panel prefers the recorded ``rel_c_error``
+        series and falls back to ``c_history``.
         """
         grid = truth.grid
         c_true_np = truth.c.detach().cpu().numpy()
@@ -382,30 +394,31 @@ class LossTape:
         tx = grid.x[geom.transducer_ij[:, 0]].detach().cpu().numpy() * x_mult
         ty = grid.y[geom.transducer_ij[:, 1]].detach().cpu().numpy() * x_mult
 
-        if norm is None and vmax > vmin:
-            norm = velocity_norm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+        if norm is None:
+            # Truth and recovered share one scale: a linear one spans both.
+            norm = profile_velocity_norm(
+                truth.profile,
+                vmin=vmin,
+                vcenter=vcenter,
+                vmax=vmax,
+                data=np.stack([c_true_np, c_final_np]),
+            )
 
         fig, axes = plt.subplots(2, 2, figsize=(11, 9))
         panels = [
-            (axes[0, 0], c_true_np, "viridis", vmin, vmax, f"truth ({truth.profile})"),
-            (axes[0, 1], c_final_np, "viridis", vmin, vmax, "recovered"),
-            (axes[1, 0], diff, "RdBu_r", -dmax, dmax, "recovered - truth"),
+            (axes[0, 0], c_true_np, "viridis", norm, f"truth ({truth.profile})"),
+            (axes[0, 1], c_final_np, "viridis", norm, "recovered"),
+            (axes[1, 0], diff, "RdBu_r", Normalize(-dmax, dmax), "recovered - truth"),
         ]
 
-        for ax, field_, cmap_, lo, hi, panel_title in panels:
-            imshow_kw = dict(
+        for ax, field_, cmap_, norm_, panel_title in panels:
+            im = ax.imshow(
+                field_.T,
                 origin="lower",
                 extent=[xmin * x_mult, xmax * x_mult, ymin * x_mult, ymax * x_mult],
                 cmap=cmap_,
+                norm=norm_,
             )
-
-            if norm is not None and cmap_ == "viridis":
-                imshow_kw["norm"] = norm
-            else:
-                imshow_kw["vmin"] = lo
-                imshow_kw["vmax"] = hi
-
-            im = ax.imshow(field_.T, **imshow_kw)
             ax.set_xlabel(f"x [{x_unit}]")
             ax.set_ylabel(f"y [{x_unit}]")
             ax.set_aspect("equal")

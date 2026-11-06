@@ -29,6 +29,8 @@ import numpy as np
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 
+from odil_wave.models import profile_velocity_norm
+
 from .config import load_config_file
 from .rundir import load_versioned_json
 
@@ -187,7 +189,9 @@ class SavedRun:
 class ColourScales:
     """Colour scales fixed by the truth model alone.
 
-    Velocity spans ``[min, max]`` of ``c*`` over the interior; the difference
+    Velocity follows :func:`~odil_wave.models.profile_velocity_norm` for the
+    truth's ``profile``: two-slope at 1400 / 1600 / 3000 m/s for Shepp-Logan,
+    else linear over ``[min, max]`` of ``c*`` on the interior; the difference
     ``c - c*`` is symmetric at :data:`DIFF_FRACTION` of ``c*``'s
     peak-to-peak in the brain region. Runs of one experiment share a truth, so
     they share these scales.
@@ -196,14 +200,19 @@ class ColourScales:
     c_min: float
     c_max: float
     diff: float
+    profile: Optional[str] = None
 
     @classmethod
-    def from_truth(cls, c_star: np.ndarray, brain_mask: np.ndarray) -> "ColourScales":
-        """The scales of the truth ``c_star`` (interior) and its brain region."""
+    def from_truth(
+        cls, c_star: np.ndarray, brain_mask: np.ndarray, profile: Optional[str] = None
+    ) -> "ColourScales":
+        """The scales of the truth ``c_star`` (interior) of ``profile`` and its
+        brain region."""
         return cls(
             c_min=float(np.min(c_star)),
             c_max=float(np.max(c_star)),
             diff=DIFF_FRACTION * float(np.ptp(c_star[brain_mask])),
+            profile=profile,
         )
 
     @classmethod
@@ -211,11 +220,15 @@ class ColourScales:
         """The scales of ``run``'s truth, or ``None`` without ``problem.npz``."""
         if run.problem is None:
             return None
-        return cls.from_truth(run.problem["c_star"], run.problem["brain_mask"])
+        return cls.from_truth(
+            run.problem["c_star"],
+            run.problem["brain_mask"],
+            run.config["truth"]["profile"],
+        )
 
     @property
     def velocity_norm(self) -> Normalize:
-        return Normalize(self.c_min, self.c_max)
+        return profile_velocity_norm(self.profile, data=[self.c_min, self.c_max])
 
     @property
     def difference_norm(self) -> Normalize:

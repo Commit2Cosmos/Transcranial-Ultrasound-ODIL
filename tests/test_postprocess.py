@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from matplotlib.colors import Normalize
 from PIL import Image
 
 import main
@@ -146,12 +147,13 @@ def test_convergence_plots_four_panels_against_iter_total(tiny_two_band_run):
 # Velocity and colour scales
 # --------------------------------------------------------------------------- #
 def truth_scales(run_dir: Path) -> tuple:
-    """The spec's truth-only scales: velocity [min, max] of c* over the interior,
-    difference symmetric at half c*'s peak-to-peak over the brain region."""
+    """The spec's truth-only scales: velocity two-slope at 1400 / 1600 / 3000
+    m/s (the tiny runs' truth is Shepp-Logan), difference symmetric at half
+    c*'s peak-to-peak over the brain region."""
     problem = load_npz(run_dir / "problem.npz")
     c_star, brain = problem["c_star"], problem["brain_mask"]
     half = 0.5 * float(np.ptp(c_star[brain]))
-    return (float(c_star.min()), float(c_star.max())), (-half, half)
+    return (1400.0, 3000.0), (-half, half)
 
 
 def image_axes(fig) -> list:
@@ -177,6 +179,8 @@ def test_velocity_shows_truth_recovered_and_difference_with_outlines(
     velocity_scale, diff_scale = truth_scales(run_dir)
     for ax, scale in zip(axes, [velocity_scale, velocity_scale, diff_scale]):
         np.testing.assert_allclose(ax.get_images()[0].get_clim(), scale, rtol=1e-6)
+    for ax in axes[:2]:
+        assert ax.get_images()[0].norm.vcenter == 1600.0
         # Head (outer skull) and brain outlines.
         assert len(ax.collections) == 2
 
@@ -208,6 +212,14 @@ def test_colour_scales_come_from_the_truth_alone(tiny_two_band_run, tmp_path):
     _, diff_scale = truth_scales(other)
     # The two per-band error maps use the shared difference scale.
     np.testing.assert_allclose(clims[1][3:], [diff_scale] * 2, rtol=1e-6)
+
+
+def test_velocity_of_another_truth_spans_its_range_linearly():
+    c_star = np.array([[1500.0, 1600.0], [1550.0, 1700.0]])
+    brain = np.ones_like(c_star, dtype=bool)
+    norm = ColourScales.from_truth(c_star, brain, profile="overdensity").velocity_norm
+    assert type(norm) is Normalize
+    assert (norm.vmin, norm.vmax) == (1500.0, 1700.0)
 
 
 # --------------------------------------------------------------------------- #
