@@ -147,6 +147,9 @@ _Avoid_: wavefield scaling
 A change of variables that the joint solve optimises in place of the model block, to balance its curvature against the wavefield block's.
 _Avoid_: model scaling
 
+**Optimised variable**:
+The variable the joint solve updates in place of a block's own unknowns, with or without a preconditioner. The model block's latent and the wavefield block's scaling are not preconditioners: they are always on, and they keep the velocity in its bounds and set the block's units.
+
 **True model**:
 The velocity model the observed data is generated from.
 
