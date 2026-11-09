@@ -15,7 +15,10 @@ from odil_wave import (
 )
 from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
-from odil_wave.optimisation.joint_odil import FactorSolve, preconditioner_scale
+from odil_wave.optimisation.preconditioners import (
+    NoModelPreconditioner,
+    NoWavefieldPreconditioner,
+)
 
 from conftest import (
     C_MAX,
@@ -259,16 +262,16 @@ def test_change_of_variables_keeps_the_objective_and_scales_the_gradient(
     point is unchanged, and grad_y Phi = s * grad_{z_m} Phi."""
     plain = _make_optimiser(truth_problem)
     pre = _make_optimiser(truth_problem, model_preconditioner="pde_diagonal")
-    s = pre.model_scale
-    assert plain.model_scale is None
+    s = pre.model_precond.scale
+    assert isinstance(plain.model_precond, NoModelPreconditioner)
     assert s.shape == pre.init_params()[2].shape
     assert not torch.allclose(s, torch.ones_like(s))
 
     u_re, u_im, z = plain.init_params()
     z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(2))
-    y = pre.y_of_z(z).clone().requires_grad_(True)
+    y = pre.model_precond.y_of_z(z).clone().requires_grad_(True)
     z_leaf = z.clone().requires_grad_(True)
-    L_y = pre.objective(u_re, u_im, pre.z_of_y(y), record=False)
+    L_y = pre.objective(u_re, u_im, pre.model_precond.z_of_y(y), record=False)
     L_z = plain.objective(u_re, u_im, z_leaf, record=False)
     assert float(L_y.detach()) == pytest.approx(float(L_z.detach()), rel=1e-12)
     (g_y,) = torch.autograd.grad(L_y, y)
@@ -368,64 +371,28 @@ def test_model_curvature_in_z_matches_autograd_at_the_warm_start(space_order):
     torch.testing.assert_close(H_zz.reshape(-1), H.diagonal(), rtol=1e-6, atol=0.0)
 
 
-@pytest.mark.parametrize("space_order", [2, 4])
-@pytest.mark.parametrize("part", ["re", "im"])
-def test_wavefield_curvature_matches_the_autograd_hessian_diagonal(space_order, part):
-    """The wavefield-block diagonal is the Hessian diagonal of the weighted PDE
-    term w.r.t. u_re (and u_im), at every node of both frequencies, PML and
-    the reflect boundary included. data_weight = 0 leaves only the PDE term."""
-    opt = _small_two_frequency_optimiser(space_order, data_weight=0.0)
-    u_re, u_im, z0 = opt.init_params()
-    H_uu = opt.wavefield_curvature(opt.c_full_of_z(z0))
-    assert H_uu.shape == u_re.shape == (3, 2, opt.Nx, opt.Ny)
-
-    def phi(v):
-        v = v.view_as(u_re)
-        if part == "re":
-            return opt.objective(v, u_im, z0, record=False)
-        return opt.objective(u_re, v, z0, record=False)
-
-    x0 = (u_re if part == "re" else u_im).reshape(-1)
-    H = torch.autograd.functional.hessian(phi, x0, vectorize=True)
-    torch.testing.assert_close(H_uu.reshape(-1), H.diagonal(), rtol=1e-10, atol=0.0)
-
-
-def test_preconditioner_scale_equalises_curvature_and_floors_vanishing_cells():
-    """Unfloored cells get s^2 H_zz = T; cells with zero curvature (lap u = 0)
-    or a saturated sigmoid (H_zz ~ 1e-300) get a finite s, at most 10x the
-    median (eps = 1e-2)."""
-    H_zz = torch.tensor([0.0, 1e-300, 1e-3, 0.5, 1.0, 2.0, 3.0, 4.0, 40.0])
-    H_zz = H_zz.to(torch.float64)
-    s, floored = preconditioner_scale(H_zz, target=7.0, eps=1e-2)
-    assert floored.tolist() == [True, True, True] + [False] * 6
-    torch.testing.assert_close(
-        s[~floored].square() * H_zz[~floored], torch.full((6,), 7.0).double()
-    )
-    assert torch.isfinite(s).all()
-    # median(H_zz) = 1, so the floored cells sit at the floor 1e-2.
-    torch.testing.assert_close(
-        s[floored], torch.full((3,), (7.0 / 1e-2) ** 0.5).double()
-    )
-    assert float(s.max() / s.median()) <= 10.0 * (1 + 1e-12)
-
-
-def test_preconditioner_scale_rejects_zero_curvature():
-    with pytest.raises(ValueError, match="curvature"):
-        preconditioner_scale(torch.zeros(4, dtype=torch.float64), 1.0, 1e-2)
-
-
 def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
     """The built model scale puts every unfloored cell at the wavefield block's
     median curvature T and is summarised in scale_info."""
     opt = _small_two_frequency_optimiser(4, model_preconditioner="pde_diagonal")
     z0 = opt.init_params()[2]
     _, H_zz = opt.model_curvature(z0)
-    T = float(opt.wavefield_curvature(opt.c_full_of_z(z0)).median())
+    # The curvature without a wavefield preconditioner, at the start latent's
+    # model (tests/test_preconditioners.py checks it against autograd).
+    n_int = opt.grid.interior_nx * opt.grid.interior_ny
+    H_vv = NoWavefieldPreconditioner(
+        opt.wave_eq,
+        opt.c_full_of_z(z0),
+        opt.u_ref / opt.pde_scale,
+        opt.pde_weight,
+        n_int * opt.n_shots * opt.nf,
+    ).pde_curvature()
+    T = float(H_vv.median())
     info = opt.scale_info
     assert info["model_preconditioner"] == "pde_diagonal"
     assert info["precond_eps"] == 1e-2
     assert info["precond_target"] == pytest.approx(T, rel=1e-12)
-    s = opt.model_scale
+    s = opt.model_precond.scale
     unfloored = H_zz >= 1e-2 * H_zz.median()
     torch.testing.assert_close(
         s[unfloored].square() * H_zz[unfloored],
@@ -439,6 +406,59 @@ def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
         lo, mid, hi = (info[f"{key}_{q}"] for q in ("min", "median", "max"))
         assert 0.0 < lo <= mid <= hi
     assert info["model_scale_median"] == pytest.approx(float(s.median()))
+
+
+SCALE_INFO_KEYS = [
+    "c_min",
+    "c_max",
+    "m_min",
+    "m_max",
+    "c_ref",
+    "m_ref",
+    "z_scale",
+    "pde_weight",
+    "data_weight",
+    "reg_weight",
+    "u_ref_min",
+    "u_ref_max",
+    "u_ref_mean",
+    "pde_scale_min",
+    "pde_scale_max",
+    "pde_scale_mean",
+    "pde_scale_rule",
+    "pde_node_factor",
+    "data_scale_min",
+    "data_scale_max",
+    "data_scale_mean",
+    "data_scale_rule",
+    "wavefield_preconditioner",
+    "model_preconditioner",
+]
+MODEL_SCALE_INFO_KEYS = [
+    "precond_eps",
+    "precond_target",
+    "h_zz_min",
+    "h_zz_median",
+    "h_zz_max",
+    "model_scale_min",
+    "model_scale_median",
+    "model_scale_max",
+    "precond_floored_frac",
+]
+
+
+@pytest.mark.parametrize("wavefield_mode", ["none", "initial_model"])
+@pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
+def test_scale_info_keys(mode, wavefield_mode):
+    """scale_info has the same keys, in the same order, under every pair of
+    preconditioners: the run summary reports it as is."""
+    opt = _small_two_frequency_optimiser(
+        2, model_preconditioner=mode, wavefield_preconditioner=wavefield_mode
+    )
+    extra = MODEL_SCALE_INFO_KEYS if mode == "pde_diagonal" else []
+    assert list(opt.scale_info) == SCALE_INFO_KEYS + extra
+    assert opt.scale_info["wavefield_preconditioner"] == wavefield_mode
+    assert opt.scale_info["model_preconditioner"] == mode
 
 
 def test_no_preconditioner_reports_only_the_mode(truth_problem):
@@ -466,7 +486,7 @@ def test_reported_model_gradient_is_with_respect_to_z_m(mode):
     )
     assert logged[-1].grad_z_norm == pytest.approx(float(g_z.norm()), rel=1e-10)
     if mode == "pde_diagonal":
-        g_y_norm = float((opt.model_scale * g_z).norm())
+        g_y_norm = float((opt.model_precond.scale * g_z).norm())
         assert logged[-1].grad_z_norm != pytest.approx(g_y_norm, rel=1e-3)
 
 
@@ -537,55 +557,6 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
 # --------------------------------------------------------------------------- #
 # Wavefield preconditioner (``wavefield_preconditioner = "initial_model"``)
 # --------------------------------------------------------------------------- #
-def test_factor_solve_backward_is_the_adjoint_of_its_forward():
-    """u = A(c0)^-1 v from the warm start's splu factors passes gradcheck: its
-    backward (lu.solve with trans="H") is the adjoint of its forward."""
-    g = make_grid(interior_shape=(10, 10))
-    fs = FrequencySelection.from_frequencies(g, [30e3, F0])
-    geom = make_geometry(g, make_source(g), fs, n_transducers=3)
-    wf = Wavefield(g, fs, velocity_model=make_model(g))
-    _, factors = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
-        verbose=False, return_factors=True
-    )
-    assert len(factors) == 2
-    solve = FactorSolve(factors)
-    gen = torch.Generator().manual_seed(3)
-    v = torch.randn((1, 2, g.nx, g.ny), generator=gen, dtype=torch.complex128)
-    assert torch.autograd.gradcheck(solve, (v.requires_grad_(True),))
-    assert solve.seconds > 0.0
-
-
-def test_warm_start_maps_to_the_scaled_source_and_back():
-    """With the initial model's factors, L-BFGS starts at
-    v0 = A(c0) u_tilde0 / |lambda_tt|, which for a Helmholtz warm start is
-    f / pde_scale, and physical_u maps v0 back to the warm-start wavefield."""
-    opt = _small_two_frequency_optimiser(2, wavefield_preconditioner="initial_model")
-    v_re, v_im, _ = opt.init_params()
-    v0 = torch.complex(v_re, v_im)
-    expected = opt.sources / opt.pde_scale
-    atol = 1e-10 * float(expected.abs().max())
-    torch.testing.assert_close(v0, expected, rtol=0, atol=atol)
-    u = opt.physical_u(v_re, v_im)
-    rel = torch.linalg.vector_norm(u - opt.u_seed) / torch.linalg.vector_norm(
-        opt.u_seed
-    )
-    assert float(rel) < 1e-12
-
-
-def test_v_and_u_tilde_round_trip():
-    """v_of_u_tilde inverts u_tilde_of_v for any wavefield, not only the warm
-    start; without the preconditioner both are the identity."""
-    gen = torch.Generator().manual_seed(4)
-    for mode in ("none", "initial_model"):
-        opt = _small_two_frequency_optimiser(2, wavefield_preconditioner=mode)
-        u_tilde = torch.randn(opt.u_seed.shape, generator=gen, dtype=opt.cdtype)
-        v_re, v_im = opt.v_of_u_tilde(u_tilde)
-        back = opt.u_tilde_of_v(v_re, v_im)
-        torch.testing.assert_close(back, u_tilde, rtol=0, atol=1e-10)
-        if mode == "none":
-            assert torch.equal(torch.complex(v_re, v_im), u_tilde)
-
-
 def test_initial_model_preconditioner_needs_the_factors(truth_problem):
     p = truth_problem
     no_factors = SimpleNamespace(

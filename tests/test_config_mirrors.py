@@ -8,7 +8,7 @@ import pytest
 from odil_wave import Regulariser, WaveEquation
 from odil_wave.experiment import config
 from odil_wave.loss.regulariser import RegKind
-from odil_wave.optimisation.joint_odil import (
+from odil_wave.optimisation.preconditioners import (
     MODEL_PRECONDITIONERS,
     WAVEFIELD_PRECONDITIONERS,
 )
