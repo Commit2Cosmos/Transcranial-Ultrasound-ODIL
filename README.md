@@ -149,6 +149,11 @@ or removed keys are rejected.
   `pde_diagonal` too, `model_scale`'s target becomes the wavefield block's
   curvature in `v`, which differs by about the size of `A`'s column norms. The
   tape's `grad_u_norm` stays with respect to `u_tilde`.
+- Each option of either preconditioner, `none` included, is one object in
+  `odil_wave/optimisation/preconditioners.py` that maps its block's optimised
+  variable to the block's unknown and back (and, for the wavefield block,
+  gives the PDE-term curvature `pde_diagonal` targets). `JointFreqODIL` holds
+  one of each and never branches on which is on.
 
 ### Objective balance
 

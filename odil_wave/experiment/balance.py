@@ -124,7 +124,7 @@ def _measure(cfg: RunConfig, case: GridCase) -> BalanceRow:
         # H⁻¹(c_true) on the inversion grid.
         u_true = torch.stack([w.amplitude for w in band_ctx.observed_wfs])
         u_true = u_true.to(dtype=opt.cdtype, device=opt.device) / opt.u_ref
-        opt.objective(*opt.v_of_u_tilde(u_true), z_m)
+        opt.objective(*opt.wavefield_precond.v_of_u_tilde(u_true), z_m)
         pde_term = opt.last_record["pde_term"]
 
     grid = problem.grid
