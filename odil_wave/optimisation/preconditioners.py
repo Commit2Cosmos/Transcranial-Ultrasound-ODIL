@@ -122,8 +122,9 @@ class NoWavefieldPreconditioner:
     """``u_tilde = v``: L-BFGS optimises the scaled wavefield itself.
 
     ``c_init`` is the full-grid initial model through the band's initial
-    latent, ``pde_scale_per_u`` the ``(n_shots, nf, 1, 1)`` tensor ``pde_scale
-    / u_ref`` and ``term_weight`` the PDE term's weight per scaled residual
+    latent (the solver's ``c_full_of_z(z0)``, the model L-BFGS starts from),
+    ``pde_scale_per_u`` the ``(n_shots, nf, 1, 1)`` tensor ``pde_scale /
+    u_ref`` and ``term_weight`` the PDE term's weight per scaled residual
     entry, ``pde_weight / (N_int n_s n_f)``; they set :meth:`pde_curvature`.
     """
 
@@ -186,12 +187,13 @@ class NoWavefieldPreconditioner:
 class InitialModelWavefieldPreconditioner:
     """``u_tilde = A(c_init)^-1 (pde_scale_per_u * v)`` (see the module doc).
 
-    ``c_init`` is the full-grid initial model the operator ``wave_eq`` is
-    applied at for the inverse map, ``pde_scale_per_u`` the ``(n_shots, nf, 1,
-    1)`` tensor ``pde_scale / u_ref``, ``term_weight`` the PDE term's weight
-    per scaled residual entry, ``pde_weight / (N_int n_s n_f)``, and
-    ``factors`` the per-frequency ``splu`` factors of ``A(c_init)`` (the warm
-    start's).
+    ``c_init`` is the full-grid initial model as given (the solver's
+    ``vm_in.c``, not through the latent: the model ``factors`` were built at),
+    which the operator ``wave_eq`` is applied at for the inverse map,
+    ``pde_scale_per_u`` the ``(n_shots, nf, 1, 1)`` tensor ``pde_scale /
+    u_ref``, ``term_weight`` the PDE term's weight per scaled residual entry,
+    ``pde_weight / (N_int n_s n_f)``, and ``factors`` the per-frequency
+    ``splu`` factors of ``A(c_init)`` (the warm start's).
     """
 
     name = "initial_model"
