@@ -55,7 +55,8 @@ WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
 MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
 
 
-def _abs_sq(x: torch.Tensor) -> torch.Tensor:
+def abs_sq(x: torch.Tensor) -> torch.Tensor:
+    """Elementwise ``|x|^2`` (complex-aware, no sqrt)."""
     if x.is_complex():
         return x.real.square() + x.imag.square()
     return x.square()
@@ -120,11 +121,10 @@ class FactorSolve:
 class NoWavefieldPreconditioner:
     """``u_tilde = v``: L-BFGS optimises the scaled wavefield itself.
 
-    ``c_full`` is the full-grid initial model through the band's start latent,
-    ``u_per_pde_scale`` the ``(n_shots, nf, 1, 1)`` tensor ``u_ref /
-    pde_scale``, and the PDE term's weight per scaled residual entry is
-    ``pde_weight / n_terms`` (``n_terms = N_int n_s n_f``); they set
-    :meth:`pde_curvature`.
+    ``c_init`` is the full-grid initial model through the band's initial
+    latent, ``pde_scale_per_u`` the ``(n_shots, nf, 1, 1)`` tensor ``pde_scale
+    / u_ref`` and ``term_weight`` the PDE term's weight per scaled residual
+    entry, ``pde_weight / (N_int n_s n_f)``; they set :meth:`pde_curvature`.
     """
 
     name = "none"
@@ -132,36 +132,34 @@ class NoWavefieldPreconditioner:
     def __init__(
         self,
         wave_eq: WaveEquation,
-        c_full: torch.Tensor,
-        u_per_pde_scale: torch.Tensor,
-        pde_weight: float,
-        n_terms: int,
+        c_init: torch.Tensor,
+        pde_scale_per_u: torch.Tensor,
+        term_weight: float,
     ) -> None:
         self.wave_eq = wave_eq
-        self.c_full = c_full
-        self.u_per_pde_scale = u_per_pde_scale
-        self.pde_weight = float(pde_weight)
-        self.n_terms = int(n_terms)
+        self.c_init = c_init
+        self.pde_scale_per_u = pde_scale_per_u
+        self.term_weight = float(term_weight)
         self.solve_seconds = 0.0
 
     def u_tilde_of_v(self, v_re: torch.Tensor, v_im: torch.Tensor) -> torch.Tensor:
         return torch.complex(v_re, v_im)
 
     def v_of_u_tilde(self, u_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _real_parts(u_tilde, self.u_per_pde_scale.dtype)
+        return _real_parts(u_tilde, self.pde_scale_per_u.dtype)
 
     def pde_curvature(self) -> torch.Tensor:
         """Diagonal of the weighted PDE term w.r.t. ``v_re`` (equal for ``v_im``).
 
-        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at ``c_full``. ``r`` is
-        affine in ``u``, so this is ``pde_weight * sum_i |A_ij|^2 *
-        u_per_pde_scale^2 / n_terms`` with the column norms of ``A`` taken exactly from
+        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at ``c_init``. ``r`` is
+        affine in ``u``, so this is ``term_weight * sum_i |A_ij|^2 /
+        pde_scale_per_u^2`` with the column norms of ``A`` taken exactly from
         the solver's own operator: combs of unit impulses spaced past the
         stencil's footprint (half-width ``space_order // 2`` per axis, reflect
         boundaries included), each summed over its own box.
         """
-        nf, nx, ny = self.u_per_pde_scale.shape[1], *self.c_full.shape
-        dtype, device = self.u_per_pde_scale.dtype, self.u_per_pde_scale.device
+        nf, nx, ny = self.pde_scale_per_u.shape[1], *self.c_init.shape
+        dtype, device = self.pde_scale_per_u.dtype, self.pde_scale_per_u.device
         cdtype = self.wave_eq.wavefield.cdtype
         half = self.wave_eq.space_order // 2
         stride = 2 * half + 1
@@ -174,12 +172,12 @@ class NoWavefieldPreconditioner:
                 for b in range(stride):
                     comb = torch.zeros(shape, dtype=cdtype, device=device)
                     comb[..., a::stride, b::stride] = 1.0
-                    Ae_sq = _abs_sq(self.wave_eq.residual(comb, self.c_full, no_src))
+                    Ae_sq = abs_sq(self.wave_eq.residual(comb, self.c_init, no_src))
                     boxed = torch.nn.functional.conv2d(
                         Ae_sq.view(nf, 1, nx, ny), box, padding=half
                     ).view(shape[1:])
                     col_sq[:, a::stride, b::stride] = boxed[:, a::stride, b::stride]
-        return self.pde_weight * col_sq * self.u_per_pde_scale.square() / self.n_terms
+        return self.term_weight * col_sq / self.pde_scale_per_u.square()
 
     def info(self) -> Dict[str, object]:
         return {"wavefield_preconditioner": self.name}
@@ -188,12 +186,12 @@ class NoWavefieldPreconditioner:
 class InitialModelWavefieldPreconditioner:
     """``u_tilde = A(c_init)^-1 (pde_scale_per_u * v)`` (see the module doc).
 
-    ``factors`` are the per-frequency ``splu`` factors of ``A(c_init)`` (the
-    warm start's), ``c_init`` the full-grid initial model the operator
-    ``wave_eq`` is applied at for the inverse map, ``pde_scale_per_u`` the
-    ``(n_shots, nf, 1, 1)`` tensor ``pde_scale / u_ref`` and ``term_weight``
-    the PDE term's weight per scaled residual entry, ``pde_weight / (N_int
-    n_s n_f)``.
+    ``c_init`` is the full-grid initial model the operator ``wave_eq`` is
+    applied at for the inverse map, ``pde_scale_per_u`` the ``(n_shots, nf, 1,
+    1)`` tensor ``pde_scale / u_ref``, ``term_weight`` the PDE term's weight
+    per scaled residual entry, ``pde_weight / (N_int n_s n_f)``, and
+    ``factors`` the per-frequency ``splu`` factors of ``A(c_init)`` (the warm
+    start's).
     """
 
     name = "initial_model"
@@ -202,15 +200,15 @@ class InitialModelWavefieldPreconditioner:
         self,
         wave_eq: WaveEquation,
         c_init: torch.Tensor,
-        factors: Sequence,
         pde_scale_per_u: torch.Tensor,
         term_weight: float,
+        factors: Sequence,
     ) -> None:
         self.wave_eq = wave_eq
         self.c_init = c_init
-        self.solve = FactorSolve(factors)
         self.pde_scale_per_u = pde_scale_per_u
         self.term_weight = float(term_weight)
+        self.solve = FactorSolve(factors)
 
     @property
     def solve_seconds(self) -> float:

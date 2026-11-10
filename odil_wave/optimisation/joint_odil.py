@@ -122,6 +122,7 @@ from .preconditioners import (
     NoWavefieldPreconditioner,
     PdeDiagonalModelPreconditioner,
     WAVEFIELD_PRECONDITIONERS,
+    abs_sq,
 )
 
 
@@ -145,13 +146,6 @@ def mean_real_sq(x: torch.Tensor) -> torch.Tensor:
     else:
         ssq = x.square().sum()
     return ssq / real_scalar_count(x)
-
-
-def abs_sq(x: torch.Tensor) -> torch.Tensor:
-    """Elementwise ``|x|^2`` (complex-aware, no sqrt)."""
-    if x.is_complex():
-        return x.real.square() + x.imag.square()
-    return x.square()
 
 
 def rms_abs(x: torch.Tensor, dim=None) -> torch.Tensor:
@@ -406,23 +400,21 @@ class JointFreqODIL(Optimiser):
 
         # Wavefield preconditioner (v <-> u_tilde), then the model one (y <-> z_m),
         # whose target is the wavefield block's curvature in v.
-        n_terms = self.n_int * self.n_shots * self.nf
+        pde_scale_per_u = self.pde_scale / self.u_ref
+        term_weight = self.pde_weight / (self.n_int * self.n_shots * self.nf)
         if wavefield_preconditioner == "initial_model":
             c_init = self.vm_in.c.detach().to(dtype=self.dtype, device=self.device)
             self.wavefield_precond = InitialModelWavefieldPreconditioner(
                 self.wave_eq,
                 c_init,
+                pde_scale_per_u,
+                term_weight,
                 initial_model_factors,
-                self.pde_scale / self.u_ref,
-                self.pde_weight / n_terms,
             )
         else:
+            c_init = self.c_full_of_z(self._initial_latent())
             self.wavefield_precond = NoWavefieldPreconditioner(
-                self.wave_eq,
-                self.c_full_of_z(self._initial_latent()),
-                self.u_ref / self.pde_scale,
-                self.pde_weight,
-                n_terms,
+                self.wave_eq, c_init, pde_scale_per_u, term_weight
             )
         self.scale_info.update(self.wavefield_precond.info())
 
@@ -491,7 +483,7 @@ class JointFreqODIL(Optimiser):
     def model_curvature(self, z0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Diagonal ``(H_kk, H_zz)`` of the weighted PDE term on interior cells.
 
-        At ``(u_seed, z0)``, ``z0`` the band's start latent (``init_params``):
+        At ``(u_seed, z0)``, ``z0`` the band's initial latent (``init_params``):
         ``H_kk`` is w.r.t. ``k = (c/c0)^2`` (exact, as ``r`` is linear in ``k``),
         ``H_zz`` w.r.t. ``z_m`` (exact where the PDE residual vanishes, i.e. for
         a Helmholtz warm start).
@@ -526,7 +518,7 @@ class JointFreqODIL(Optimiser):
         return v_re, v_im, self._initial_latent()
 
     def _initial_latent(self) -> torch.Tensor:
-        """The band's start latent ``z_m``, from the wavefield's velocity model."""
+        """The band's initial latent ``z_m``, from the wavefield's velocity model."""
         c0_int = (
             self.vm_in.c[self._interior_slice]
             .detach()
@@ -637,13 +629,13 @@ class JointFreqODIL(Optimiser):
             }
 
     def _grad_norms(
-        self, u_re: torch.Tensor, u_im: torch.Tensor, z_m: torch.Tensor
+        self, v_re: torch.Tensor, v_im: torch.Tensor, z_m: torch.Tensor
     ) -> Dict[str, float]:
         gu = 0.0
-        if u_re.grad is not None:
-            gu += float(u_re.grad.pow(2).sum())
-        if u_im.grad is not None:
-            gu += float(u_im.grad.pow(2).sum())
+        if v_re.grad is not None:
+            gu += float(v_re.grad.pow(2).sum())
+        if v_im.grad is not None:
+            gu += float(v_im.grad.pow(2).sum())
         gu = math.sqrt(gu)
         gz = float(z_m.grad.norm()) if z_m.grad is not None else 0.0
         return {

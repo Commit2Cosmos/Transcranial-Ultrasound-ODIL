@@ -15,10 +15,7 @@ from odil_wave import (
 )
 from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
-from odil_wave.optimisation.preconditioners import (
-    NoModelPreconditioner,
-    NoWavefieldPreconditioner,
-)
+from odil_wave.optimisation.preconditioners import NoModelPreconditioner
 
 from conftest import (
     C_MAX,
@@ -377,17 +374,9 @@ def test_pde_diagonal_scale_matches_the_wavefield_block_and_is_reported():
     opt = _small_two_frequency_optimiser(4, model_preconditioner="pde_diagonal")
     z0 = opt.init_params()[2]
     _, H_zz = opt.model_curvature(z0)
-    # The curvature without a wavefield preconditioner, at the start latent's
+    # The curvature without a wavefield preconditioner, at the initial latent's
     # model (tests/test_preconditioners.py checks it against autograd).
-    n_int = opt.grid.interior_nx * opt.grid.interior_ny
-    H_vv = NoWavefieldPreconditioner(
-        opt.wave_eq,
-        opt.c_full_of_z(z0),
-        opt.u_ref / opt.pde_scale,
-        opt.pde_weight,
-        n_int * opt.n_shots * opt.nf,
-    ).pde_curvature()
-    T = float(H_vv.median())
+    T = float(opt.wavefield_precond.pde_curvature().median())
     info = opt.scale_info
     assert info["model_preconditioner"] == "pde_diagonal"
     assert info["precond_eps"] == 1e-2

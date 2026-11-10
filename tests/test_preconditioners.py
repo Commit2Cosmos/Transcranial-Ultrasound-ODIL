@@ -48,20 +48,16 @@ def _band(space_order) -> SimpleNamespace:
         u0=u0,
         u_ref=u_ref,
         pde_scale_per_u=lam_tt.expand_as(u_ref).contiguous(),
-        n_terms=n_terms,
         term_weight=PDE_WEIGHT / n_terms,
         sources=sources * g.t0**2,
     )
 
 
 def _wavefield(band, mode):
+    args = (band.wave_eq, band.c, band.pde_scale_per_u, band.term_weight)
     if mode == "none":
-        return NoWavefieldPreconditioner(
-            band.wave_eq, band.c, 1.0 / band.pde_scale_per_u, PDE_WEIGHT, band.n_terms
-        )
-    return InitialModelWavefieldPreconditioner(
-        band.wave_eq, band.c, band.factors, band.pde_scale_per_u, band.term_weight
-    )
+        return NoWavefieldPreconditioner(*args)
+    return InitialModelWavefieldPreconditioner(*args, band.factors)
 
 
 def _weighted_pde_term(band, u_tilde):
