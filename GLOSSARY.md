@@ -27,7 +27,7 @@ _Avoid_: effective config, final config
 One execution of the solver with one resolved config.
 
 **Experiment**:
-One question about a single isolated parameter or feature, answered by one or more runs.
+One question about one or more parameters or features, answered by one or more runs.
 _Avoid_: run, when one execution is meant
 
 **Protocol**:
@@ -35,7 +35,7 @@ The pre-registered plan of an experiment (its question, hypothesis and design), 
 _Avoid_: plan, proposal
 
 **Experiment spec**:
-The committed file that defines exactly the runs an experiment's protocol designs: its baseline, and the one parameter or feature it varies with the values it takes.
+The committed file that defines exactly the runs an experiment's protocol designs: its baseline, and the parameters or features it varies with the values each takes, every combination a run.
 _Avoid_: experiment config, sweep file
 
 **Experiment id**:
@@ -49,7 +49,7 @@ A few iterations of an experiment's baseline, run only to estimate how long the 
 _Avoid_: test run, dry run
 
 **Baseline**:
-The run config an experiment varies its one parameter or feature from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.
+The run config an experiment varies its parameters or features from. A follow-up experiment names its own baseline, which may come from an earlier experiment's findings.
 _Avoid_: base config, reference config; baseline for the starting model of a run
 
 **Experiment chain**:
@@ -61,20 +61,15 @@ The metrics recorded at the start of each frequency band, after the band's warm 
 _Avoid_: baseline row
 
 **Experiment record**:
-The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and whether it has since been superseded or invalidated.
+The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and whether it has since been invalidated.
 _Avoid_: report, results file
 
 **Experiment bank**:
 All experiment records together, with an index that an agent reads first.
 _Avoid_: results archive, log
 
-**Superseded**:
-Said of an experiment record when a newer record answers the same question in its place.
-_Avoid_: obsolete, replaced
-
 **Invalidated**:
 Said of an experiment record when a later code change means one of its supported conclusions no longer holds.
-_Avoid_: superseded, when no newer record exists
 
 **Voided**:
 Said of a launch whose runs no longer test its protocol, so it is cancelled before any record of it is banked and its id released for reuse.
