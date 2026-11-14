@@ -100,7 +100,7 @@ def test_metadata_ties_the_run_to_its_commit_and_lockfile(git_repo, quick_config
     [run_dir] = run_dirs(git_repo)
     meta = json.loads((run_dir / "metadata.json").read_text())
     lock = hashlib.sha256((git_repo / "uv.lock").read_bytes()).hexdigest()
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2
     assert meta["git"]["sha"] == git(git_repo, "rev-parse", "HEAD")
     assert meta["git"]["dirty"] is False
     assert meta["scratch"] is False

@@ -14,7 +14,7 @@ from odil_wave.experiment import bank
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _write_record(bank_dir: Path, rec_id: str, *, validity="Current.", **fields):
+def _write_record(bank_dir: Path, rec_id: str, **fields):
     """Write a minimal experiment record; ``fields`` override or (None) drop keys."""
     front = {
         "id": rec_id,
@@ -30,7 +30,6 @@ def _write_record(bank_dir: Path, rec_id: str, *, validity="Current.", **fields)
         "variable": "loss.weights.reg",
         "baseline": "configs/example_multiband.yaml",
         "answer": "Yes, a little.",
-        "supersedes": [],
     }
     for key, val in fields.items():
         if val is None:
@@ -40,9 +39,7 @@ def _write_record(bank_dir: Path, rec_id: str, *, validity="Current.", **fields)
     text = (
         "---\n"
         + yaml.safe_dump(front, sort_keys=False)
-        + "---\n\n# Title\n\n## Question\n\nQ?\n\n## Validity\n\n"
-        + validity
-        + "\n"
+        + "---\n\n# Title\n\n## Question\n\nQ?\n\n## Validity\n\nCurrent.\n"
     )
     (bank_dir / f"{rec_id}.md").write_text(text)
 
@@ -64,7 +61,7 @@ def test_check_passes_on_sequential_complete_records(bank_dir):
     assert _check(bank_dir) == 0
 
 
-@pytest.mark.parametrize("field", ["answer", "supersedes", "commit"])
+@pytest.mark.parametrize("field", ["answer", "commit"])
 def test_check_fails_on_a_missing_frontmatter_field(bank_dir, field, capsys):
     _write_record(bank_dir, "0001-tv-weight")
     _write_record(bank_dir, "0002-band-ablation", **{field: None})
@@ -101,74 +98,6 @@ def test_check_fails_when_the_frontmatter_id_is_not_the_filename(bank_dir, capsy
     assert "0001-tv-weight" in capsys.readouterr().err
 
 
-def _superseded_by(rec_id: str) -> str:
-    return f"- 2026-10-31 · superseded by [{rec_id}]({rec_id}.md) · reran at finer grid"
-
-
-def test_check_passes_when_supersedes_targets_are_flipped_and_noted(bank_dir):
-    _write_record(
-        bank_dir,
-        "0001-tv-weight",
-        status="superseded",
-        validity=_superseded_by("0003-tv-weight-fine"),
-    )
-    _write_record(bank_dir, "0002-band-ablation", status="invalidated")
-    _write_record(
-        bank_dir,
-        "0003-tv-weight-fine",
-        supersedes=["0001-tv-weight", "0002-band-ablation"],
-    )
-    assert _check(bank_dir) == 0
-
-
-def test_check_passes_on_a_transitive_supersession_chain(bank_dir):
-    """0003 lists every record it replaces; 0001 keeps 0002's entry."""
-    _write_record(
-        bank_dir,
-        "0001-tv-weight",
-        status="superseded",
-        validity=_superseded_by("0002-tv-weight-fine"),
-    )
-    _write_record(
-        bank_dir,
-        "0002-tv-weight-fine",
-        status="superseded",
-        supersedes=["0001-tv-weight"],
-        validity=_superseded_by("0003-tv-weight-finer"),
-    )
-    _write_record(
-        bank_dir,
-        "0003-tv-weight-finer",
-        supersedes=["0001-tv-weight", "0002-tv-weight-fine"],
-    )
-    assert _check(bank_dir) == 0
-
-
-@pytest.mark.parametrize(
-    "target_fields",
-    [
-        {"status": "current", "validity": "Current."},  # not flipped
-        {"status": "superseded", "validity": "Current."},  # no superseded-by entry
-    ],
-)
-def test_check_fails_on_a_supersedes_target_left_unmaintained(
-    bank_dir, target_fields, capsys
-):
-    _write_record(bank_dir, "0001-tv-weight", **target_fields)
-    _write_record(bank_dir, "0002-tv-weight-fine", supersedes=["0001-tv-weight"])
-    assert _check(bank_dir) == 1
-    assert "0001-tv-weight" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("target", ["0009-no-such-record", 1])
-def test_check_fails_on_a_supersedes_target_that_is_not_a_record(
-    bank_dir, target, capsys
-):
-    _write_record(bank_dir, "0001-tv-weight", supersedes=[target])
-    assert _check(bank_dir) == 1
-    assert repr(target) in capsys.readouterr().err
-
-
 README = """\
 # Experiment bank
 
@@ -186,18 +115,12 @@ Footer.
 
 def test_regenerate_writes_the_index_table_from_frontmatter(bank_dir):
     (bank_dir / "README.md").write_text(README)
-    _write_record(
-        bank_dir,
-        "0001-tv-weight",
-        status="superseded",
-        validity=_superseded_by("0002-tv-weight-fine"),
-    )
+    _write_record(bank_dir, "0001-tv-weight", status="invalidated")
     _write_record(
         bank_dir,
         "0002-tv-weight-fine",
         title="Does the TV weight matter on a finer grid?",
         answer="Yes | above 1e-6",
-        supersedes=["0001-tv-weight"],
     )
 
     assert bank.main(["--bank", str(bank_dir)]) == 0
@@ -208,7 +131,7 @@ def test_regenerate_writes_the_index_table_from_frontmatter(bank_dir):
         "| id | question | variable | status | answer |\n"
         "|---|---|---|---|---|\n"
         "| [0001-tv-weight](0001-tv-weight.md) | Does 0001-tv-weight matter? "
-        "| loss.weights.reg | superseded | Yes, a little. |\n"
+        "| loss.weights.reg | invalidated | Yes, a little. |\n"
         "| [0002-tv-weight-fine](0002-tv-weight-fine.md) "
         "| Does the TV weight matter on a finer grid? "
         "| loss.weights.reg | current | Yes \\| above 1e-6 |\n"

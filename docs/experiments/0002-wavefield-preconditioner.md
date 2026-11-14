@@ -12,7 +12,6 @@ device: cpu
 variable: optimiser.wavefield_preconditioner
 baseline: "default config at main 8b383e3 (125² interior, PML 40, 64 transducers, homogeneous 1500 m/s init, one 80 kHz band) with optimiser.n_iter = 100; #107's Baseline"
 answer: "Yes at equal outer budget (final rel_wavefield_error 0.23×, rmse_skull −25%, rmse_brain −30%); at equal wall time it misses the 0.5× threshold narrowly (0.54×), so the cost criterion is not met"
-supersedes: []
 ---
 
 # 0002-wavefield-preconditioner: Does the wavefield preconditioner pay off in the joint solve?

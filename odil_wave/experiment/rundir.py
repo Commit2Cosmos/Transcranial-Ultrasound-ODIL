@@ -24,8 +24,9 @@ from .atomic import write_text_atomic
 
 # Version of the run and experiment directories' formats (``metadata.json``,
 # ``experiment.json``); a format change bumps it and readers keep a path for
-# every version from 1 (:func:`load_versioned_json`).
-SCHEMA_VERSION = 1
+# every version from 1 (:func:`load_versioned_json`). Version 2: an experiment
+# sweeps several keys (:func:`load_experiment_record` reads version 1).
+SCHEMA_VERSION = 2
 
 # The repository holding this code: the default ``repo_root``.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -203,6 +204,25 @@ def load_versioned_json(path: Path) -> Dict[str, Any]:
             f"{SCHEMA_VERSION} (check out a newer commit to read it)"
         )
     return data
+
+
+def load_experiment_record(path: Path) -> Dict[str, Any]:
+    """``experiment.json`` at ``path`` in the current format, a version 1
+    record's ``sweep_key`` and per-run ``value`` read as a single axis.
+
+    Raises
+    ------
+    SchemaVersionError
+        The file is of a format this code can't read.
+    """
+    record = load_versioned_json(path)
+    if record["schema_version"] == 1:
+        key = record.pop("sweep_key")
+        record["sweep_keys"] = [key]
+        for entry in record["runs"]:
+            entry["values"] = {key: entry.pop("value")}
+        record["schema_version"] = 2
+    return record
 
 
 def write_json(path: Path, obj: Any) -> None:

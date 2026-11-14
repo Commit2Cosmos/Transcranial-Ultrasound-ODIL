@@ -33,12 +33,10 @@ REQUIRED_FIELDS = (
     "variable",
     "baseline",
     "answer",
-    "supersedes",
 )
 
 _RECORD_NAME = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
-_SUPERSEDED_BY = re.compile(r"superseded by \[(\d{4}-[a-z0-9-]+)\]")
 INDEX_START = "<!-- index:start -->"
 INDEX_END = "<!-- index:end -->"
 
@@ -101,52 +99,7 @@ def check(bank_dir: Path) -> List[str]:
     for number, names in by_number.items():
         if len(names) > 1:
             problems.append(f"id number {number} used twice: {', '.join(names)}")
-
-    problems += _check_supersession(records)
     return problems
-
-
-def _check_supersession(records: List[Record]) -> List[str]:
-    """Every ``supersedes`` target is a record, no longer ``current``, and, if
-    ``superseded``, has a superseded-by Validity entry naming a record that
-    lists it in ``supersedes``."""
-    by_name = {rec.name: rec for rec in records}
-    superseders: Dict[str, set] = {}
-    problems = []
-    for rec in records:
-        targets = rec.front.get("supersedes") or []
-        if not isinstance(targets, list):
-            problems.append(f"{rec.name}: supersedes must be a list of record ids")
-            continue
-        for target in targets:
-            if not isinstance(target, str) or target not in by_name:
-                problems.append(
-                    f"{rec.name}: supersedes target {target!r} is not a record id "
-                    "(write the full NNNN-slug)"
-                )
-                continue
-            superseders.setdefault(target, set()).add(rec.name)
-
-    for target, newer in sorted(superseders.items()):
-        status = by_name[target].front.get("status")
-        if status == "current":
-            problems.append(
-                f"{target}: still current, but superseded by {', '.join(sorted(newer))}"
-            )
-        elif status == "superseded":
-            named = set(_SUPERSEDED_BY.findall(_validity(by_name[target].body)))
-            if not named & newer:
-                problems.append(
-                    f"{target}: no Validity entry 'superseded by [<id>]' naming "
-                    f"{' or '.join(sorted(newer))}"
-                )
-    return problems
-
-
-def _validity(body: str) -> str:
-    """The text of the record's Validity section."""
-    match = re.search(r"^## Validity[^\n]*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
-    return match.group(1) if match else ""
 
 
 def index_table(records: List[Record]) -> str:

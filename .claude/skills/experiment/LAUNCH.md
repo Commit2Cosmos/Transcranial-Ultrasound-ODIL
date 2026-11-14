@@ -2,7 +2,7 @@
 
 Turn the Protocol into a committed, tagged experiment spec, post the launch comment, and hand the user the command. The spec format and every flag are in `odil_wave/experiment/README.md`, "Experiments".
 
-Before starting, re-check the Protocol's two gates (one variable, config-selectable; see [PROTOCOL.md](PROTOCOL.md) §3). If either fails, go back to the Protocol stage.
+Before starting, re-check the Protocol's gate (config-selectable; see [PROTOCOL.md](PROTOCOL.md) §3). If it fails, go back to the Protocol stage.
 
 ## 1. Reserve the id
 
@@ -26,7 +26,7 @@ If the Design needs a **feature under test**, build it here, test-first, behind 
 
 ## 3. Write the spec
 
-`configs/experiments/NNNN-slug.yaml` with `schema_version: 1`, `id`, `issue` (the Protocol issue), an inline `baseline` holding only values that differ from the default config, and one `sweep` with the Design's key, values (in the Design's order) and labels. Exactly one value resolves to the Baseline.
+`configs/experiments/NNNN-slug.yaml` with `schema_version: 2`, `id`, `issue` (the Protocol issue), an inline `baseline` holding only values that differ from the default config, and a `sweep` with one axis per swept key: its key, values (in the Design's order) and labels. Exactly one run resolves to the Baseline.
 
 Validate with `uv run python main.py --experiment configs/experiments/NNNN-slug.yaml --dry-run` until it exits 0.
 

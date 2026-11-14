@@ -18,4 +18,4 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 
 ### Experiments
 
-`/experiment` (`.claude/skills/experiment/`) walks an experiment from its `experiment`-labelled Protocol issue through launch to record. Bank conventions live in `docs/experiments/README.md`. A PR touching `odil_wave/`, `configs/` or `main.py` checks the `current` experiment records and adds invalidation notes: see "Maintaining the bank" there.
+A PR touching `odil_wave/`, `configs/` or `main.py` adds a one-line note to each `current` record in `docs/experiments/` it may affect: see "Maintaining the bank" in its README.

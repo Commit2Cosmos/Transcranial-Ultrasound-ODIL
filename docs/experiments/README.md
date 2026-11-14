@@ -17,15 +17,13 @@ from `current` records.
   up to 3 key PNGs under their standard filenames. Everything else is
   regenerated with `--reproduce` / `--postprocess`.
 - **Lifecycle**: the body is frozen once the record's PR merges (typo fixes
-  allowed); a wrong analysis is fixed by a new record that supersedes it. After
-  merge only `status` and new Validity entries change, and only while the record
-  is `current`, so the entry that took it out of `current` is always the last.
-  `superseded`: a newer record answers the same question. `invalidated`: a later
-  code change broke one of its supported conclusions. Superseded and invalidated
-  records are never checked or edited again; they remain as context.
+  allowed); a wrong analysis is fixed by a new record whose Context names the
+  old one. After merge only `status` and new Validity entries change.
+  `invalidated`: a later code change broke one of its supported conclusions; an
+  invalidated record is never checked or edited again and remains as context.
 - **Index**: generated from the frontmatter by
-  `uv run python -m odil_wave.experiment.bank`. `--check` validates only (required
-  fields, unique id numbers, maintained `supersedes` targets) and runs in CI through
+  `uv run python -m odil_wave.experiment.bank`. `--check` validates only
+  (required fields, unique id numbers) and runs in CI through
   `tests/test_experiment_bank.py`.
 
 ## Voiding a launch
@@ -33,7 +31,7 @@ from `current` records.
 A launch is **voided** when its runs no longer test its Protocol before any
 record of it reaches `main`, e.g. because the default config changed under its
 Baseline. Runs that test the Protocol but stopped are recorded as `aborted`
-instead; a banked record is superseded or invalidated, never voided.
+instead; a banked record is invalidated, never voided.
 
 1. Delete its spec, any drafted record and results, and its launch tag, locally
    and on `origin`. Delete its `exp/*` branch too unless another experiment
@@ -62,43 +60,16 @@ with its own id. The number is free once no spec, `exp/*` branch name or
 
 ## Maintaining the bank
 
-The invalidation check is a helper for the user, not a gate: the agent flags,
-the user decides.
-
-1. **Invalidation notes.** In every PR that touches `odil_wave/`, `configs/` or
-   `main.py`, read the diff against each `current` record's `variable`,
-   `baseline`, `answer` and Conclusions supported.
-   - If its conclusions hold, write nothing.
-   - To settle whether the change alters results at all,
-     `python -m odil_wave.experiment.compare main` runs the tiny config
-     (`configs/checks/tiny.yaml`, or `--config <file>`) at `main` and on your
-     tree and compares the results exactly. Identical results leave every
-     conclusion standing; quote its output in the PR.
-   - If you can name a conclusion and a reason the change could break it, add a
-     Validity entry in that PR:
-     `YYYY-MM-DD · note · <PR> · affects <conclusion bullets> · <why>`.
-     `status` is unchanged.
-   - State the outcome on an `**Experiment bank:**` line in the PR body (notes
-     added, or why none were needed). PRs touching only docs, tests, notebooks
-     or dependencies are skipped.
-   - **Only the user writes `invalidated`** (usually in review of a PR that
-     added a note): `YYYY-MM-DD · invalidated by <PR or commit> · <what changed> ·
-     affects <conclusion bullets | all> · <why this breaks them>`, flipping
-     `status` to `invalidated`. Doubt that needs data is settled by a new
-     experiment that, if it answers the same question, supersedes the record.
-   - **Records written after a code change**: when writing a record, check
-     `git diff <commit>...main -- odil_wave/ configs/ main.py` (from the
-     merge-base, so a feature left on an unmerged branch isn't read as removed)
-     against it, and put any notes in the record's PR. Before an experiment
-     branch's PR is marked ready, re-run this for every record on the branch
-     against current `main`.
-2. **Supersession.** When a record becomes `current`, check whether it answers
-   the same question as any `current` record. If it does, list in its
-   `supersedes` **every** record it supersedes, transitively (in a chain
-   0001→0002→0003, 0003 has `supersedes: [0001-…, 0002-…]`), flip each `current`
-   one to `superseded` and give it the entry
-   `YYYY-MM-DD · superseded by [NNNN-slug](NNNN-slug.md) · <why>`. The link lives
-   only on the newer record; there is no `superseded_by` field.
+1. **Invalidation note.** A PR that touches `odil_wave/`, `configs/` or
+   `main.py` adds one Validity line to each `current` record whose conclusions
+   it may change: `YYYY-MM-DD · note · <PR> · <what may no longer hold, and
+   why>`. `status` is unchanged; no line when nothing is affected. To settle
+   whether a change alters results at all,
+   `python -m odil_wave.experiment.compare main` runs the tiny config at `main`
+   and on your tree and compares the results exactly.
+2. **Only the user writes `invalidated`**:
+   `YYYY-MM-DD · invalidated by <PR or commit> · <why>`, flipping `status` to
+   `invalidated`. Doubt that needs data is settled by a new experiment.
 3. **Index.** After writing or updating a record, run
    `uv run python -m odil_wave.experiment.bank` to regenerate the table below.
 

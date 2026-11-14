@@ -1,16 +1,18 @@
 """Experiment specs: the committed file defining exactly an experiment's runs.
 
 An **experiment spec** (``configs/experiments/NNNN-slug.yaml``) holds a
-``baseline`` run config and one ``sweep`` of a single dotted key. Each swept
-value is applied at that key like a run config (dicts deep-merge, lists
-replace), giving one run per value. :func:`load_spec` parses and validates a
-spec, resolving every run's config; it is torch-free, so ``--dry-run`` stays
-fast. The run-layer README's "Experiment spec" section is the contract.
+``baseline`` run config and a ``sweep``: one or more axes, each a dotted key
+and its values. Every combination of one value per axis is a run, each value
+applied at its key like a run config (dicts deep-merge, lists replace).
+:func:`load_spec` parses and validates a spec, resolving every run's config; it
+is torch-free, so ``--dry-run`` stays fast. The run-layer README's
+"Experiment spec" section is the contract.
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +28,8 @@ from .config import (
 )
 
 # Version of the spec format; readers keep a path for every version from 1.
-SPEC_SCHEMA_VERSION = 1
+# Version 1's ``sweep`` is a single axis, version 2's a list of axes.
+SPEC_SCHEMA_VERSION = 2
 
 _KEYS = ("schema_version", "id", "issue", "baseline", "sweep")
 _SWEEP_KEYS = ("key", "values", "labels")
@@ -41,11 +44,11 @@ _DEVICE = re.compile(r"^(cpu|mps|cuda(:\d+)?)$")
 
 @dataclass(frozen=True)
 class SweepRun:
-    """One run of an experiment: a swept value applied to the baseline."""
+    """One run of an experiment: one value per swept key applied to the baseline."""
 
     index: int
     label: str
-    value: Any
+    values: Dict[str, Any]  # swept key -> its value in this run, in axis order
     config: RunConfig
     is_baseline: bool
 
@@ -57,12 +60,13 @@ class SweepRun:
 
 @dataclass(frozen=True)
 class ExperimentSpec:
-    """A parsed, validated experiment spec and its runs, in ``values`` order."""
+    """A parsed, validated experiment spec and its runs: the cross product of
+    the axes, the last axis varying fastest."""
 
     path: Path
     id: str
     issue: int  # the protocol issue
-    key: str
+    keys: List[str]  # the swept keys, in axis order
     baseline: RunConfig
     runs: List[SweepRun]
     sha256: str  # of the spec file's bytes
@@ -99,9 +103,13 @@ def load_spec(
     if unknown:
         raise ConfigError(f"unknown spec key(s) {unknown}; valid keys: {list(_KEYS)}")
     version = data.get("schema_version")
-    if version != SPEC_SCHEMA_VERSION or isinstance(version, bool):
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or not 1 <= version <= SPEC_SCHEMA_VERSION
+    ):
         raise ConfigError(
-            f"schema_version must be {SPEC_SCHEMA_VERSION}, got {version!r}"
+            f"schema_version must be 1 to {SPEC_SCHEMA_VERSION}, got {version!r}"
         )
     exp_id = _check_id(data.get("id"), path, repo_root)
     issue = data.get("issue")
@@ -118,12 +126,20 @@ def load_spec(
     except ConfigError as exc:
         raise ConfigError(f"baseline: {exc}") from None
 
-    key, values, labels = _check_sweep(data.get("sweep"))
+    axes = _check_sweep(data.get("sweep"), version)
+    keys = [key for key, _, _ in axes]
+    combinations = itertools.product(
+        *(list(zip(labels, values)) for _, values, labels in axes)
+    )
     runs = []
-    for index, (label, value) in enumerate(zip(labels, values)):
+    for index, combination in enumerate(combinations):
+        label = "_".join(label for label, _ in combination)
+        values = {key: value for key, (_, value) in zip(keys, combination)}
         name = f"{index:02d}_{label}"
         try:
-            run_user = deep_merge(baseline_user, _nest(key, value))
+            run_user = baseline_user
+            for key, value in values.items():
+                run_user = deep_merge(run_user, _nest(key, value))
             cfg = resolve_config(deep_merge(run_user, on_device))
             validate_config(cfg)
         except ConfigError as exc:
@@ -132,7 +148,7 @@ def load_spec(
             SweepRun(
                 index=index,
                 label=label,
-                value=value,
+                values=values,
                 config=cfg,
                 is_baseline=cfg.to_dict() == baseline.to_dict(),
             )
@@ -140,13 +156,13 @@ def load_spec(
     n_baseline = sum(run.is_baseline for run in runs)
     if n_baseline != 1:
         raise ConfigError(
-            f"exactly one swept value must resolve to the baseline; {n_baseline} do"
+            f"exactly one run must resolve to the baseline; {n_baseline} do"
         )
     return ExperimentSpec(
         path=path,
         id=exp_id,
         issue=issue,
-        key=key,
+        keys=keys,
         baseline=baseline,
         runs=runs,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -200,10 +216,31 @@ def _check_id(exp_id: Any, path: Path, repo_root: Optional[Union[str, Path]]) ->
     return exp_id
 
 
-def _check_sweep(sweep: Any) -> tuple:
-    """The sweep's ``(key, values, labels)``, labels derived for scalars."""
+def _check_sweep(sweep: Any, version: int) -> List[tuple]:
+    """The sweep's axes, each ``(key, values, labels)``: one axis in a version 1
+    spec, a non-empty list of them in version 2, no key equal to or nested in
+    another."""
+    if version == 1:
+        return [_check_axis(sweep)]
+    if not isinstance(sweep, list) or not sweep:
+        raise ConfigError(
+            "sweep must be a non-empty list of axes, each with key, values and labels"
+        )
+    axes = [_check_axis(axis) for axis in sweep]
+    keys = [key for key, _, _ in axes]
+    for a, b in itertools.permutations(keys, 2):
+        if a == b or b.startswith(a + "."):
+            raise ConfigError(f"sweep key {b!r} repeats or is nested in {a!r}")
+    labels = ["_".join(c) for c in itertools.product(*(ls for _, _, ls in axes))]
+    if len(set(labels)) != len(labels):
+        raise ConfigError(f"run labels must be unique, got {labels}")
+    return axes
+
+
+def _check_axis(sweep: Any) -> tuple:
+    """A sweep axis's ``(key, values, labels)``, labels derived for scalars."""
     if not isinstance(sweep, dict):
-        raise ConfigError("sweep must be a mapping with key, values and labels")
+        raise ConfigError("a sweep axis must be a mapping with key, values and labels")
     unknown = sorted(set(sweep) - set(_SWEEP_KEYS))
     if unknown:
         raise ConfigError(
