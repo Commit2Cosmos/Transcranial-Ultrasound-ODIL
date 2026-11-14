@@ -17,6 +17,7 @@ import yaml
 import main
 from conftest import TINY_RUN_CONFIG, git
 from odil_wave.experiment import deep_merge
+from odil_wave.experiment.rundir import SCHEMA_VERSION
 
 # One outer iteration keeps each run to about a second.
 BASELINE = deep_merge(TINY_RUN_CONFIG, {"optimiser": {"n_iter": 1}})
@@ -27,11 +28,11 @@ def write_spec(repo: Path, exp_id: str = "0001-reg", *, commit=True, **fields) -
     """Write an experiment spec into ``repo``'s ``configs/experiments/`` and
     commit it; ``fields`` replace the spec's top-level keys."""
     spec = {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": exp_id,
         "issue": 61,
         "baseline": BASELINE,
-        "sweep": REG_SWEEP,
+        "sweep": [REG_SWEEP],
         **fields,
     }
     path = repo / "configs" / "experiments" / f"{exp_id}.yaml"
@@ -77,7 +78,7 @@ def test_an_experiment_runs_every_value_into_one_directory(git_repo):
         summary = json.loads((exp / "runs" / name / "run_summary.json").read_text())
         assert summary["status"] == "completed"
     record = json.loads((exp / "experiment.json").read_text())
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == SCHEMA_VERSION
     assert record["commit"] == git(git_repo, "rev-parse", "HEAD")
     assert [r["status"] for r in record["runs"]] == ["completed", "completed"]
 
@@ -88,7 +89,7 @@ def test_an_experiment_runs_every_value_into_one_directory(git_repo):
         (exp / "runs" / "01_reg-1e-6" / "config_resolved.yaml").read_text()
     )
     assert resolved["loss"]["weights"]["reg"] == 1e-6
-    assert float(rows[1]["value"]) == 1e-6
+    assert float(rows[1]["loss.weights.reg"]) == 1e-6
     assert rows[1]["iter_total"] == "1"
     assert (exp / "figures" / "final_metrics.png").is_file()
 
@@ -159,22 +160,30 @@ SCHEDULES = [
 @pytest.mark.parametrize(
     "fields, message",
     [
-        ({"schema_version": 2}, "schema_version"),
+        ({"schema_version": 3}, "schema_version"),
         ({"schema_version": None}, "schema_version"),
         ({"id": "0001-other"}, "filename"),
-        ({"sweep": {"values": [0.0]}}, "sweep.key"),
-        ({"sweep": {"key": ["a", "b"], "values": [0.0]}}, "sweep.key"),
-        ({"sweep": {"key": "loss.weights.reg", "values": []}}, "values"),
-        ({"sweep": {"key": "continuation.bands", "values": SCHEDULES}}, "labels"),
-        ({"sweep": {**REG_SWEEP, "labels": ["only-one"]}}, "labels"),
-        ({"sweep": {"key": "loss.weights.reg", "values": [1e-7, 1e-6]}}, "baseline"),
+        ({"sweep": [{"values": [0.0]}]}, "sweep.key"),
+        ({"sweep": [{"key": ["a", "b"], "values": [0.0]}]}, "sweep.key"),
+        ({"sweep": [{"key": "loss.weights.reg", "values": []}]}, "values"),
+        ({"sweep": [{"key": "continuation.bands", "values": SCHEDULES}]}, "labels"),
+        ({"sweep": [{**REG_SWEEP, "labels": ["only-one"]}]}, "labels"),
+        ({"sweep": [{"key": "loss.weights.reg", "values": [1e-7, 1e-6]}]}, "baseline"),
         (
-            {"sweep": {**REG_SWEEP, "values": [0.0, 0], "labels": ["a", "b"]}},
+            {"sweep": [{**REG_SWEEP, "values": [0.0, 0], "labels": ["a", "b"]}]},
             "baseline",
         ),
-        ({"sweep": {**REG_SWEEP, "values": [1e-6, 1.0e-6, 0.0]}}, "unique"),
-        ({"sweep": {**REG_SWEEP, "labels": ["a", "b/c"]}}, "b/c"),
-        ({"sweep": {"key": "optimiser.n_iter", "values": [1, -1]}}, "01_n-iter--1"),
+        ({"sweep": [{**REG_SWEEP, "values": [1e-6, 1.0e-6, 0.0]}]}, "unique"),
+        ({"sweep": [{**REG_SWEEP, "labels": ["a", "b/c"]}]}, "b/c"),
+        ({"sweep": [{"key": "optimiser.n_iter", "values": [1, -1]}]}, "01_n-iter--1"),
+        ({"sweep": REG_SWEEP}, "list of axes"),
+        ({"sweep": []}, "list of axes"),
+        ({"sweep": [REG_SWEEP, REG_SWEEP]}, "repeats"),
+        (
+            {"sweep": [REG_SWEEP, {"key": "loss", "values": [{}], "labels": ["x"]}]},
+            "nested",
+        ),
+        ({"schema_version": 1, "sweep": [REG_SWEEP]}, "mapping"),
         ({"question": "?"}, "question"),
         ({"issue": None}, "issue"),
         ({"issue": "sixty-one"}, "issue"),
@@ -187,13 +196,54 @@ def test_an_invalid_spec_does_not_start(git_repo, fields, message, capsys):
     assert message in capsys.readouterr().err
 
 
+PDE_SWEEP = {"key": "loss.weights.pde", "values": [1.0, 2.0]}
+
+
+def test_a_factorial_sweep_runs_every_combination(git_repo):
+    spec = write_spec(git_repo, sweep=[REG_SWEEP, PDE_SWEEP])
+
+    assert main.main(["--experiment", str(spec)], repo_root=git_repo) == 0
+
+    exp = git_repo / "outputs" / "experiments" / "0001-reg"
+    record = json.loads((exp / "experiment.json").read_text())
+    assert record["sweep_keys"] == ["loss.weights.reg", "loss.weights.pde"]
+    rows = read_csv(exp / "summary.csv")
+    assert [r["label"] for r in rows] == [
+        "reg-0_pde-1",
+        "reg-0_pde-2",
+        "reg-1e-6_pde-1",
+        "reg-1e-6_pde-2",
+    ]
+    assert [r["is_baseline"] for r in rows] == ["true", "false", "false", "false"]
+    assert [(r["loss.weights.reg"], r["loss.weights.pde"]) for r in rows] == [
+        ("0", "1"),
+        ("0", "2"),
+        ("1e-6", "1"),
+        ("1e-6", "2"),
+    ]
+    resolved = yaml.safe_load(
+        (exp / "runs" / "03_reg-1e-6_pde-2" / "config_resolved.yaml").read_text()
+    )
+    assert resolved["loss"]["weights"]["reg"] == 1e-6
+    assert resolved["loss"]["weights"]["pde"] == 2.0
+    assert (exp / "figures" / "final_metrics.png").is_file()
+
+
+def test_a_version_1_spec_still_loads(git_repo, capsys):
+    spec = write_spec(git_repo, commit=False, schema_version=1, sweep=REG_SWEEP)
+
+    assert dry_run(git_repo, spec) == 0
+    out = capsys.readouterr().out
+    assert "00_reg-0" in out and "01_reg-1e-6" in out
+
+
 def test_labels_name_list_and_dict_values(git_repo, capsys):
     sweep = {
         "key": "continuation.bands",
         "values": SCHEDULES,
         "labels": ["one-band", "two-bands"],
     }
-    spec = write_spec(git_repo, commit=False, sweep=sweep)
+    spec = write_spec(git_repo, commit=False, sweep=[sweep])
 
     assert dry_run(git_repo, spec) == 0
     out = capsys.readouterr().out
@@ -208,7 +258,7 @@ def test_swept_dicts_deep_merge_into_the_baseline(git_repo, capsys):
         "values": [{"weights": {"reg": 0.0}}, {"weights": {"reg": 1e-6}}],
         "labels": ["none", "tv"],
     }
-    spec = write_spec(git_repo, commit=False, sweep=sweep)
+    spec = write_spec(git_repo, commit=False, sweep=[sweep])
 
     assert dry_run(git_repo, spec) == 0
     assert "00_none" in capsys.readouterr().out.split("(baseline)")[0]
@@ -243,7 +293,7 @@ FAILING_FIRST = {"key": "loss.weights.data", "values": [1e400, 10.0]}
 
 
 def test_a_failed_run_does_not_stop_the_others(git_repo):
-    spec = write_spec(git_repo, sweep=FAILING_FIRST)
+    spec = write_spec(git_repo, sweep=[FAILING_FIRST])
 
     assert main.main(["--experiment", str(spec)], repo_root=git_repo) == 1
 
@@ -282,7 +332,7 @@ def test_the_experiment_record_ties_it_to_its_commit_and_spec(git_repo, tmp_path
 
 
 def test_a_rerun_resumes_redoing_only_runs_that_did_not_complete(git_repo):
-    spec = write_spec(git_repo, sweep=FAILING_FIRST)
+    spec = write_spec(git_repo, sweep=[FAILING_FIRST])
     argv = ["--experiment", str(spec)]
     assert main.main(argv, repo_root=git_repo) == 1
     exp = git_repo / "outputs" / "experiments" / "0001-reg"
@@ -352,10 +402,10 @@ def test_a_resume_of_a_newer_schema_version_is_refused(git_repo, tmp_path, capsy
     argv = ["--experiment", str(spec), "--out", str(out)]
     assert main.main(argv, repo_root=git_repo) == 0
     record = json.loads((out / "experiment.json").read_text())
-    (out / "experiment.json").write_text(json.dumps({**record, "schema_version": 2}))
+    (out / "experiment.json").write_text(json.dumps({**record, "schema_version": 3}))
 
     assert main.main(argv, repo_root=git_repo) == 2
-    assert "schema_version 2" in capsys.readouterr().err
+    assert "schema_version 3" in capsys.readouterr().err
 
 
 def test_a_directory_that_is_not_this_experiments_is_refused(git_repo, tmp_path):
@@ -384,7 +434,7 @@ def test_each_run_is_post_processed_when_it_ends(git_repo, tmp_path):
     def postprocess_run(run_dir: Path) -> None:
         seen.append((run_dir.name, (run_dir / "run_summary.json").exists()))
 
-    spec = write_spec(git_repo, sweep=FAILING_FIRST)
+    spec = write_spec(git_repo, sweep=[FAILING_FIRST])
     out = tmp_path / "experiment"
     code = launch(spec, out=out, repo_root=git_repo, postprocess_run=postprocess_run)
 

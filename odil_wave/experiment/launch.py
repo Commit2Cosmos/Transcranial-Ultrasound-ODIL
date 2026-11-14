@@ -1,7 +1,7 @@
 """Launch an experiment: run every run of an experiment spec into one directory.
 
 ``main.py --experiment <spec>`` calls :func:`launch`. The runs execute in
-``values`` order, each into ``runs/<idx>_<label>/`` of the experiment directory
+the spec's order, each into ``runs/<idx>_<label>/`` of the experiment directory
 ``outputs/experiments/NNNN-slug[_cuda|_mps]/``, which also holds a verbatim
 ``spec.yaml``, ``experiment.json`` (provenance and per-run status) and
 ``summary.csv`` (one row per run). The run-layer README's "Experiments" section
@@ -28,7 +28,7 @@ from .rundir import (
     clean_git_state,
     SchemaVersionError,
     experiment_path,
-    load_versioned_json,
+    load_experiment_record,
     run_git,
     write_json,
 )
@@ -91,7 +91,7 @@ def run_experiment(
 ) -> str:
     """Run every run of ``spec`` into ``exp_dir``; return the experiment status.
 
-    Runs execute in ``values`` order; a failed run doesn't stop the others. On
+    Runs execute in the spec's order; a failed run doesn't stop the others. On
     an existing experiment directory this resumes: ``completed`` runs are
     skipped, any other is deleted and run again from scratch. The status is
     ``completed`` when every run completed, ``interrupted`` when a run was
@@ -157,7 +157,7 @@ def postprocess_experiment(
     again with ``postprocess_run``, then the experiment itself, reading only
     what the experiment directory holds."""
     exp_dir = Path(exp_dir)
-    record = load_versioned_json(exp_dir / "experiment.json")
+    record = load_experiment_record(exp_dir / "experiment.json")
     if postprocess_run is not None:
         for entry in record["runs"]:
             run_dir = exp_dir / entry["dir"]
@@ -205,11 +205,12 @@ def _run_one(
 
 
 def write_summary(exp_dir: Path) -> None:
-    """Write ``summary.csv``: one row per run with its swept value, whether it
-    is the baseline, its status and its final-iterate tape columns (empty
-    unless the run completed)."""
-    record = load_versioned_json(exp_dir / "experiment.json")
-    header = ["index", "label", "value", "is_baseline", "status"] + TAPE_COLUMNS
+    """Write ``summary.csv``: one row per run with its value at each swept key,
+    whether it is the baseline, its status and its final-iterate tape columns
+    (empty unless the run completed)."""
+    record = load_experiment_record(exp_dir / "experiment.json")
+    keys = record["sweep_keys"]
+    header = ["index", "label", *keys, "is_baseline", "status"] + TAPE_COLUMNS
     rows = []
     for entry in record["runs"]:
         final = _final_metrics(exp_dir / entry["dir"]) or {}
@@ -218,7 +219,7 @@ def write_summary(exp_dir: Path) -> None:
         row = {
             "index": entry["index"],
             "label": entry["label"],
-            "value": _value_text(entry["value"]),
+            **{key: _value_text(entry["values"][key]) for key in keys},
             "is_baseline": "true" if entry["is_baseline"] else "false",
             "status": entry["status"],
         }
@@ -279,7 +280,7 @@ def _resumable_record(
             f"{exp_dir} already exists and is not an experiment directory"
         )
     try:
-        record = load_versioned_json(path)
+        record = load_experiment_record(path)
     except SchemaVersionError as exc:
         raise RunStartError(str(exc)) from None
     if record.get("commit") != state.sha:
@@ -311,7 +312,7 @@ def _new_record(spec: ExperimentSpec, state: GitState, spec_rel: str) -> dict:
         "spec_sha256": spec.sha256,
         "commit": state.sha,
         "device": _device(spec),
-        "sweep_key": spec.key,
+        "sweep_keys": spec.keys,
         "status": "running",
         "started_utc": _utc_now(),
         "finished_utc": None,
@@ -320,7 +321,7 @@ def _new_record(spec: ExperimentSpec, state: GitState, spec_rel: str) -> dict:
                 "index": run.index,
                 "label": run.label,
                 "dir": f"runs/{run.name}",
-                "value": run.value,
+                "values": run.values,
                 "is_baseline": run.is_baseline,
                 "status": "pending",
             }
@@ -342,8 +343,9 @@ def _utc_now() -> str:
 
 def _print_plan(spec: ExperimentSpec, exp_dir: Path) -> None:
     """Print the experiment's id, sweep and runs."""
-    print(f"experiment      : {spec.id}  (sweep {spec.key})")
+    print(f"experiment      : {spec.id}  (sweep {' x '.join(spec.keys)})")
     print(f"directory       : {exp_dir}")
     for run in spec.runs:
         mark = "  (baseline)" if run.is_baseline else ""
-        print(f"  {run.name}: {_value_text(run.value)}{mark}")
+        values = ", ".join(_value_text(v) for v in run.values.values())
+        print(f"  {run.name}: {values}{mark}")

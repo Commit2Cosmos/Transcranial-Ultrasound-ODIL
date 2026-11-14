@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 from matplotlib.figure import Figure
 
-from .rundir import load_versioned_json
+from .rundir import load_experiment_record
 from .postprocess import (
     DIFF_CMAP,
     ColourScales,
@@ -43,7 +43,7 @@ class ComparedRun:
     names it, with its saved run directory."""
 
     label: str
-    value: Any
+    values: Dict[str, Any]  # swept key -> its value in this run
     is_baseline: bool
     run: SavedRun
 
@@ -61,7 +61,7 @@ class ComparedRun:
 @dataclass
 class SavedExperiment:
     """A read-only view of an experiment directory: its record and its
-    completed runs in ``values`` order."""
+    completed runs in the spec's order."""
 
     path: Path
     record: Dict[str, Any]
@@ -77,11 +77,11 @@ class SavedExperiment:
             Its ``experiment.json`` is of a format this code can't read.
         """
         path = Path(exp_dir)
-        record = load_versioned_json(path / "experiment.json")
+        record = load_experiment_record(path / "experiment.json")
         runs = [
             ComparedRun(
                 label=entry["label"],
-                value=entry["value"],
+                values=entry["values"],
                 is_baseline=bool(entry["is_baseline"]),
                 run=SavedRun.load(path / entry["dir"]),
             )
@@ -91,8 +91,8 @@ class SavedExperiment:
         return cls(path=path, record=record, runs=runs)
 
     @property
-    def sweep_key(self) -> str:
-        return self.record["sweep_key"]
+    def sweep_keys(self) -> List[str]:
+        return self.record["sweep_keys"]
 
     @property
     def start_row(self) -> Dict[str, Any]:
@@ -143,9 +143,10 @@ def final_metrics(
 ) -> Optional[Plot]:
     """Final :data:`FINAL_METRICS` against the swept value, the reference
     start row a dashed line; a dot plot over the run labels when the value is
-    categorical."""
-    values = [r.value for r in exp.runs]
-    numeric = _numeric(values)
+    categorical or more than one key is swept."""
+    keys = exp.sweep_keys
+    values = [r.values[keys[0]] for r in exp.runs]
+    numeric = len(keys) == 1 and _numeric(values)
     if numeric:
         order = sorted(range(len(values)), key=lambda k: values[k])
         xs = [float(values[k]) for k in order]
@@ -170,11 +171,11 @@ def final_metrics(
             ax.set_xticks(xs, [exp.runs[k].label for k in order], rotation=30)
             ax.set_xlim(-0.5, len(xs) - 0.5)
         ax.set_title(column)
-        ax.set_xlabel(exp.sweep_key)
+        ax.set_xlabel(" x ".join(keys))
         ax.grid(alpha=0.3)
         ax.legend(fontsize="small")
     axes[-1].remove()
-    fig.suptitle(f"Final metrics against {exp.sweep_key}")
+    fig.suptitle(f"Final metrics against {' x '.join(keys)}")
     return Plot("final_metrics", fig)
 
 

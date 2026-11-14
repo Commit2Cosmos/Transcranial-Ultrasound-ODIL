@@ -86,7 +86,7 @@ than one:
 
 | file | content |
 |---|---|
-| `final_metrics.png` | final `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual`, `wall_s` against the swept value; the baseline's band-0 start row dashed. Numbers spanning a decade get a log (or, with 0 or negatives, symlog) axis; any other value is a dot plot over the run labels |
+| `final_metrics.png` | final `rmse_brain`, `rmse_skull`, `ssim_brain`, `rel_data_residual`, `wall_s` against the swept value; the baseline's band-0 start row dashed. Numbers spanning a decade get a log (or, with 0 or negatives, symlog) axis; any other value, or a sweep of several keys, is a dot plot over the run labels |
 | `convergence_overlay.png` | `rmse_brain`, `rmse_skull`, `rel_data_residual` (log) against `n_evaluations`, one line per run |
 | `difference_maps.png` | `c − c*` at each run's final iterate, one panel per run, on the shared difference scale |
 | `profile_overlay.png`, `.csv` | truth and each run's final `c` along the horizontal line through the head region's centroid; CSV cols `label,x_m,y_m,c_star,c` |
@@ -202,7 +202,7 @@ python main.py --scratch -c configs/foo.yaml                                   #
 reserved then; see `docs/experiments/README.md`).
 
 ```yaml
-schema_version: 1
+schema_version: 2
 id: 0007-tv-weight
 issue: 61                      # the protocol issue
 baseline:                      # an inline run config: only values that differ from the default config
@@ -210,22 +210,29 @@ baseline:                      # an inline run config: only values that differ f
     bands:
       - {frequencies_hz: [40e3], n_iter: 30}
       - {frequencies_hz: [50e3, 60e3], n_iter: 20}
-sweep:
-  key: loss.weights.reg        # one dotted key
-  values: [0.0, 1.0e-7, 1.0e-6]
-  # labels: [...]              # one per value; required if any value is a list or dict
+sweep:                         # one or more axes; every combination is a run
+  - key: loss.weights.reg      # one dotted key
+    values: [0.0, 1.0e-7, 1.0e-6]
+    # labels: [...]            # one per value; required if any value is a list or dict
+  - key: loss.regulariser.eps
+    values: [1.0e-4, 1.0e-3]
 ```
 
-- **One sweep, one key.** A value is applied at `key` like a run config:
-  **dicts deep-merge, lists replace.** A feature touching several keys is swept
-  at their common parent, e.g. `key: loss`,
+- **Factorial sweep.** The runs are the cross product of the axes, the last
+  axis varying fastest (above: 3 × 2 = 6 runs). Each value is applied at its
+  `key` like a run config: **dicts deep-merge, lists replace.** No key may
+  repeat or be nested in another. A feature touching several keys can also be
+  swept as one axis at their common parent, e.g. `key: loss`,
   `values: [{weights: {reg: 0}}, {weights: {reg: 0.4}, regulariser: {name: tv_iso}}]`;
   a band ablation is `key: continuation.bands` with whole schedules as values.
 - **Labels** name the runs (directory, `summary.csv`, plot legends). A scalar
   value gets `<last key segment, kebab-case>-<value>` (e.g. `reg-0.4`);
-  `labels` are required when any value is a list or dict.
-- **The baseline is one of the runs**: exactly one value must resolve to the
+  `labels` are required when any value is a list or dict. A run's label joins
+  its axes' labels with `_` (e.g. `reg-0_eps-0.001`).
+- **The baseline is one of the runs**: exactly one run must resolve to the
   baseline's resolved config; it is marked `is_baseline` in `summary.csv`.
+- **Version 1** specs, whose `sweep` is a single axis mapping
+  (`sweep: {key, values, labels}`), still load.
 - No budget field: per-band `n_iter` comes from the baseline, unless `n_iter`
   or the bands are what is swept.
 - Launch fails if `id` doesn't match the filename or its number is already used
@@ -245,7 +252,7 @@ sweep:
   device; `--reproduce` passes it to regenerate on another device.
 - The spec must be committed in the repository (`--dry-run` doesn't need it,
   so a spec can be checked while it is written).
-- Runs execute sequentially in `values` order; a failed run doesn't stop the
+- Runs execute sequentially in the spec's order; a failed run doesn't stop the
   others. Each run is post-processed when it ends; experiment post-processing
   (`summary.csv`, then the experiment figures) runs at the end. Ctrl-C stops
   the experiment: the current run is `interrupted` and the rest stay
@@ -275,23 +282,24 @@ outputs/experiments/NNNN-slug[_<device>]/   # suffix only for cuda / mps; none f
   spec.yaml              # verbatim copy of the committed spec
   experiment.json        # schema_version, commit, spec hash, device, times, per-run status
   runs/
-    00_reg-0/            # <idx>_<label>: a run dir as below
-    01_reg-1e-7/
+    00_reg-0_eps-0.0001/ # <idx>_<label>: a run dir as below
+    01_reg-0_eps-0.001/
   figures/               # experiment post-processing
-  summary.csv            # one row per run: swept value, final-iterate columns
+  summary.csv            # one row per run: swept values, final-iterate columns
 outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/   # standalone run
 outputs/probes/<YYMMDD-HHMMSS>/                  # --probe
 ```
 
 `idx` is two digits, 0-based. `experiment.json` holds no absolute paths or
 host names: `schema_version`, `id`, `issue`, `spec` (repo-relative path),
-`spec_sha256`, `commit`, `device` (resolved: cpu / cuda / mps), `sweep_key`,
+`spec_sha256`, `commit`, `device` (resolved: cpu / cuda / mps), `sweep_keys`,
 `status` (`running | completed | failed | interrupted`), `started_utc`,
-`finished_utc`, and `runs` (each `index`, `label`, `dir`, `value`,
-`is_baseline`, `status`: `pending | running | completed | failed |
-interrupted`). `summary.csv` columns: `index`, `label`, `value` (JSON for a
-list or dict), `is_baseline` (`true`/`false`), `status`, then every tape column
-at the run's final iterate, empty unless the run completed. With
+`finished_utc`, and `runs` (each `index`, `label`, `dir`, `values` (swept key
+→ value), `is_baseline`, `status`: `pending | running | completed | failed |
+interrupted`). Version 1 records (one `sweep_key`, a per-run `value`) are
+still read. `summary.csv` columns: `index`, `label`, one per swept key holding
+the run's value (JSON for a list or dict), `is_baseline` (`true`/`false`),
+`status`, then every tape column at the run's final iterate, empty unless the run completed. With
 `--out <dir>`, `<dir>` is the experiment directory. With the record, the experiment skill commits `experiment.json` and
 `summary.csv` to `docs/experiments/NNNN-slug/`; the entry point only writes
 under `outputs/`.

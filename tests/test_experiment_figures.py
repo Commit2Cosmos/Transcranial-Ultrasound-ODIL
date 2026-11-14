@@ -78,15 +78,15 @@ def make_experiment(tmp_path: Path, source: Path, runs: list) -> Path:
                 "index": index,
                 "label": label,
                 "dir": f"runs/{name}",
-                "value": value,
+                "values": {"loss.weights.reg": value},
                 "is_baseline": index == 0,
                 "status": status,
             }
         )
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": "0001-reg",
-        "sweep_key": "loss.weights.reg",
+        "sweep_keys": ["loss.weights.reg"],
         "status": "completed",
         "runs": entries,
     }
@@ -125,12 +125,28 @@ def test_an_experiment_of_a_newer_schema_version_is_not_postprocessed(
     numeric_experiment, capsys
 ):
     path = numeric_experiment / "experiment.json"
-    path.write_text(json.dumps({**json.loads(path.read_text()), "schema_version": 2}))
+    path.write_text(json.dumps({**json.loads(path.read_text()), "schema_version": 3}))
 
     assert main.main(["--postprocess", str(numeric_experiment)]) == 2
 
-    assert "schema_version 2" in capsys.readouterr().err
+    assert "schema_version 3" in capsys.readouterr().err
     assert outputs(numeric_experiment) == set()
+
+
+def test_a_version_1_experiment_is_postprocessed(numeric_experiment):
+    """Version 1 records one ``sweep_key`` and a ``value`` per run."""
+    path = numeric_experiment / "experiment.json"
+    record = json.loads(path.read_text())
+    record.update(schema_version=1, sweep_key=record.pop("sweep_keys")[0])
+    for entry in record["runs"]:
+        entry["value"] = entry.pop("values")["loss.weights.reg"]
+    path.write_text(json.dumps(record))
+
+    assert main.main(["--postprocess", str(numeric_experiment)]) == 0
+
+    assert outputs(numeric_experiment) == EXPERIMENT_OUTPUTS
+    with open(numeric_experiment / "summary.csv", newline="") as f:
+        assert next(csv.reader(f))[:3] == ["index", "label", "loss.weights.reg"]
 
 
 def test_an_experiment_with_one_completed_run_draws_no_figures(

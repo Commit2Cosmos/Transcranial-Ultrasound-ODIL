@@ -98,11 +98,11 @@ def test_a_run_of_a_newer_schema_version_is_not_postprocessed(
     """Readers take every ``schema_version`` from 1 to this code's, no later."""
     run_dir = copy_run(tiny_two_band_run.run_dir, tmp_path)
     meta = json.loads((run_dir / "metadata.json").read_text())
-    (run_dir / "metadata.json").write_text(json.dumps({**meta, "schema_version": 2}))
+    (run_dir / "metadata.json").write_text(json.dumps({**meta, "schema_version": 3}))
 
     assert main.main(["--postprocess", str(run_dir)]) == 2
 
-    assert "schema_version 2" in capsys.readouterr().err
+    assert "schema_version 3" in capsys.readouterr().err
     assert not (run_dir / "figures").exists()
 
 
