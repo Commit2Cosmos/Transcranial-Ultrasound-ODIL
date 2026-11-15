@@ -68,6 +68,21 @@ class WaveEquation:
             raise ValueError(f"Invalid space order: {self.space_order}")
         self._sponge = Sponge(self.wavefield, self.damping_scale)
 
+    def sources(self, geometry) -> torch.Tensor:
+        """Every shot's source term, scaled by ``t0**2`` as :meth:`residual`
+        takes it: complex ``(n_shots, n_frequencies, nx, ny)``."""
+        grid = self.wavefield.grid
+        cdtype = self.wavefield.cdtype
+        return (
+            torch.stack(
+                [
+                    geometry.source_field(i).to(dtype=cdtype, device=grid.device)
+                    for i in range(geometry.n_shots)
+                ]
+            )
+            * grid.t0**2
+        )
+
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:

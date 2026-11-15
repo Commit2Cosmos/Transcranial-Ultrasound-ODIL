@@ -1,7 +1,7 @@
 """Spatial-smoothness / TV regularisers on the velocity field c(x, y).
 
 Each regulariser returns the *unweighted* penalty value; the scalar weight
-comes from ``loss.weights.reg`` (``LossConfig.weights["reg"]``) and is
+comes from ``loss.weights.reg`` and is
 applied by the optimiser objective.
 
 The value is dimensionless and resolution-independent: with the grid's

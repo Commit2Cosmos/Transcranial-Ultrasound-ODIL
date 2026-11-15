@@ -213,8 +213,8 @@ class MetricTape:
         ----------
         band_index : int
             The band's continuation stage.
-        band : BandContext
-            The band's frequencies, geometry and observed wavefields ``u*``.
+        band : Band
+            The band, built with its true wavefields.
         """
         return BandTape(self, band_index, band)
 
@@ -240,9 +240,7 @@ class BandTape:
         self._eval_offset = 0 if prev is None else int(prev["n_evaluations"])
         problem = tape.problem
         self._interior = problem.grid.interior_slice
-        obs_sl = problem.observation_grid.interior_slice
-        u_star = torch.stack([wf.amplitude for wf in band.observed_wfs])
-        self._u_star = u_star[:, :, obs_sl[0], obs_sl[1]].detach()
+        self._u_star = band.true_wavefield_interior()
         self._u_star_norm = float(torch.linalg.vector_norm(self._u_star))
         self._c_prev: Optional[np.ndarray] = None
         self.start_row: Optional[Dict[str, Any]] = None

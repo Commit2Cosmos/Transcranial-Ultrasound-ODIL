@@ -99,7 +99,7 @@ def test_band_arrays_hold_the_data_wavefields_and_model(tiny_two_band_run):
     nx, ny = problem.grid.shape
     sl = problem.grid.interior_slice
     for band_cfg, band_dir in zip(bands, dirs):
-        band = problem.make_band(band_cfg.frequencies_hz)
+        band = problem.make_band(band_cfg.frequencies_hz, problem.init_velocity)
         saved = load_npz(band_dir / "arrays.npz")
         assert set(saved) == {
             "freqs",
@@ -115,11 +115,13 @@ def test_band_arrays_hold_the_data_wavefields_and_model(tiny_two_band_run):
         assert saved["pde_scale"].shape == (8, 1)
         assert (saved["pde_scale"] > 0).all()
         # The frequencies solved at: the FFT bins nearest the requested ones.
-        np.testing.assert_allclose(saved["freqs"], band.freq.frequencies, rtol=1e-6)
+        np.testing.assert_allclose(
+            saved["freqs"], band.frequency_selection.frequencies, rtol=1e-6
+        )
         assert saved["c"].shape == (20, 20)
 
-        u_star = torch.stack([wf.amplitude for wf in band.observed_wfs])
-        d_obs = band.geom.extract_observations(u_star).numpy()
+        u_star = torch.stack([wf.amplitude for wf in band.true_wavefields])
+        d_obs = band.geometry.extract_observations(u_star).numpy()
         assert saved["d_obs"].shape == (8, 1, 7)
         np.testing.assert_allclose(saved["d_obs"], d_obs, rtol=1e-5, atol=1e-12)
         for key in ("d_syn_start", "d_syn_final"):
@@ -140,7 +142,7 @@ def test_band_arrays_hold_the_data_wavefields_and_model(tiny_two_band_run):
         )
         # u is the full-grid final wavefield: sampled at each saved shot's
         # receivers it gives that shot's final synthetic data.
-        ij = band.geom.receiver_ij.numpy()
+        ij = band.geometry.receiver_ij.numpy()
         for i, s in enumerate(expected):
             recv = saved["u"][i][:, ij[s, :, 0], ij[s, :, 1]]
             np.testing.assert_allclose(recv, saved["d_syn_final"][s], rtol=1e-6)

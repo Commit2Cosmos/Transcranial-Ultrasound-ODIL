@@ -123,7 +123,7 @@ pde_residual_map(run_dir, shot=0)
 Other helpers read the same artifacts: `load_tape(rd)` (the tape as dicts),
 `load_loss_tape(rd).show()` (a rebuilt `LossTape`), `load_final_velocity(rd)`.
 `Wavefield.show(idx)` draws a 2x2 of `|u|`, `Re(u)`, `Im(u)` and phase;
-`SourceSignal.plot_spectrum(frequencies=band.freq)` marks the inversion bins on
+`SourceSignal.plot_spectrum(frequencies=band.frequency_selection)` marks the inversion bins on
 the source spectrum; `odil_wave.metrics.ssim_map(...)` shows the per-pixel SSIM.
 
 ## Watch a run live and stop it early

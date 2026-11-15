@@ -2,9 +2,8 @@
 
 ``build_problem(cfg)`` builds the grid, source, acquisition layout, truth /
 initial velocity models and the (frequency-independent) broadband truth field,
-so every solver operates on an identical problem. Per-band pieces
-(``FrequencySelection``, geometry, observed wavefields, Helmholtz warm start)
-are produced on demand by :meth:`Problem.make_band` / :meth:`Problem.warm_start`.
+so every solver operates on an identical problem. :meth:`Problem.make_band`
+builds each band (:class:`~odil_wave.band.Band`) from its initial model.
 Observed data are always a Helmholtz solve on the truth model.
 
 By default (``pml.observation_width`` null) observations are generated on the
@@ -24,6 +23,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 
+from odil_wave.band import Band
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.grid import FrequencySelection, Grid
 from odil_wave.models import VelocityModel
@@ -33,24 +33,6 @@ from odil_wave.source import SourceSignal
 
 from . import envinfo
 from .config import ModelCfg, RunConfig
-
-
-@dataclass
-class BandContext:
-    """Per-band frequency selection, geometry and observed data.
-
-    ``observed_wfs`` are full complex fields on the grid used to synthesise
-    data (inverse grid, or the thicker forward grid when PML is split) —
-    useful for visualisation. When ``observed_traces`` is set, the inverse
-    loss uses those receiver samples instead of resampling the wavefields
-    (required for the PML_FWD / PML_INV split).
-    """
-
-    frequencies_hz: List[float]
-    freq: FrequencySelection
-    geom: AcquisitionGeometry
-    observed_wfs: List[Wavefield]
-    observed_traces: Optional[torch.Tensor] = None  # (n_shots, nf, n_tr - 1)
 
 
 @dataclass
@@ -99,47 +81,38 @@ class Problem:
 
     # -- per-band construction -------------------------------------------- #
     def make_band(
-        self,
-        frequencies_hz: Sequence[float],
-    ) -> BandContext:
-        """Build the per-band frequency selection, geometry and observed data.
+        self, frequencies_hz: Sequence[float], initial_model: VelocityModel
+    ) -> Band:
+        """The band inverting ``frequencies_hz`` jointly from ``initial_model``.
 
-        Parameters
-        ----------
-        frequencies_hz : sequence of float
-            Frequencies inverted jointly in this continuation stage.
-
-        Returns
-        -------
-        BandContext
-            Band context; when the PML is split, observed data are reduced to
-            receiver traces on the forward grid.
+        Observed data are reduced to traces on the observation grid. The
+        warm start keeps its factors only when the wavefield preconditioner
+        reuses them.
         """
         freqs = list(frequencies_hz)
         freq = FrequencySelection.from_frequencies(self.grid, freqs)
         geom = self.acquisition_geometry(self.grid, self.source, freq)
-
         if self.pml_split:
-            obs_grid = self.observation_grid
-            obs_source = self.observation_source
             # Same physical frequencies; bins must match (shared nt/dt).
-            obs_freq = FrequencySelection.from_frequencies(obs_grid, freqs)
-            obs_geom = self.acquisition_geometry(obs_grid, obs_source, obs_freq)
-            observed_wfs = self._observed(obs_freq, obs_geom)
-            traces = obs_geom.extract_observations(
-                torch.stack([wf.amplitude for wf in observed_wfs])
+            obs_freq = FrequencySelection.from_frequencies(self.observation_grid, freqs)
+            obs_geom = self.acquisition_geometry(
+                self.observation_grid, self.observation_source, obs_freq
             )
-            return BandContext(
-                frequencies_hz=freqs,
-                freq=freq,
-                geom=geom,
-                observed_wfs=observed_wfs,
-                observed_traces=traces,
-            )
-
-        observed = self._observed(freq, geom)
-        return BandContext(
-            frequencies_hz=freqs, freq=freq, geom=geom, observed_wfs=observed
+        else:
+            obs_freq, obs_geom = freq, geom
+        true_wavefields = self._observed(obs_freq, obs_geom)
+        traces = obs_geom.extract_observations(
+            torch.stack([wf.amplitude for wf in true_wavefields])
+        )
+        return Band(
+            geom,
+            initial_model,
+            traces,
+            space_order=self.space_order,
+            damping_scale=self.damping_scale,
+            keep_factors=self.cfg.optimiser.wavefield_preconditioner != "none",
+            true_wavefields=true_wavefields,
+            verbose=self.cfg.runtime.verbose,
         )
 
     def acquisition_geometry(
@@ -171,28 +144,6 @@ class Problem:
             wf, geom, space_order=self.space_order, damping_scale=self.damping_scale
         )
         return solver.solve(verbose=self.cfg.runtime.verbose)
-
-    # -- warm start -------------------------------------------------------- #
-    def warm_start(
-        self,
-        velocity_model: VelocityModel,
-        band: BandContext,
-        return_factors: bool = False,
-    ):
-        """Helmholtz warm-start wavefields for ``u`` (one per shot) on the
-        current model; with ``return_factors``, ``(wavefields, factors)``, the
-        per-frequency ``splu`` factors of ``A(c)`` (see
-        :meth:`HelmholtzSolver.solve`)."""
-        wf = Wavefield(self.grid, band.freq, velocity_model=velocity_model)
-        solver = HelmholtzSolver(
-            wf,
-            band.geom,
-            space_order=self.space_order,
-            damping_scale=self.damping_scale,
-        )
-        return solver.solve(
-            verbose=self.cfg.runtime.verbose, return_factors=return_factors
-        )
 
 
 def _build_velocity(

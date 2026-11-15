@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from odil_wave import InverseLoss, LossConfig, WaveEquation, Wavefield
 import torch
 from odil_wave.experiment import (
     ConfigError,
@@ -345,47 +344,44 @@ def test_build_problem_assembles_pieces(tiny_run_config):
     assert problem.head_mask.shape == (20, 20) and problem.head_mask.any()
 
 
-def test_make_band_produces_observed_data(tiny_run_config):
-    """make_band builds the frequency selection, geometry and observed wavefields."""
-    problem = build_problem(resolve_config(tiny_run_config))
-    band = problem.make_band([40e3])
-    assert band.freq.n_frequencies == 1
-    assert len(band.observed_wfs) == problem.cfg.acquisition.n_transducers
-    # not PML-split, so full wavefields (no reduced traces).
-    assert band.observed_traces is None
-
-
-def test_pml_split_traces_skip_the_transmitting_transducer(tiny_run_config):
-    """Reduced observations hold N - 1 traces per shot, one per other transducer."""
-    split = deep_merge(tiny_run_config, {"pml": {"observation_width": 12}})
+@pytest.mark.parametrize("observation_width", [None, 12])
+def test_make_band_observes_traces_on_either_grid(tiny_run_config, observation_width):
+    """With or without the PML split, the band holds N - 1 observed traces per
+    shot, one true wavefield per shot on the observation grid, and a warm start
+    per shot on the inversion grid."""
+    split = deep_merge(
+        tiny_run_config, {"pml": {"observation_width": observation_width}}
+    )
     problem = build_problem(resolve_config(split))
-    band = problem.make_band([40e3])
+    band = problem.make_band([40e3], problem.init_velocity)
     n = problem.cfg.acquisition.n_transducers
+    assert band.frequency_selection.n_frequencies == 1
     assert band.observed_traces.shape == (n, 1, n - 1)
+    assert len(band.true_wavefields) == n
+    assert band.true_wavefields[0].grid is problem.observation_grid
+    assert band.u_init.shape == (n, 1, *problem.grid.shape)
+
+
+@pytest.mark.parametrize("mode, kept", [("none", False), ("initial_model", True)])
+def test_make_band_keeps_factors_for_the_wavefield_preconditioner(
+    tiny_run_config, mode, kept
+):
+    cfg = deep_merge(tiny_run_config, {"optimiser": {"wavefield_preconditioner": mode}})
+    problem = build_problem(resolve_config(cfg))
+    band = problem.make_band([40e3], problem.init_velocity)
+    assert (band.factors is not None) == kept
 
 
 def test_observed_data_satisfy_inverse_operator_on_truth(tiny_run_config):
     """Observations are a Helmholtz solve on the truth model (inverse crime): the
-    inversion's own PDE residual vanishes at (observed u, truth c)."""
+    inversion's own PDE residual vanishes at (true wavefield, truth c)."""
     problem = build_problem(resolve_config(tiny_run_config))
-    band = problem.make_band([40e3])
-    wf = Wavefield(problem.grid, band.freq, velocity_model=problem.truth_velocity)
-    loss = InverseLoss(
-        observed_wavefield=band.observed_wfs,
-        config=LossConfig(
-            WaveEquation(
-                wf,
-                space_order=problem.space_order,
-                damping_scale=problem.damping_scale,
-            ),
-            band.geom,
-            regulariser=None,
-        ),
-    )
-    amp = torch.stack([w.amplitude for w in band.observed_wfs])
-    r_pde = loss.config.wave_eq.residual(amp, problem.truth_velocity.c, loss.sources)
-    assert float(r_pde.abs().square().mean().sqrt()) < 1e-8 * loss.src_rms
-    r_data = band.geom.extract_observations(amp) - loss.obs_traces()
+    band = problem.make_band([40e3], problem.truth_velocity)
+    amp = _amplitudes(band.true_wavefields)
+    r_pde = band.wave_eq.residual(amp, problem.truth_velocity.c, band.sources)
+    rms = lambda x: float(x.abs().square().mean().sqrt())  # noqa: E731
+    assert rms(r_pde) < 1e-8 * rms(band.sources)
+    r_data = band.geometry.extract_observations(amp) - band.observed_traces
     assert torch.equal(r_data, torch.zeros_like(r_data))
 
 
@@ -397,12 +393,12 @@ def _amplitudes(wavefields) -> torch.Tensor:
 def test_observed_data_are_reciprocal(tiny_run_config):
     """d[s -> r] ~= d[r -> s]: guards the per-shot receiver bookkeeping."""
     problem = build_problem(resolve_config(tiny_run_config))
-    band = problem.make_band([40e3])
-    traces = band.geom.extract_observations(_amplitudes(band.observed_wfs))
-    n = band.geom.n_transducers
+    band = problem.make_band([40e3], problem.init_velocity)
+    traces = band.observed_traces
+    n = band.geometry.n_transducers
     d = torch.full((n, n), float("nan"), dtype=traces.dtype)
     for s in range(n):
-        d[s, band.geom.receivers[s]] = traces[s, 0]
+        d[s, band.geometry.receivers[s]] = traces[s, 0]
     off = ~torch.eye(n, dtype=torch.bool)
     rel = (d - d.T)[off].abs().max() / d[off].abs().max()
     # Measured 1.1e-15 on this point-source problem; an index slip is O(1).
@@ -410,16 +406,12 @@ def test_observed_data_are_reciprocal(tiny_run_config):
 
 
 def _data_misfit_at_truth(run_config) -> float:
-    """Relative receiver misfit between the observations and a Helmholtz solve
-    on the true model on the inversion grid."""
+    """Relative receiver misfit between the observations and the warm start of
+    a band started from the true model on the inversion grid."""
     problem = build_problem(resolve_config(run_config))
-    band = problem.make_band([40e3])
+    band = problem.make_band([40e3], problem.truth_velocity)
     observed = band.observed_traces
-    if observed is None:
-        observed = band.geom.extract_observations(_amplitudes(band.observed_wfs))
-    predicted = band.geom.extract_observations(
-        _amplitudes(problem.warm_start(problem.truth_velocity, band))
-    )
+    predicted = band.geometry.extract_observations(band.u_init)
     return float((predicted - observed).abs().norm() / observed.abs().norm())
 
 
@@ -432,14 +424,6 @@ def test_different_observation_width_is_a_modelling_error(tiny_run_config):
     """A different observation PML width means the true model no longer fits."""
     split = deep_merge(tiny_run_config, {"pml": {"observation_width": 12}})
     assert _data_misfit_at_truth(split) > 1e-6
-
-
-def test_warm_start_solves_one_wavefield_per_shot(tiny_run_config):
-    """warm_start always solves Helmholtz wavefields, one per shot."""
-    problem = build_problem(resolve_config(tiny_run_config))
-    band = problem.make_band([40e3])
-    wfs = problem.warm_start(problem.init_velocity, band)
-    assert len(wfs) == problem.cfg.acquisition.n_transducers
 
 
 # --------------------------------------------------------------------------- #

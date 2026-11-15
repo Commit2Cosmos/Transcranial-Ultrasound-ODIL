@@ -52,7 +52,7 @@ Formulation
   hyperparameters (never adapted). The run layer fills all three from
   ``loss.weights.{pde,data,reg}`` (defaults 1 / 1 / 0); the regulariser is
   applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
-  scaled relative residual above, not the raw ``InverseLoss`` mean.
+  scaled relative residual above, not a raw mean of squared residuals.
 
 * One persistent ``torch.optim.LBFGS([v_re, v_im, z_m])`` (strong-Wolfe) — a
   single joint optimiser over the full space, no alternation. It is advanced by
@@ -71,7 +71,7 @@ Formulation
   object is the identity map. ``wavefield_preconditioner="initial_model"``
   (default ``"none"``) optimises ``v`` with ``u_tilde = A(c_init)^-1
   (|lambda_tt| v)`` from the warm start's ``splu`` factors
-  (``initial_model_factors``); see that module for the map and its curvature.
+  (``Band.factors``); see that module for the map and its curvature.
 
 * Optional model-block preconditioner (``model_preconditioner="pde_diagonal"``;
   default ``"none"``). L-BFGS models the Hessian outside its history as one
@@ -105,16 +105,15 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
-from odil_wave.loss import InverseLoss
-from odil_wave.loss.utils import LossTape
+from odil_wave.band import Band
+from odil_wave.loss import LossTape, Regulariser
 from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
 
-from .base import Optimiser
 from .preconditioners import (
     InitialModelWavefieldPreconditioner,
     MODEL_PRECONDITIONERS,
@@ -226,21 +225,17 @@ class Iterate:
 # --------------------------------------------------------------------------- #
 # Solver
 # --------------------------------------------------------------------------- #
-class JointFreqODIL(Optimiser):
+class JointFreqODIL:
     """Pure joint full-space frequency-domain ODIL solver.
 
     Every parameter the run config sets (the ``optimiser`` block, the
     ``loss.weights`` and ``runtime.verbose``) is a required keyword (ADR 0001);
     the numerical-method details (``eps_*``, ``z_scale``, ``logit_clip``) keep
-    library defaults. See the module docstring for the formulation. ``loss``
-    must be an :class:`InverseLoss` (the operator, geometry, sources and
-    observations are read from it, so the PDE / receiver operators are
-    identical to truth-data generation). ``u_init`` (per-shot warm-start
-    wavefields, normally a Helmholtz solve on the current model) is required:
-    it seeds ``u`` and sets ``u_ref``. ``initial_model_factors`` (the
-    per-frequency ``splu`` factors of ``A`` on the wavefield's velocity model,
-    from ``HelmholtzSolver.solve(return_factors=True)``) is required by
-    ``wavefield_preconditioner="initial_model"``.
+    library defaults. See the module docstring for the formulation. The
+    operator, sources, observed data, initial model and warm start all come
+    from ``band``; ``wavefield_preconditioner="initial_model"`` needs a band
+    built with ``keep_factors``. ``callback`` receives the scalar history and
+    result.
 
     ``init_params``, ``objective``, ``residuals`` and ``physical_u`` take the
     optimised wavefield variable ``(v_re, v_im)``, as do the ``u_re`` /
@@ -250,10 +245,8 @@ class JointFreqODIL(Optimiser):
 
     def __init__(
         self,
-        wavefield: Wavefield,
-        loss: InverseLoss,
+        band: Band,
         *,
-        u_init: Sequence[Wavefield] | torch.Tensor,
         n_iter: int,
         inner_max_iter: int,
         history_size: int,
@@ -268,7 +261,8 @@ class JointFreqODIL(Optimiser):
         verbose: bool,
         model_preconditioner: str,
         wavefield_preconditioner: str,
-        initial_model_factors: Optional[Sequence] = None,
+        regulariser: Optional[Regulariser],
+        callback: Optional[LossTape] = None,
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
@@ -278,16 +272,6 @@ class JointFreqODIL(Optimiser):
         eps_grad: float = 1e-30,
         eps_precond: float = 1e-2,
     ) -> None:
-        super().__init__(wavefield, loss)
-        if not isinstance(loss, InverseLoss):
-            raise TypeError("JointFreqODIL requires an InverseLoss")
-        if u_init is None:
-            # A u = 0 seed collapses u_ref to eps_u and leaves an exactly zero
-            # model gradient (the PDE residual is -q, independent of c).
-            raise ValueError(
-                "JointFreqODIL requires a warm-start wavefield u_init "
-                "(e.g. a Helmholtz solve on the current model)"
-            )
         if model_preconditioner not in MODEL_PRECONDITIONERS:
             raise ValueError(
                 f"model_preconditioner must be one of {list(MODEL_PRECONDITIONERS)}, "
@@ -298,29 +282,28 @@ class JointFreqODIL(Optimiser):
                 "wavefield_preconditioner must be one of "
                 f"{list(WAVEFIELD_PRECONDITIONERS)}, got {wavefield_preconditioner!r}"
             )
-        if (
-            wavefield_preconditioner == "initial_model"
-            and initial_model_factors is None
-        ):
+        if wavefield_preconditioner == "initial_model" and band.factors is None:
             raise ValueError(
-                "wavefield_preconditioner 'initial_model' needs "
-                "initial_model_factors (the warm-start HelmholtzSolver's splu "
-                "factors, solve(return_factors=True))"
+                "wavefield_preconditioner 'initial_model' needs a band built "
+                "with keep_factors=True"
             )
 
+        self.band = band
+        self.regulariser = regulariser
+        self.callback = callback if callback is not None else LossTape()
+        wavefield = band.wavefield
         grid = wavefield.grid
         self.grid = grid
         self.dtype = grid.dtype
         self.cdtype = wavefield.cdtype
         self.device = grid.device
-        self.wave_eq = loss.config.wave_eq
-        self.geometry = loss.config.geometry
+        self.wave_eq = band.wave_eq
+        self.geometry = band.geometry
         self.n_shots = self.geometry.n_shots
         self.nf = wavefield.n_frequencies
         self.Nx, self.Ny = grid.shape
         self.c0 = float(grid.c0)
 
-        self.u_init = u_init
         self.n_iter = int(n_iter)
         self.inner_max_iter = int(inner_max_iter)
         self.history_size = int(history_size)
@@ -358,15 +341,15 @@ class JointFreqODIL(Optimiser):
         self.pml_c = float(self.vm_in.pml_c)
 
         # ---- fixed reference model / wavefield / residual scales ---------- #
-        self.sources = loss.sources  # (n_shots, nf, Nx, Ny), t0**2-scaled, no m-dep
+        self.sources = band.sources  # (n_shots, nf, Nx, Ny), t0**2-scaled, no m-dep
         # (n_shots, nf, n_transducers - 1): no shot is recorded at its source.
-        self._obs_traces = loss.obs_traces().detach()
+        self._obs_traces = band.observed_traces.detach()
 
         # Active (non-PML interior) mask over the full grid, for RMS_active.
         self._interior_slice = grid.interior_slice
 
         # u_init warm-start wavefields -> u_ref.
-        u_seed = self._stack_u_init()  # (n_shots, nf, Nx, Ny) complex
+        u_seed = band.u_init.to(dtype=self.cdtype, device=self.device).contiguous()
         self.u_seed = u_seed
         u_int = u_seed[:, :, self._interior_slice[0], self._interior_slice[1]]
         u_ref = rms_abs(u_int, dim=(2, 3)).clamp_min(eps_u)  # (n_shots, nf)
@@ -409,7 +392,7 @@ class JointFreqODIL(Optimiser):
                 c_init,
                 pde_scale_per_u,
                 term_weight,
-                initial_model_factors,
+                band.factors,
             )
         else:
             c_init = self.c_full_of_z(self._initial_latent())
@@ -430,27 +413,6 @@ class JointFreqODIL(Optimiser):
         self.scale_info.update(self.model_precond.info())
 
     # ------------------------------------------------------------------ #
-    def _stack_u_init(self) -> torch.Tensor:
-        """Warm-start wavefields as a detached ``(n_shots, nf, Nx, Ny)`` tensor."""
-        if isinstance(self.u_init, (list, tuple)):
-            stack = torch.stack(
-                [
-                    w.amplitude if isinstance(w, Wavefield) else torch.as_tensor(w)
-                    for w in self.u_init
-                ]
-            )
-        else:
-            stack = torch.as_tensor(self.u_init)
-        stack = stack.detach().to(dtype=self.cdtype, device=self.device)
-        if stack.ndim == 3:
-            stack = stack.unsqueeze(0).expand(self.n_shots, -1, -1, -1)
-        if tuple(stack.shape) != (self.n_shots, self.nf, self.Nx, self.Ny):
-            raise ValueError(
-                f"u_init shape {tuple(stack.shape)} != "
-                f"({self.n_shots}, {self.nf}, {self.Nx}, {self.Ny})"
-            )
-        return stack.contiguous()
-
     def _build_diag_scale_info(self, u_ref, pde_scale, data_scale) -> None:
         self.scale_info = {
             "c_min": self.c_min,
@@ -581,9 +543,9 @@ class JointFreqODIL(Optimiser):
         data_term = mean_real_sq(r_data / self.data_scale)
         L = self.pde_weight * pde_term + self.data_weight * data_term
         reg_term = torch.zeros((), dtype=self.dtype, device=self.device)
-        if self.reg_weight != 0.0 and self.loss.config.regulariser is not None:
+        if self.reg_weight != 0.0 and self.regulariser is not None:
             c_int = self.latent.c_of_z(z_m)
-            reg_term = self.reg_weight * self.loss.config.regulariser(c_int)
+            reg_term = self.reg_weight * self.regulariser(c_int)
             L = L + reg_term
         if L.is_complex():
             L = L.real
@@ -757,7 +719,7 @@ class JointFreqODIL(Optimiser):
                     **mstats,
                 }
             )
-            self.loss.last_residuals = {
+            self.last_residuals = {
                 "pde_rms": self._last["pde_rms_raw"],
                 "data_rms": self._last["data_rms_raw"],
                 "pde_loss": self._last["pde_loss"],
@@ -770,19 +732,19 @@ class JointFreqODIL(Optimiser):
                 # Closures so far in this solve (diagnostics excluded).
                 "n_evaluations": self._n_eval,
             }
-            self.loss.callback.log(
+            self.callback.log(
                 loss_scalar,
-                self.loss.last_residuals,
+                self.last_residuals,
                 pde_rel_residual=self._last["pde_rel_residual"],
             )
-            hist = self.loss.callback.history
+            hist = self.callback.history
             for key in ("grad_u_norm", "grad_z_norm", "grad_ratio"):
                 hist.setdefault(key, []).append(gnorms[key])
             hist.setdefault("sat_frac", []).append(mstats["sat_frac"])
             hist.setdefault("pde_rms_scaled", []).append(self._last["pde_rms_scaled"])
             hist.setdefault("data_rms_scaled", []).append(self._last["data_rms_scaled"])
-            if self.loss.callback.store_c_history:
-                self.loss.callback.log_c(it.c_full.cpu().numpy())
+            if self.callback.store_c_history:
+                self.callback.log_c(it.c_full.cpu().numpy())
             if self.verbose:
                 print(
                     f"[joint] iter {n_done:4d} | Phi={loss_scalar:.6e} | "
@@ -815,7 +777,7 @@ class JointFreqODIL(Optimiser):
         for s in range(self.n_shots):
             wf = Wavefield(
                 grid=self.grid,
-                frequency_selection=self.wavefield.frequency_selection,
+                frequency_selection=self.band.frequency_selection,
                 velocity_model=vm_out,
             )
             wf.amplitude = u_final[s]
@@ -828,7 +790,7 @@ class JointFreqODIL(Optimiser):
             "u_final": u_final,
             "c_full_final": c_full_final,
         }
-        self.loss.callback.result = {
+        self.callback.result = {
             "loss": loss_final,
             "n_outer_iter": self.n_iter,
             "n_closure": self._n_eval,
@@ -838,4 +800,4 @@ class JointFreqODIL(Optimiser):
             "data_weight": self.data_weight,
             "scale_info": self.scale_info,
         }
-        return outputs, self.loss.callback
+        return outputs, self.callback

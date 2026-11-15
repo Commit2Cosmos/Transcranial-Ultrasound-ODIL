@@ -151,6 +151,10 @@ The velocity model the observed data is generated from.
 **True wavefield**:
 The wavefield the true model produces over the whole grid. Under the inverse crime it matches the observed data exactly at the transducers.
 
+**Band**:
+One stage of frequency continuation: the frequencies inverted jointly from one initial model, with their observed data and one warm start.
+_Avoid_: frequency band, when the stage is meant
+
 **Initial model**:
 The velocity model a band starts from: the run's configured initial model for the first band, the previous band's final model after that.
 _Avoid_: starting model, baseline

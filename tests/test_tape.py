@@ -210,22 +210,25 @@ def test_start_row_residuals_match_a_helmholtz_solve(tiny_two_band_run):
     _, rows = read_tape(run_dir)
     bands = tiny_two_band_run.config.continuation.bands
     for b, c_start in enumerate(band_start_models(run_dir, problem)):
-        band = problem.make_band(bands[b].frequencies_hz)
         model = VelocityModel.from_field(
             problem.grid,
             torch.as_tensor(c_start, dtype=problem.dtype),
             pml_c=problem.init_velocity.pml_c,
         )
-        wf = Wavefield(problem.grid, band.freq, velocity_model=model)
+        band = problem.make_band(bands[b].frequencies_hz, model)
+        wf = Wavefield(problem.grid, band.frequency_selection, velocity_model=model)
         op = dict(space_order=problem.space_order, damping_scale=problem.damping_scale)
         u = torch.stack(
-            [s.amplitude for s in HelmholtzSolver(wf, band.geom, **op).solve()]
+            [s.amplitude for s in HelmholtzSolver(wf, band.geometry, **op).solve()]
         )
-        u_star = torch.stack([s.amplitude for s in band.observed_wfs])
-        d_obs = band.geom.extract_observations(u_star)
-        d_syn = band.geom.extract_observations(u)
+        u_star = torch.stack([s.amplitude for s in band.true_wavefields])
+        d_obs = band.geometry.extract_observations(u_star)
+        d_syn = band.geometry.extract_observations(u)
         q = torch.stack(
-            [band.geom.source_field(i).to(wf.cdtype) for i in range(band.geom.n_shots)]
+            [
+                band.geometry.source_field(i).to(wf.cdtype)
+                for i in range(band.geometry.n_shots)
+            ]
         ) * (problem.grid.t0**2)
         r_pde = WaveEquation(wf, **op).residual(u, model.c, q)
         sl = (slice(None), slice(None)) + problem.grid.interior_slice
@@ -240,7 +243,7 @@ def test_start_row_residuals_match_a_helmholtz_solve(tiny_two_band_run):
         )
         # PDE scale |lambda_tt| * u_ref, u_ref the interior RMS of the warm start;
         # the sum over interior + PML is normalised by the interior node count.
-        lam_tt = band.freq.symbols_broadcast()[1].abs().real
+        lam_tt = band.frequency_selection.symbols_broadcast()[1].abs().real
         u_ref = u[sl].abs().square().mean(dim=(2, 3), keepdim=True).sqrt()
         n_int = u[sl][0, 0].numel()
         expected = float(

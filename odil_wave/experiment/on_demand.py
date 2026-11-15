@@ -300,7 +300,7 @@ def pde_residual_map(
     c_full = np.pad(saved.c, grid.pml_width, constant_values=run.problem["pml_c"])
     with torch.no_grad():
         u = torch.as_tensor(saved.arrays["u"][k], dtype=cdtype)
-        q = geom.source_field(shot).to(cdtype) * grid.t0**2
+        q = wave_eq.sources(geom)[shot]
         r = wave_eq.residual(
             u[None], torch.as_tensor(c_full, dtype=grid.dtype), q[None]
         )[0, frequency]

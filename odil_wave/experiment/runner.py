@@ -5,7 +5,6 @@ Public entry points
 --------------------
 ``run_inverse(config, run_directory) -> RunResult``  run every continuation band
 ``run_frequency_band(...) -> BandResult``            one continuation stage
-``build_band_loss(...) -> (Wavefield, InverseLoss)`` one band's objective
 ``build_optimiser(...) -> JointFreqODIL``            one band's optimiser
 ``build_problem(config) -> Problem``                 (re-exported from problem.py)
 """
@@ -17,13 +16,12 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 from odil_wave.grid import Grid
-from odil_wave.loss import InverseLoss, LossConfig, LossTape, Regulariser
-from odil_wave.operator import WaveEquation
-from odil_wave.wavefield import Wavefield
+from odil_wave.band import Band
+from odil_wave.loss import LossTape, Regulariser
 
 from . import envinfo
 from .arrays import BandArrays, save_problem
@@ -106,93 +104,13 @@ def band_label(frequencies_hz: List[float]) -> str:
 # --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
-def build_band_loss(
-    problem: Problem,
-    velocity_model: Any,
-    band_ctx,
-    callback: Optional[LossTape] = None,
-) -> Tuple[Wavefield, InverseLoss]:
-    """Inverse-grid wavefield on ``velocity_model`` and the band's objective.
-
-    Parameters
-    ----------
-    problem : Problem
-        The shared physical problem.
-    velocity_model :
-        The band's starting model.
-    band_ctx :
-        Per-band context (frequencies / geometry / observed data).
-    callback : LossTape, optional
-        Diagnostics tape of the loss.
-
-    Returns
-    -------
-    tuple
-        ``(wf_inv, loss)``.
-    """
-    cfg = problem.cfg
-    wf_inv = Wavefield(problem.grid, band_ctx.freq, velocity_model=velocity_model)
-    wave_eq = WaveEquation(
-        wf_inv,
-        space_order=problem.space_order,
-        damping_scale=problem.damping_scale,
-    )
-    loss_config = LossConfig(
-        wave_eq=wave_eq,
-        geometry=band_ctx.geom,
-        regulariser=_build_regulariser(cfg, problem.grid),
-    )
-    # PML split: observations synthesised on a separate forward grid are
-    # reduced to receiver traces; otherwise use full observed wavefields.
-    if getattr(band_ctx, "observed_traces", None) is not None:
-        loss = InverseLoss(
-            observed_traces=band_ctx.observed_traces,
-            config=loss_config,
-            callback=callback,
-        )
-    else:
-        loss = InverseLoss(
-            observed_wavefield=band_ctx.observed_wfs,
-            config=loss_config,
-            callback=callback,
-        )
-    return wf_inv, loss
-
-
 def build_optimiser(
     problem: Problem,
-    band_ctx,
-    wf_inv: Wavefield,
-    loss: InverseLoss,
+    band: Band,
     n_iter: int,
-    u_init,
-    factors=None,
+    callback: Optional[LossTape] = None,
 ):
-    """Construct the joint optimiser for one band.
-
-    Parameters
-    ----------
-    problem : Problem
-        The shared physical problem.
-    band_ctx :
-        Per-band context (frequencies / geometry / observed data).
-    wf_inv : Wavefield
-        Inverse-grid wavefield the optimiser acts on.
-    loss : InverseLoss
-        Objective for this band.
-    n_iter : int
-        Outer-iteration budget for this band.
-    u_init :
-        Per-shot Helmholtz warm-start wavefields.
-    factors :
-        The warm start's per-frequency ``splu`` factors; required by
-        ``optimiser.wavefield_preconditioner = "initial_model"``.
-
-    Returns
-    -------
-    JointFreqODIL
-        The configured joint optimiser.
-    """
+    """The joint optimiser for ``band``, configured from ``problem.cfg``."""
     cfg = problem.cfg
     opt = cfg.optimiser
 
@@ -204,9 +122,7 @@ def build_optimiser(
     w = cfg.loss.weights
     ls = None if str(opt.line_search_fn).lower() == "none" else opt.line_search_fn
     return JointFreqODIL(
-        wf_inv,
-        loss,
-        u_init=u_init,
+        band,
         n_iter=n_iter,
         inner_max_iter=opt.inner_max_iter,
         history_size=opt.history_size,
@@ -221,7 +137,8 @@ def build_optimiser(
         verbose=cfg.runtime.verbose,
         model_preconditioner=opt.model_preconditioner,
         wavefield_preconditioner=opt.wavefield_preconditioner,
-        initial_model_factors=factors,
+        regulariser=_build_regulariser(cfg, problem.grid),
+        callback=callback,
     )
 
 
@@ -255,31 +172,18 @@ def run_frequency_band(
 
     t0 = time.perf_counter()
     t_start_epoch = time.time()
-    band_ctx = problem.make_band(freqs)
+    band = problem.make_band(freqs, velocity_model)
 
-    t_warm = time.perf_counter()
-    # The factors are kept for the band only when the wavefield
-    # preconditioner reuses them.
-    if cfg.optimiser.wavefield_preconditioner == "none":
-        u_init, factors = problem.warm_start(velocity_model, band_ctx), None
-    else:
-        u_init, factors = problem.warm_start(
-            velocity_model, band_ctx, return_factors=True
-        )
-    warm_s = time.perf_counter() - t_warm
-
-    band_tape = tape.start_band(band_index, band_ctx)
+    band_tape = tape.start_band(band_index, band)
     # The loss callback keeps the solver's scalar history and result; the
     # tape rows come from ``record_row``.
     loss_tape = LossTape(
         name=f"{SOLVER_NAME}_{label}",
         store_c_history=False,
     )
-    wf_inv, loss = build_band_loss(problem, velocity_model, band_ctx, loss_tape)
+    opt = build_optimiser(problem, band, n_iter, loss_tape)
 
-    opt = build_optimiser(problem, band_ctx, wf_inv, loss, n_iter, u_init, factors)
-
-    band_arrays = BandArrays(problem, band_ctx, opt.pde_scale)
+    band_arrays = BandArrays(band, opt.pde_scale)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
 
     def record_row(it):
@@ -324,13 +228,13 @@ def run_frequency_band(
                 "band_index": band_index,
                 "frequencies_hz": freqs,
                 "label": label,
-                "n_frequencies": int(band_ctx.freq.n_frequencies),
-                "fft_bins": band_ctx.freq.fft_bins.detach().cpu().tolist(),
+                "n_frequencies": int(band.frequency_selection.n_frequencies),
+                "fft_bins": band.frequency_selection.fft_bins.detach().cpu().tolist(),
                 "n_iter_requested": n_iter,
-                "n_transducers": int(band_ctx.geom.n_transducers),
+                "n_transducers": int(band.geometry.n_transducers),
                 "t_start_epoch_s": t_start_epoch,
                 "wall_s": wall_s,
-                "warm_start_s": warm_s,
+                "warm_start_s": band.warm_start_s,
                 "optimise_s": optimise_s,
                 "wavefield_solve_s": opt.wavefield_solve_s,
                 "start_metrics": start_metrics,
@@ -374,9 +278,9 @@ def _build_regulariser(cfg: RunConfig, grid: Grid):
     ``loss.regulariser.name`` selects the penalty kind (``tv_iso`` /
     ``tikhonov`` / ``tv_aniso``) and ``eps`` the ``tv_iso`` smoothing floor;
     ``grid`` supplies the spacing and the scales ``L0`` and ``c0``.
-    Returns ``None`` otherwise, so :class:`~odil_wave.loss.LossConfig` omits the
-    reg term. The scalar weight itself is applied by
-    :class:`~odil_wave.optimisation.JointFreqODIL` in its objective.
+    Returns ``None`` otherwise, so the objective has no reg term. The scalar
+    weight itself is applied by :class:`~odil_wave.optimisation.JointFreqODIL`
+    in its objective.
     """
     if float(cfg.loss.weights["reg"]) <= 0.0:
         return None

@@ -32,7 +32,8 @@ Everything importable lives under the `odil_wave` package:
 | `models`          | `VelocityModel` — the `c` field and built-in profiles (`shepp_logan`, `…_skull`, …). |
 | `wavefield`       | `Wavefield` — the complex field `u(freq, x, y)` for one shot; multi-shot batches used by losses/optimisers stack these to `(n_shots, nf, nx, ny)`. |
 | `operator`        | Discrete physics: `WaveEquation` (frequency residual), spatial Laplacians (orders 2–10, reflect boundaries), the PML damping, plus the `HelmholtzSolver` (frequency) forward solver. |
-| `loss`            | `InverseLoss` — one band's sources and observations for the joint objective; `Regulariser` (Tikhonov / TV). |
+| `band`            | `Band` — one band's operator, sources, observed data, initial model and warm start, as the joint solve receives them. |
+| `loss`            | `Regulariser` (Tikhonov / TV); `LossTape` records the loss per iteration. |
 | `optimisation`    | Inversion driver: `JointFreqODIL` (full-space joint L-BFGS over `u` and `c`). |
 | `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
 | `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`. |
