@@ -95,21 +95,6 @@ class HelmholtzSolver:
         )
         self._L_csr: Optional[sp.csr_matrix] = None
 
-    def _sources(self) -> torch.Tensor:
-        """Stack per-shot injection sources, scaled by t0^2 for non-dimensional time."""
-        grid = self.wavefield.grid
-        cdtype = self.wavefield.cdtype
-        t0 = grid.t0
-        return (
-            torch.stack(
-                [
-                    self.geometry.source_field(i).to(dtype=cdtype, device=grid.device)
-                    for i in range(self.geometry.n_shots)
-                ]
-            )
-            * t0**2
-        )
-
     def _laplacian_csr(self) -> sp.csr_matrix:
         """Return the cached sparse Laplacian CSR, building it on first call."""
         if self._L_csr is None:
@@ -211,7 +196,7 @@ class HelmholtzSolver:
         device = grid.device
         c = wf.velocity_model.c.to(device=device)
 
-        sources = self._sources()
+        sources = self.wave_eq.sources(self.geometry)
         amp = torch.zeros(n_shots, nf, Nx, Ny, dtype=cdtype, device=device)
 
         assemble_times: list[float] = []

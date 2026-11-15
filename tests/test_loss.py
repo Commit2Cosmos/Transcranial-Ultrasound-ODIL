@@ -1,15 +1,10 @@
-"""Tests for :mod:`odil_wave.loss` — LossConfig, LossTape, InverseLoss and
-the Regulariser.
+"""Tests for :mod:`odil_wave.loss` — LossTape and the Regulariser.
 
 These affirm:
 * ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
   (zero on a constant field) and rejects unknown kinds.
-* ``LossConfig`` derives device and dtype from the wave equation's grid.
 * ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
   c-history cadence, and rebuilds from saved records.
-* ``InverseLoss`` sources make the PDE residual vanish at the true wavefield
-  and model, its observations (wavefield or trace mode) match the true
-  wavefield at the receivers, and it validates its inputs.
 """
 
 from typing import get_args
@@ -20,22 +15,10 @@ import pytest
 import torch
 from matplotlib.colors import Normalize, TwoSlopeNorm
 
-from odil_wave import InverseLoss, LossConfig, LossTape, Regulariser
-from odil_wave.loss.inverse import mean_abs_sq
+from odil_wave import LossTape, Regulariser
 from odil_wave.loss.regulariser import RegKind
 
 from conftest import make_grid, make_model
-
-
-# --------------------------------------------------------------------------- #
-# mean_abs_sq
-# --------------------------------------------------------------------------- #
-def test_mean_abs_sq_real_and_complex():
-    """mean_abs_sq averages |x|^2 for both real and complex tensors."""
-    x = torch.tensor([3.0, 4.0])
-    assert float(mean_abs_sq(x)) == pytest.approx((9 + 16) / 2)
-    z = torch.tensor([3 + 4j], dtype=torch.complex128)
-    assert float(mean_abs_sq(z)) == pytest.approx(25.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -168,19 +151,6 @@ def test_regulariser_rejects_non_positive_eps():
 
 
 # --------------------------------------------------------------------------- #
-# LossConfig
-# --------------------------------------------------------------------------- #
-def test_loss_config_device_and_dtype(wave_stack):
-    """LossConfig takes device and dtype from the wave equation's grid."""
-    cfg = LossConfig(
-        wave_eq=wave_stack.wave_eq, geometry=wave_stack.geometry, regulariser=None
-    )
-    g = wave_stack.grid
-    assert cfg.dtype == g.dtype
-    assert cfg.device == g.device
-
-
-# --------------------------------------------------------------------------- #
 # LossTape
 # --------------------------------------------------------------------------- #
 def test_loss_tape_logs_dict_and_tuple():
@@ -258,86 +228,3 @@ def test_loss_tape_result_property():
     assert tape.result is None
     tape.result = {"loss": 0.1}
     assert tape.result == {"loss": 0.1}
-
-
-# --------------------------------------------------------------------------- #
-# InverseLoss
-# --------------------------------------------------------------------------- #
-def _inverse_config(wave_stack, regulariser=None):
-    return LossConfig(
-        wave_eq=wave_stack.wave_eq,
-        geometry=wave_stack.geometry,
-        regulariser=regulariser,
-    )
-
-
-def test_inverse_loss_sources_satisfy_pde_at_truth(wave_stack):
-    """The loss's t0**2-scaled sources make the PDE residual ~0 at the
-    Helmholtz solution of the true model."""
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
-    )
-    r = wave_stack.wave_eq.residual(wave_stack.amp, wave_stack.model.c, loss.sources)
-    assert float(mean_abs_sq(r).sqrt()) < 1e-8 * loss.src_rms
-
-
-@pytest.mark.parametrize("mode", ["wavefield", "traces"])
-def test_inverse_loss_observations_match_truth_at_receivers(wave_stack, mode):
-    """Both observation modes give the true wavefield's receiver traces."""
-    obs = (
-        {"observed_wavefield": wave_stack.sols}
-        if mode == "wavefield"
-        else {"observed_traces": wave_stack.obs_traces}
-    )
-    loss = InverseLoss(**obs, config=_inverse_config(wave_stack))
-    syn = wave_stack.geometry.extract_observations(wave_stack.amp)
-    assert loss.obs_traces().shape == syn.shape
-    assert torch.equal(syn - loss.obs_traces(), torch.zeros_like(syn))
-
-
-def test_inverse_loss_requires_exactly_one_observation(wave_stack):
-    """Exactly one of observed_wavefield / observed_traces must be supplied."""
-    cfg = _inverse_config(wave_stack)
-    with pytest.raises(ValueError):
-        InverseLoss(config=cfg)  # neither
-    with pytest.raises(ValueError):
-        InverseLoss(
-            observed_wavefield=wave_stack.sols,
-            observed_traces=wave_stack.obs_traces,
-            config=cfg,
-        )  # both
-
-
-def test_inverse_loss_rejects_non_3d_traces(wave_stack):
-    """Trace observations must be (n_shots, nf, n_transducers - 1)."""
-    cfg = _inverse_config(wave_stack)
-    with pytest.raises(ValueError):
-        InverseLoss(observed_traces=wave_stack.obs_traces[0], config=cfg)
-
-
-def test_inverse_loss_data_residual_ignores_the_transmitting_transducer(wave_stack):
-    """Perturbing u only at each shot's own transducer node leaves the data
-    residual against the observations at zero."""
-    loss = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
-    )
-    geom = wave_stack.geometry
-    amp = wave_stack.amp.clone()
-    for s in range(geom.n_shots):
-        i, j = geom.transducer_ij[s]
-        amp[s, :, i, j] += 10.0
-    r_data = geom.extract_observations(amp) - loss.obs_traces()
-    assert float(mean_abs_sq(r_data)) < 1e-30
-
-
-def test_inverse_loss_default_callback_is_a_fresh_tape(wave_stack):
-    """Without a callback, each loss gets its own empty LossTape."""
-    a = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
-    )
-    b = InverseLoss(
-        observed_wavefield=wave_stack.sols, config=_inverse_config(wave_stack)
-    )
-    assert isinstance(a.callback, LossTape)
-    assert a.callback is not b.callback
-    assert a.callback.history["loss"] == []

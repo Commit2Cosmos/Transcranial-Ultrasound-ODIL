@@ -7,50 +7,9 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.colors import Normalize
 
-from odil_wave.operator import WaveEquation
-from odil_wave.wavefield import Wavefield
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.models import VelocityModel, profile_velocity_norm, velocity_norm
 from odil_wave.plot_utils import length_scale
-from .regulariser import Regulariser
-
-
-@dataclass
-class LossConfig:
-    """Configuration for the loss function.
-
-    ``regulariser`` is set by the run config's ``loss`` block and is a
-    required keyword (ADR 0001). The objective weights are not part of it:
-    ``JointFreqODIL`` takes them directly from ``loss.weights``.
-
-    The PML ring of c is frozen at the attached `VelocityModel.pml_c`; only
-    the interior of c is the optimisation variable. Pad with
-    `wavefield.velocity_model.build_full_c(c_interior)`.
-    """
-
-    wave_eq: WaveEquation
-    geometry: AcquisitionGeometry
-    regulariser: Optional[Regulariser] = field(kw_only=True)
-
-    device: torch.device = field(init=False)
-    dtype: torch.dtype = field(init=False)
-
-    def __post_init__(self):
-        """Derive device and dtype from the wave equation's grid."""
-        wf = self.wave_eq.wavefield
-        self.device = wf.grid.device
-        self.dtype = wf.grid.dtype
-
-    @property
-    def wavefield(self) -> Wavefield:
-        """Wavefield attached to the wave equation.
-
-        Returns
-        -------
-        Wavefield
-            ``self.wave_eq.wavefield``.
-        """
-        return self.wave_eq.wavefield
 
 
 @dataclass

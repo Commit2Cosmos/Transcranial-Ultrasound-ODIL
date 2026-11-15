@@ -5,15 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from odil_wave import (
-    FrequencySelection,
-    HelmholtzSolver,
-    InverseLoss,
-    JointFreqODIL,
-    LossConfig,
-    WaveEquation,
-    Wavefield,
-)
+from odil_wave import FrequencySelection, HelmholtzSolver, JointFreqODIL, Wavefield
 from odil_wave.experiment import (
     build_problem,
     deep_merge,
@@ -23,6 +15,7 @@ from odil_wave.experiment import (
 )
 
 from conftest import (
+    make_band,
     make_geometry,
     make_grid,
     make_model,
@@ -59,25 +52,9 @@ def test_forward_to_loss_gradient_flows():
         verbose=False
     )
 
-    # A homogeneous starting model, warm-started at its own Helmholtz field.
-    init = make_model(grid)
-    wf = Wavefield(grid, fs, velocity_model=init)
-    u0 = torch.stack(
-        [
-            w.amplitude
-            for w in HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve(
-                verbose=False
-            )
-        ]
-    )
-
-    wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
-    cfg = LossConfig(wave_eq=wave_eq, geometry=geom, regulariser=None)
-    loss = InverseLoss(observed_wavefield=sols, config=cfg)
+    # A homogeneous initial model, warm-started at its own Helmholtz field.
     opt = JointFreqODIL(
-        wf,
-        loss,
-        u_init=u0,
+        make_band(geom, make_model(grid), sols, keep_factors=False),
         n_iter=1,
         inner_max_iter=1,
         history_size=1,
@@ -92,6 +69,7 @@ def test_forward_to_loss_gradient_flows():
         verbose=False,
         model_preconditioner="none",
         wavefield_preconditioner="none",
+        regulariser=None,
     )
 
     u_re, u_im, z_m = opt.init_params()
@@ -191,19 +169,19 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
     assert result.final_velocity is result.band_results[1].velocity_model
 
 
-def _built_optimiser(run_config, monkeypatch, run_directory, loss_cfg):
-    """Run a 1-step tiny inversion with ``loss_cfg`` and return the optimiser
-    the runner built (captured from ``runner.build_optimiser``)."""
-    user_cfg = deep_merge(
-        run_config,
-        {
-            "loss": loss_cfg,
-            "optimiser": {"n_iter": 1, "inner_max_iter": 2},
-        },
+def _built_optimiser(run_config, loss_cfg):
+    """The runner's 1-step optimiser for the first band of ``run_config`` with
+    ``loss_cfg``."""
+    cfg = resolve_config(
+        deep_merge(
+            run_config,
+            {"loss": loss_cfg, "optimiser": {"n_iter": 1, "inner_max_iter": 2}},
+        )
     )
-    built = _spy_built_optimisers(monkeypatch)
-    assert run_inverse(resolve_config(user_cfg), run_directory).status == "completed"
-    return built[0]
+    problem = build_problem(cfg)
+    first = cfg.continuation.bands[0]
+    band = problem.make_band(first.frequencies_hz, problem.init_velocity)
+    return runner.build_optimiser(problem, band, cfg.band_n_iter(first))
 
 
 def _spy_built_optimisers(monkeypatch) -> list:
@@ -228,28 +206,22 @@ def _objective_off_truth(opt):
     return L, opt._last["pde_loss"], opt._last["data_loss"]
 
 
-def test_loss_weights_scale_the_joint_objective(tiny_run_config, monkeypatch, new_run):
+def test_loss_weights_scale_the_joint_objective(tiny_run_config):
     """loss.weights.pde / .data set through the run config scale the objective."""
     base = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
-    L1, p, d = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("w1"), base)
-    )
+    L1, p, d = _objective_off_truth(_built_optimiser(tiny_run_config, base))
     assert p > 0 and d > 0
 
     pde3 = {"weights": {"pde": 3.0, "data": 1.0, "reg": 0.0}}
-    L_pde, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("w2"), pde3)
-    )
+    L_pde, *_ = _objective_off_truth(_built_optimiser(tiny_run_config, pde3))
     np.testing.assert_allclose(L_pde, L1 + 2.0 * p, rtol=1e-10)
 
     data5 = {"weights": {"pde": 1.0, "data": 5.0, "reg": 0.0}}
-    L_dat, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("w3"), data5)
-    )
+    L_dat, *_ = _objective_off_truth(_built_optimiser(tiny_run_config, data5))
     np.testing.assert_allclose(L_dat, L1 + 4.0 * d, rtol=1e-10)
 
 
-def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch, new_run):
+def test_loss_weights_reg_activates_regulariser(tiny_run_config):
     """The regulariser contributes only when loss.weights.reg > 0."""
 
     def loss_cfg(reg):
@@ -259,26 +231,19 @@ def test_loss_weights_reg_activates_regulariser(tiny_run_config, monkeypatch, ne
         }
 
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
-    L_plain, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("r0"), plain)
-    )
-    L_off, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("r1"), loss_cfg(0.0))
-    )
-    L_on, *_ = _objective_off_truth(
-        _built_optimiser(tiny_run_config, monkeypatch, new_run("r2"), loss_cfg(1e-3))
-    )
+    L_plain, *_ = _objective_off_truth(_built_optimiser(tiny_run_config, plain))
+    L_off, *_ = _objective_off_truth(_built_optimiser(tiny_run_config, loss_cfg(0.0)))
+    L_on, *_ = _objective_off_truth(_built_optimiser(tiny_run_config, loss_cfg(1e-3)))
     assert L_off == L_plain
     assert L_on > L_plain
 
 
-def test_optimiser_result_loss_is_at_the_final_iterate(
-    tiny_run_config, monkeypatch, new_run
-):
+def test_optimiser_result_loss_is_at_the_final_iterate(tiny_run_config):
     """The result loss is the objective at the returned (u, z), not pre-step."""
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
-    opt = _built_optimiser(tiny_run_config, monkeypatch, new_run("final_loss"), plain)
-    result = opt.loss.callback.result
+    opt = _built_optimiser(tiny_run_config, plain)
+    _, tape = opt.minimise()
+    result = tape.result
     s = opt.final_state
     with torch.no_grad():
         L = float(opt.objective(s["u_re"], s["u_im"], s["z_m"], record=False))
@@ -370,14 +335,19 @@ def test_run_inverse_started_at_the_truth_stays_there(
     problem = build_problem(cfg)
     (band,) = cfg.continuation.bands
     u_true = torch.stack(
-        [w.amplitude for w in problem.make_band(list(band.frequencies_hz)).observed_wfs]
+        [
+            w.amplitude
+            for w in problem.make_band(
+                band.frequencies_hz, problem.init_velocity
+            ).true_wavefields
+        ]
     )
 
     built = _spy_built_optimisers(monkeypatch)
     assert run_inverse(cfg, new_run()).status == "completed"
 
     (opt,) = built
-    assert opt.loss.callback.result["loss"] < 1e-20
+    assert opt.callback.result["loss"] < 1e-20
     grid = problem.grid
     final = opt.final_state
     c_true = problem.truth_velocity.c

@@ -31,7 +31,7 @@ import torch
 
 from .config import ConfigError, RunConfig, load_config_file, resolve_config
 from .problem import build_problem
-from .runner import build_band_loss, build_optimiser
+from .runner import build_optimiser
 
 
 @dataclass(frozen=True)
@@ -110,11 +110,10 @@ def balance_check(cfg: RunConfig, cases: Sequence[GridCase]) -> List[BalanceRow]
 
 def _measure(cfg: RunConfig, case: GridCase) -> BalanceRow:
     problem = build_problem(cfg)
-    band_ctx = problem.make_band(cfg.continuation.bands[0].frequencies_hz)
-    init = problem.init_velocity
-    u_init, factors = problem.warm_start(init, band_ctx, return_factors=True)
-    wf_inv, loss = build_band_loss(problem, init, band_ctx)
-    opt = build_optimiser(problem, band_ctx, wf_inv, loss, 1, u_init, factors)
+    band = problem.make_band(
+        cfg.continuation.bands[0].frequencies_hz, problem.init_velocity
+    )
+    opt = build_optimiser(problem, band, 1)
 
     u_re, u_im, z_m = opt.init_params()
     with torch.no_grad():
@@ -122,14 +121,14 @@ def _measure(cfg: RunConfig, case: GridCase) -> BalanceRow:
         data_term = opt.last_record["data_loss"]
         # Inverse crime (no observation PML): the observed fields are
         # H⁻¹(c_true) on the inversion grid.
-        u_true = torch.stack([w.amplitude for w in band_ctx.observed_wfs])
+        u_true = torch.stack([w.amplitude for w in band.true_wavefields])
         u_true = u_true.to(dtype=opt.cdtype, device=opt.device) / opt.u_ref
         opt.objective(*opt.wavefield_precond.v_of_u_tilde(u_true), z_m)
         pde_term = opt.last_record["pde_term"]
 
     grid = problem.grid
     h = float(grid.dx)
-    geom = band_ctx.geom
+    geom = band.geometry
     gaussian = cfg.acquisition.source_spatial == "gaussian"
     return BalanceRow(
         case=case,

@@ -7,15 +7,13 @@ import torch
 
 from odil_wave import (
     AcquisitionGeometry,
+    Band,
     Grid,
     HelmholtzSolver,
-    InverseLoss,
-    LossConfig,
     Regulariser,
     SourceSignal,
     VelocityModel,
     WaveEquation,
-    Wavefield,
 )
 from odil_wave.optimisation import JointFreqODIL
 
@@ -68,6 +66,7 @@ JOINT_KW = dict(
     verbose=False,
     model_preconditioner="none",
     wavefield_preconditioner="none",
+    regulariser=None,
 )
 
 
@@ -135,35 +134,26 @@ def test_regulariser_requires_configured_params(name, grid):
         Regulariser(**_without(kw, name))
 
 
-@pytest.fixture
-def inverse_loss(wave_stack) -> InverseLoss:
-    cfg = LossConfig(
-        wave_stack.wave_eq,
+@pytest.mark.parametrize("name", list(OPERATOR_KW))
+def test_band_requires_configured_params(name, wave_stack):
+    args = (wave_stack.geometry, wave_stack.model, wave_stack.obs_traces)
+    with pytest.raises(TypeError, match=name):
+        Band(*args, keep_factors=False, **_without(OPERATOR_KW, name))
+
+
+@pytest.fixture(scope="module")
+def band(wave_stack) -> Band:
+    return Band(
         wave_stack.geometry,
-        regulariser=None,
+        wave_stack.model,
+        wave_stack.obs_traces,
+        keep_factors=False,
+        **OPERATOR_KW,
     )
-    return InverseLoss(observed_wavefield=wave_stack.sols, config=cfg)
-
-
-def test_loss_config_requires_configured_params(wave_stack):
-    with pytest.raises(TypeError, match="regulariser"):
-        LossConfig(wave_stack.wave_eq, wave_stack.geometry)
 
 
 @pytest.mark.parametrize("name", list(JOINT_KW))
-def test_joint_optimiser_requires_configured_params(name, wave_stack, inverse_loss):
-    wf = Wavefield(wave_stack.grid, wave_stack.freq, velocity_model=wave_stack.model)
-    JointFreqODIL(wf, inverse_loss, u_init=wave_stack.sols, **JOINT_KW)
+def test_joint_optimiser_requires_configured_params(name, band):
+    JointFreqODIL(band, **JOINT_KW)
     with pytest.raises(TypeError, match=name):
-        JointFreqODIL(
-            wf, inverse_loss, u_init=wave_stack.sols, **_without(JOINT_KW, name)
-        )
-
-
-def test_joint_optimiser_requires_a_warm_start(wave_stack, inverse_loss):
-    """No silent zero seed: a u = 0 start has an exactly zero model gradient."""
-    wf = Wavefield(wave_stack.grid, wave_stack.freq, velocity_model=wave_stack.model)
-    with pytest.raises(TypeError, match="u_init"):
-        JointFreqODIL(wf, inverse_loss, **JOINT_KW)
-    with pytest.raises(ValueError, match="warm-start"):
-        JointFreqODIL(wf, inverse_loss, u_init=None, **JOINT_KW)
+        JointFreqODIL(band, **_without(JOINT_KW, name))

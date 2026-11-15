@@ -24,7 +24,7 @@ from .plots import (
     rebuild_problem,
 )
 from .postprocess import ColourScales, SavedRun, load_tape, postprocess_run
-from .problem import BandContext, Problem, build_problem, grid_summary
+from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
 from .spec import ExperimentSpec, SweepRun, load_spec
 from .launch import postprocess_experiment
@@ -49,7 +49,6 @@ __all__ = [
     "deep_merge",
     # problem
     "Problem",
-    "BandContext",
     "build_problem",
     "grid_summary",
     # run directory

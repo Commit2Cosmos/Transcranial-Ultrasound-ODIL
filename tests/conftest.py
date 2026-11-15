@@ -13,6 +13,7 @@ import yaml
 
 from odil_wave import (
     AcquisitionGeometry,
+    Band,
     FrequencySelection,
     Grid,
     HelmholtzSolver,
@@ -95,6 +96,23 @@ def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
     kw = dict(base=1500.0, contrast=0.0, pml_c=None)
     kw.update(overrides)
     return VelocityModel(grid, profile=profile, **kw)
+
+
+def make_band(
+    geometry, initial_model, observed, space_order=2, keep_factors=True
+) -> Band:
+    """A band on ``geometry`` from ``initial_model``, observing the per-shot
+    ``observed`` wavefields at the receivers (``damping_scale`` 1)."""
+    traces = geometry.extract_observations(torch.stack([w.amplitude for w in observed]))
+    return Band(
+        geometry,
+        initial_model,
+        traces,
+        space_order=space_order,
+        damping_scale=1.0,
+        keep_factors=keep_factors,
+        true_wavefields=observed,
+    )
 
 
 def rel_interior_error(x, ref, grid) -> float:
@@ -236,12 +254,7 @@ def wave_stack() -> SimpleNamespace:
 
     amp = torch.stack([s.amplitude for s in sols])
     wave_eq = WaveEquation(wf, space_order=2, damping_scale=1.0)
-    sources = (
-        torch.stack(
-            [geom.source_field(i).to(dtype=wf.cdtype) for i in range(geom.n_shots)]
-        )
-        * g.t0**2
-    )
+    sources = wave_eq.sources(geom)
     obs_traces = geom.extract_observations(amp)
     return SimpleNamespace(
         grid=g,

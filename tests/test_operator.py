@@ -405,7 +405,7 @@ def test_helmholtz_solver_solve_smoke(tiny_setup):
         assert torch.isfinite(wf_out.amplitude.imag).all()
 
     amp = torch.stack([o.amplitude for o in outputs], dim=0)
-    sources = solver._sources()
+    sources = solver.wave_eq.sources(tiny_setup.geom)
     r = solver.wave_eq.residual(amp, tiny_setup.vm.c, sources)
     r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
     src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())

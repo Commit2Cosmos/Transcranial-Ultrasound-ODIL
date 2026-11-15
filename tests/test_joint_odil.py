@@ -5,14 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from odil_wave import (
-    FrequencySelection,
-    HelmholtzSolver,
-    InverseLoss,
-    LossConfig,
-    WaveEquation,
-    Wavefield,
-)
+from odil_wave import FrequencySelection, HelmholtzSolver, Wavefield
 from odil_wave.loss import Regulariser
 from odil_wave.optimisation import JointFreqODIL, SlownessLatent
 from odil_wave.optimisation.preconditioners import NoModelPreconditioner
@@ -21,6 +14,7 @@ from conftest import (
     C_MAX,
     C_MIN,
     F0,
+    make_band,
     make_geometry,
     make_grid,
     make_model,
@@ -31,46 +25,31 @@ from conftest import (
 
 @pytest.fixture(scope="module")
 def truth_problem() -> SimpleNamespace:
-    """Tiny inverse-crime problem: observations are a Helmholtz solve on the truth."""
+    """Tiny inverse-crime problem: observations are a Helmholtz solve on the
+    truth, and the band starts from the truth, so its warm start is the true
+    wavefield."""
     g = make_grid()
     fs = FrequencySelection.from_frequencies(g, [F0])
-    src = make_source(g)
-    geom = make_geometry(g, src, fs)
+    geom = make_geometry(g, make_source(g), fs)
     truth = make_model(g, "overdensity", contrast=120.0, radius=0.012)
-    wf = Wavefield(g, fs, velocity_model=truth)
-    observed, factors = HelmholtzSolver(
-        wf, geom, space_order=2, damping_scale=1.0
-    ).solve(verbose=False, return_factors=True)
-    return SimpleNamespace(
-        wavefield=wf, geometry=geom, observed=observed, factors=factors
-    )
+    observed = HelmholtzSolver(
+        Wavefield(g, fs, velocity_model=truth), geom, space_order=2, damping_scale=1.0
+    ).solve(verbose=False)
+    band = make_band(geom, truth, observed)
+    return SimpleNamespace(band=band, geometry=geom, truth=truth, observed=observed)
 
 
 def _make_optimiser(
-    problem,
+    band,
     regulariser=None,
     reg_weight=0.0,
     model_preconditioner="none",
     wavefield_preconditioner="none",
 ) -> JointFreqODIL:
-    """Joint optimiser on the truth model, warm-started at the observed fields.
-
-    The latent velocity bounds are the grid's (C_MIN, C_MAX). ``problem.u_init``
-    (if any) replaces the warm start and ``problem.factors`` (if any) are passed
-    as the initial model's factors."""
-    wave_eq = WaveEquation(problem.wavefield, space_order=2, damping_scale=1.0)
-    loss = InverseLoss(
-        observed_wavefield=problem.observed,
-        config=LossConfig(
-            wave_eq=wave_eq,
-            geometry=problem.geometry,
-            regulariser=regulariser,
-        ),
-    )
+    """Joint optimiser on ``band``; the latent velocity bounds are the grid's
+    (C_MIN, C_MAX)."""
     return JointFreqODIL(
-        problem.wavefield,
-        loss,
-        u_init=getattr(problem, "u_init", problem.observed),
+        band,
         n_iter=50,
         inner_max_iter=20,
         history_size=20,
@@ -85,7 +64,7 @@ def _make_optimiser(
         verbose=False,
         model_preconditioner=model_preconditioner,
         wavefield_preconditioner=wavefield_preconditioner,
-        initial_model_factors=getattr(problem, "factors", None),
+        regulariser=regulariser,
     )
 
 
@@ -114,7 +93,7 @@ def test_latent_keeps_c_within_bounds():
 # --------------------------------------------------------------------------- #
 def test_objective_vanishes_at_truth(truth_problem):
     """At (observed u, truth c) both the PDE and the data residual vanish."""
-    opt = _make_optimiser(truth_problem)
+    opt = _make_optimiser(truth_problem.band)
     L = opt.objective(*opt.init_params(), record=True)
     assert float(L) < 1e-20
     assert opt._last["pde_term"] < 1e-20
@@ -123,11 +102,11 @@ def test_objective_vanishes_at_truth(truth_problem):
 
 def test_minimise_writes_residual_diagnostics_to_the_loss(truth_problem):
     """Each logged iteration leaves the scalar diagnostics on
-    ``loss.last_residuals`` and appends them to the loss's callback tape."""
-    opt = _make_optimiser(truth_problem)
+    ``last_residuals`` and appends them to the callback tape."""
+    opt = _make_optimiser(truth_problem.band)
     opt.n_iter = 2
     _, tape = opt.minimise()
-    assert set(opt.loss.last_residuals) == {
+    assert set(opt.last_residuals) == {
         "pde_rms",
         "data_rms",
         "pde_loss",
@@ -138,17 +117,17 @@ def test_minimise_writes_residual_diagnostics_to_the_loss(truth_problem):
         "pde_rel_residual",
         "n_evaluations",
     }
-    assert tape is opt.loss.callback
+    assert tape is opt.callback
     assert len(tape.history["pde_rms"]) == len(tape.history["loss"]) >= 2
 
 
 def test_pde_scale_is_the_wave_term(truth_problem):
     """pde_scale is |lambda_tt| * u_ref per (shot, frequency), u_ref the interior
     RMS of the warm start (ADR-0002), independent of the source."""
-    opt = _make_optimiser(truth_problem)
+    opt = _make_optimiser(truth_problem.band)
     sl = (slice(None), slice(None)) + opt.grid.interior_slice
     u_ref = opt.u_seed[sl].abs().square().mean(dim=(2, 3)).sqrt()
-    lam_tt = truth_problem.wavefield.frequency_selection.lambda_tt.abs()
+    lam_tt = truth_problem.band.frequency_selection.lambda_tt.abs()
     expected = lam_tt.view(1, -1) * u_ref
     assert opt.pde_scale.shape == (opt.n_shots, opt.nf, 1, 1)
     torch.testing.assert_close(opt.pde_scale[..., 0, 0], expected.to(opt.dtype))
@@ -158,7 +137,7 @@ def test_pde_term_sums_interior_and_pml_over_the_interior_count(truth_problem):
     """The PDE term sums |r / pde_scale|^2 over interior + PML nodes and divides
     by the interior node count (and 2 per complex entry), so residual in the PML
     counts and a thicker PML does not dilute the term."""
-    opt = _make_optimiser(truth_problem)
+    opt = _make_optimiser(truth_problem.band)
     u_re, u_im, z = opt.init_params()
     z = z + 0.1  # off the truth, so the residual is non-zero
     opt.objective(u_re, u_im, z, record=True)
@@ -176,7 +155,7 @@ def test_pde_term_sums_interior_and_pml_over_the_interior_count(truth_problem):
 def test_data_term_ignores_the_transmitting_transducer(truth_problem):
     """Perturbing u only at each shot's own transducer node leaves the data
     term, and its per-(shot, frequency) scale, unchanged."""
-    opt = _make_optimiser(truth_problem)
+    opt = _make_optimiser(truth_problem.band)
     n = opt.geometry.n_transducers
     assert opt.data_scale.shape == (n, opt.nf, 1)
     u_re, u_im, z = opt.init_params()
@@ -226,21 +205,21 @@ def _directional_check(opt, block):
 @pytest.mark.parametrize("block", ["u", "z", "joint"])
 def test_objective_gradient_matches_finite_difference(truth_problem, block):
     """Autograd gradient of the objective agrees with central differences."""
-    opt = _make_optimiser(truth_problem)
+    opt = _make_optimiser(truth_problem.band)
     assert _directional_check(opt, block) < 1e-6
 
 
 def test_objective_gradient_with_regulariser(truth_problem):
     """The regulariser path is differentiated correctly as well."""
     opt = _make_optimiser(
-        truth_problem,
+        truth_problem.band,
         regulariser=Regulariser(
-            kind="tikhonov", eps=1e-4, grid=truth_problem.wavefield.grid
+            kind="tikhonov", eps=1e-4, grid=truth_problem.geometry.grid
         ),
         reg_weight=1e-2,
     )
     # the regulariser term actually contributes at the perturbed point.
-    plain = _make_optimiser(truth_problem)
+    plain = _make_optimiser(truth_problem.band)
     u_re, u_im, z = opt.init_params()
     z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(1))
     assert float(opt.objective(u_re, u_im, z, record=False)) != pytest.approx(
@@ -257,8 +236,8 @@ def test_change_of_variables_keeps_the_objective_and_scales_the_gradient(
 ):
     """L-BFGS optimises y with z_m = s * y: the objective at the same physical
     point is unchanged, and grad_y Phi = s * grad_{z_m} Phi."""
-    plain = _make_optimiser(truth_problem)
-    pre = _make_optimiser(truth_problem, model_preconditioner="pde_diagonal")
+    plain = _make_optimiser(truth_problem.band)
+    pre = _make_optimiser(truth_problem.band, model_preconditioner="pde_diagonal")
     s = pre.model_precond.scale
     assert isinstance(plain.model_precond, NoModelPreconditioner)
     assert s.shape == pre.init_params()[2].shape
@@ -285,8 +264,7 @@ def _small_two_frequency_optimiser(
 ) -> JointFreqODIL:
     """A 10x10-interior, 3-shot, two-frequency band, warm-started by a
     Helmholtz solve on a homogeneous start model (observations from a
-    heterogeneous truth), small enough for brute-force autograd Hessians. The
-    warm start's factors are passed to the optimiser."""
+    heterogeneous truth), small enough for brute-force autograd Hessians."""
     g = make_grid(interior_shape=(10, 10))
     fs = FrequencySelection.from_frequencies(g, [30e3, F0])
     geom = make_geometry(g, make_source(g), fs, n_transducers=3)
@@ -295,22 +273,9 @@ def _small_two_frequency_optimiser(
     observed = HelmholtzSolver(
         Wavefield(g, fs, velocity_model=truth), geom, **operator
     ).solve(verbose=False)
-    wf = Wavefield(g, fs, velocity_model=make_model(g))
-    u_init, factors = HelmholtzSolver(wf, geom, **operator).solve(
-        verbose=False, return_factors=True
-    )
-    loss = InverseLoss(
-        observed_wavefield=observed,
-        config=LossConfig(
-            wave_eq=WaveEquation(wf, **operator),
-            geometry=geom,
-            regulariser=None,
-        ),
-    )
+    band = make_band(geom, make_model(g), observed, space_order=space_order)
     return JointFreqODIL(
-        wf,
-        loss,
-        u_init=u_init,
+        band,
         n_iter=3,
         inner_max_iter=5,
         history_size=5,
@@ -325,7 +290,7 @@ def _small_two_frequency_optimiser(
         verbose=False,
         model_preconditioner=model_preconditioner,
         wavefield_preconditioner=wavefield_preconditioner,
-        initial_model_factors=factors,
+        regulariser=None,
     )
 
 
@@ -451,14 +416,14 @@ def test_scale_info_keys(mode, wavefield_mode):
 
 
 def test_no_preconditioner_reports_only_the_mode(truth_problem):
-    info = _make_optimiser(truth_problem).scale_info
+    info = _make_optimiser(truth_problem.band).scale_info
     assert info["model_preconditioner"] == "none"
     assert not any(k.startswith(("precond_", "h_zz", "model_scale")) for k in info)
 
 
 def test_unknown_model_preconditioner_is_rejected(truth_problem):
     with pytest.raises(ValueError, match="model_preconditioner"):
-        _make_optimiser(truth_problem, model_preconditioner="diagonal")
+        _make_optimiser(truth_problem.band, model_preconditioner="diagonal")
 
 
 @pytest.mark.parametrize("mode", ["none", "pde_diagonal"])
@@ -489,7 +454,7 @@ def test_truth_is_a_fixed_point_of_the_joint_solve(truth_problem, mode, wavefiel
     leaves both unchanged. Measured: objective 2.6e-29 (threshold 1e-20); c and
     u change by exactly 0 (threshold 1e-8)."""
     opt = _make_optimiser(
-        truth_problem,
+        truth_problem.band,
         model_preconditioner=mode,
         wavefield_preconditioner=wavefield_mode,
     )
@@ -509,14 +474,11 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
     homogeneous initial model. Measured: c error 3.25e-2 -> 1.3e-6 (threshold
     1e-4)."""
     p = truth_problem
-    wf = p.wavefield
-    homogeneous = Wavefield(
-        wf.grid, wf.frequency_selection, velocity_model=make_model(wf.grid)
-    )
-    opt = _make_optimiser(
-        SimpleNamespace(wavefield=homogeneous, geometry=p.geometry, observed=p.observed)
-    )
-    u_re, u_im, z0 = (t.detach() for t in opt.init_params())
+    grid = p.geometry.grid
+    opt = _make_optimiser(make_band(p.geometry, make_model(grid), p.observed))
+    _, _, z0 = (t.detach() for t in opt.init_params())
+    u_true = torch.stack([w.amplitude for w in p.observed]).to(opt.cdtype)
+    u_re, u_im = opt.wavefield_precond.v_of_u_tilde(u_true / opt.u_ref)
     u_re0, u_im0 = u_re.clone(), u_im.clone()
     z = torch.nn.Parameter(z0.clone())
     lbfgs = torch.optim.LBFGS(
@@ -539,7 +501,7 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
         lbfgs.step(closure)
 
     c_full = opt.c_full_of_z(z.detach())
-    assert rel_interior_error(c_full, wf.velocity_model.c, wf.grid) < 1e-4
+    assert rel_interior_error(c_full, p.truth.c, grid) < 1e-4
     assert torch.equal(u_re, u_re0) and torch.equal(u_im, u_im0)
 
 
@@ -548,16 +510,14 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
 # --------------------------------------------------------------------------- #
 def test_initial_model_preconditioner_needs_the_factors(truth_problem):
     p = truth_problem
-    no_factors = SimpleNamespace(
-        wavefield=p.wavefield, geometry=p.geometry, observed=p.observed
-    )
-    with pytest.raises(ValueError, match="initial_model_factors"):
+    no_factors = make_band(p.geometry, p.truth, p.observed, keep_factors=False)
+    with pytest.raises(ValueError, match="keep_factors"):
         _make_optimiser(no_factors, wavefield_preconditioner="initial_model")
 
 
 def test_unknown_wavefield_preconditioner_is_rejected(truth_problem):
     with pytest.raises(ValueError, match="wavefield_preconditioner"):
-        _make_optimiser(truth_problem, wavefield_preconditioner="jacobi")
+        _make_optimiser(truth_problem.band, wavefield_preconditioner="jacobi")
 
 
 def test_model_scale_target_is_the_curvature_in_v_with_both_preconditioners():
@@ -605,18 +565,8 @@ def _frozen_model_iterations_to(target, interior, pml_width):
     observed = HelmholtzSolver(
         Wavefield(g, fs, velocity_model=truth), geom, **operator
     ).solve(verbose=False)
-    wf = Wavefield(g, fs, velocity_model=make_model(g))
-    u_init, factors = HelmholtzSolver(wf, geom, **operator).solve(
-        verbose=False, return_factors=True
-    )
     opt = _make_optimiser(
-        SimpleNamespace(
-            wavefield=wf,
-            geometry=geom,
-            observed=observed,
-            u_init=u_init,
-            factors=factors,
-        ),
+        make_band(geom, make_model(g), observed),
         wavefield_preconditioner="initial_model",
     )
     v_re0, v_im0, _ = opt.init_params()

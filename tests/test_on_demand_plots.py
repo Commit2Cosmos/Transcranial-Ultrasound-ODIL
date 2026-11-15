@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from odil_wave import HelmholtzSolver, VelocityModel, Wavefield
+from odil_wave import HelmholtzSolver, VelocityModel
 from odil_wave.experiment import build_problem, on_demand
 
 from test_saved_run import band_dirs, load_npz
@@ -143,20 +143,13 @@ def with_helmholtz_wavefields(run_dir: Path, tmp_path: Path, config) -> Path:
     band_dir = band_dirs(copy)[-1]
     arrays = load_npz(band_dir / "arrays.npz")
     problem = build_problem(config)
-    band = problem.make_band(config.continuation.bands[-1].frequencies_hz)
     model = VelocityModel.from_field(
         problem.grid,
         torch.as_tensor(saved_final_model(band_dir, problem), dtype=problem.dtype),
         pml_c=problem.init_velocity.pml_c,
     )
-    wf = Wavefield(problem.grid, band.freq, velocity_model=model)
-    solver = HelmholtzSolver(
-        wf,
-        band.geom,
-        space_order=problem.space_order,
-        damping_scale=problem.damping_scale,
-    )
-    u = np.stack([s.amplitude.numpy() for s in solver.solve(verbose=False)])
+    band = problem.make_band(config.continuation.bands[-1].frequencies_hz, model)
+    u = band.u_init.numpy()
     arrays["u"] = u[arrays["shots"]].astype(np.complex64)
     np.savez(band_dir / "arrays.npz", **arrays)
     return copy
@@ -207,7 +200,6 @@ def test_an_on_demand_plot_returns_a_figure_and_solves_nothing(
         (JointFreqODIL, "minimise"),
         (HelmholtzSolver, "solve"),
         (Problem, "make_band"),
-        (Problem, "warm_start"),
     ]:
         monkeypatch.setattr(owner, name, forbidden)
 

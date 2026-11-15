@@ -10,11 +10,10 @@ from odil_wave.models import VelocityModel
 from odil_wave.wavefield import Wavefield
 from odil_wave.operator import WaveEquation, HelmholtzSolver
 from odil_wave.loss import (
-    LossConfig,
     LossTape,
-    InverseLoss,
     Regulariser,
 )
+from odil_wave.band import Band
 from odil_wave.optimisation import JointFreqODIL
 
 __all__ = [
@@ -26,9 +25,8 @@ __all__ = [
     "Wavefield",
     "WaveEquation",
     "HelmholtzSolver",
-    "LossConfig",
     "LossTape",
-    "InverseLoss",
     "Regulariser",
+    "Band",
     "JointFreqODIL",
 ]

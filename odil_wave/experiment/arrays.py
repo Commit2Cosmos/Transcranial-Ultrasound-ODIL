@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+from odil_wave.band import Band
 from odil_wave.optimisation import Iterate
 
 from .atomic import atomic_open
@@ -63,29 +64,22 @@ class BandArrays:
     the last the band's final iterate. :meth:`save` then writes the file.
     """
 
-    def __init__(self, problem, band, pde_scale: torch.Tensor) -> None:
+    def __init__(self, band: Band, pde_scale: torch.Tensor) -> None:
         """
         Parameters
         ----------
-        problem : Problem
-            The run's problem (inversion and observation grids).
-        band : BandContext
-            The band's frequencies, geometry and observed wavefields ``u*``.
+        band : Band
+            The band, built with its true wavefields.
         pde_scale : torch.Tensor
             The band's fixed PDE scale ``|lambda_tt| * u_ref``, one value per
             (shot, frequency).
         """
-        self.geom = band.geom
+        self.geom = band.geometry
         self.pde_scale = pde_scale.detach().reshape(pde_scale.shape[0], -1)
-        self.freqs = band.freq.frequencies
-        self._interior = problem.grid.interior_slice
-        u_star = torch.stack([wf.amplitude for wf in band.observed_wfs]).detach()
-        if band.observed_traces is not None:
-            self.d_obs = band.observed_traces.detach()
-        else:
-            self.d_obs = self.geom.extract_observations(u_star)
-        obs_sl = problem.observation_grid.interior_slice
-        self._u_star = u_star[:, :, obs_sl[0], obs_sl[1]]
+        self.freqs = band.frequency_selection.frequencies
+        self._interior = band.geometry.grid.interior_slice
+        self.d_obs = band.observed_traces.detach()
+        self._u_star = band.true_wavefield_interior()
         self.d_syn_start: Optional[torch.Tensor] = None
         self.d_syn_final: Optional[torch.Tensor] = None
         self._final: Optional[Iterate] = None
