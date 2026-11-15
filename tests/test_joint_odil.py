@@ -94,31 +94,11 @@ def test_latent_keeps_c_within_bounds():
 def test_objective_vanishes_at_truth(truth_problem):
     """At (observed u, truth c) both the PDE and the data residual vanish."""
     opt = _make_optimiser(truth_problem.band)
-    L = opt.objective(*opt.init_params(), record=True)
+    L = opt.objective(*opt.init_params())
+    terms = opt.objective_terms(*opt.init_params())
     assert float(L) < 1e-20
-    assert opt._last["pde_term"] < 1e-20
-    assert opt._last["data_term"] < 1e-20
-
-
-def test_minimise_writes_residual_diagnostics_to_the_loss(truth_problem):
-    """Each logged iteration leaves the scalar diagnostics on
-    ``last_residuals`` and appends them to the callback tape."""
-    opt = _make_optimiser(truth_problem.band)
-    opt.n_iter = 2
-    _, tape = opt.minimise()
-    assert set(opt.last_residuals) == {
-        "pde_rms",
-        "data_rms",
-        "pde_loss",
-        "data_loss",
-        "pde_term",
-        "data_term",
-        "reg_term",
-        "pde_rel_residual",
-        "n_evaluations",
-    }
-    assert tape is opt.callback
-    assert len(tape.history["pde_rms"]) == len(tape.history["loss"]) >= 2
+    assert terms.pde < 1e-20
+    assert terms.data < 1e-20
 
 
 def test_pde_scale_is_the_wave_term(truth_problem):
@@ -140,16 +120,13 @@ def test_pde_term_sums_interior_and_pml_over_the_interior_count(truth_problem):
     opt = _make_optimiser(truth_problem.band)
     u_re, u_im, z = opt.init_params()
     z = z + 0.1  # off the truth, so the residual is non-zero
-    opt.objective(u_re, u_im, z, record=True)
+    terms = opt.objective_terms(u_re, u_im, z)
     r_pde, _ = opt.residuals(u_re, u_im, z)
     n_int = opt.grid.interior_nx * opt.grid.interior_ny
     expected = (r_pde / opt.pde_scale).abs().square().sum() / (
         2 * n_int * opt.n_shots * opt.nf
     )
-    assert opt.last_record["pde_term"] == pytest.approx(float(expected), rel=1e-12)
-    assert opt.last_record["pde_rel_residual"] == pytest.approx(
-        float((2 * expected).sqrt()), rel=1e-12
-    )
+    assert terms.pde == pytest.approx(float(expected), rel=1e-12)
 
 
 def test_data_term_ignores_the_transmitting_transducer(truth_problem):
@@ -186,17 +163,13 @@ def _directional_check(opt, block):
         d[0], d[1] = torch.zeros_like(u_re), torch.zeros_like(u_im)
 
     x = [t.clone().requires_grad_(True) for t in (u_re, u_im, z)]
-    grads = torch.autograd.grad(opt.objective(*x, record=False), x)
+    grads = torch.autograd.grad(opt.objective(*x), x)
     analytic = sum(float((g * di).sum()) for g, di in zip(grads, d))
 
     h = 1e-6
 
     def f(s):
-        return float(
-            opt.objective(
-                *(t + s * di for t, di in zip((u_re, u_im, z), d)), record=False
-            )
-        )
+        return float(opt.objective(*(t + s * di for t, di in zip((u_re, u_im, z), d))))
 
     fd = (f(h) - f(-h)) / (2 * h)
     return abs(fd - analytic) / abs(analytic)
@@ -222,8 +195,8 @@ def test_objective_gradient_with_regulariser(truth_problem):
     plain = _make_optimiser(truth_problem.band)
     u_re, u_im, z = opt.init_params()
     z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(1))
-    assert float(opt.objective(u_re, u_im, z, record=False)) != pytest.approx(
-        float(plain.objective(u_re, u_im, z, record=False)), rel=1e-3
+    assert float(opt.objective(u_re, u_im, z)) != pytest.approx(
+        float(plain.objective(u_re, u_im, z)), rel=1e-3
     )
     assert _directional_check(opt, "joint") < 1e-6
 
@@ -247,8 +220,8 @@ def test_change_of_variables_keeps_the_objective_and_scales_the_gradient(
     z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(2))
     y = pre.model_precond.y_of_z(z).clone().requires_grad_(True)
     z_leaf = z.clone().requires_grad_(True)
-    L_y = pre.objective(u_re, u_im, pre.model_precond.z_of_y(y), record=False)
-    L_z = plain.objective(u_re, u_im, z_leaf, record=False)
+    L_y = pre.objective(u_re, u_im, pre.model_precond.z_of_y(y))
+    L_z = plain.objective(u_re, u_im, z_leaf)
     assert float(L_y.detach()) == pytest.approx(float(L_z.detach()), rel=1e-12)
     (g_y,) = torch.autograd.grad(L_y, y)
     (g_z,) = torch.autograd.grad(L_z, z_leaf)
@@ -305,9 +278,7 @@ def test_model_curvature_in_k_matches_the_autograd_hessian(space_order):
     k0 = (opt.latent.c_of_z(z0) / opt.c0).square()
 
     def phi(k):
-        return opt.objective(
-            u_re, u_im, opt.latent.z_of_c(opt.c0 * k.sqrt()), record=False
-        )
+        return opt.objective(u_re, u_im, opt.latent.z_of_c(opt.c0 * k.sqrt()))
 
     n = k0.numel()
     H = torch.autograd.functional.hessian(
@@ -326,7 +297,7 @@ def test_model_curvature_in_z_matches_autograd_at_the_warm_start(space_order):
     u_re, u_im, z0 = opt.init_params()
     _, H_zz = opt.model_curvature(z0)
     H = torch.autograd.functional.hessian(
-        lambda z: opt.objective(u_re, u_im, z.view_as(z0), record=False),
+        lambda z: opt.objective(u_re, u_im, z.view_as(z0)),
         z0.reshape(-1),
         vectorize=True,
     )
@@ -367,8 +338,6 @@ SCALE_INFO_KEYS = [
     "c_max",
     "m_min",
     "m_max",
-    "c_ref",
-    "m_ref",
     "z_scale",
     "pde_weight",
     "data_weight",
@@ -432,12 +401,9 @@ def test_reported_model_gradient_is_with_respect_to_z_m(mode):
     the gradient w.r.t. the optimised variable y."""
     opt = _small_two_frequency_optimiser(4, model_preconditioner=mode)
     logged = []
-    opt.minimise(on_log=logged.append)
-    state = opt.final_state
-    z = state["z_m"].clone().requires_grad_(True)
-    (g_z,) = torch.autograd.grad(
-        opt.objective(state["u_re"], state["u_im"], z, record=False), z
-    )
+    v_re, v_im, z_m = opt.minimise(on_log=logged.append).params
+    z = z_m.clone().requires_grad_(True)
+    (g_z,) = torch.autograd.grad(opt.objective(v_re, v_im, z), z)
     assert logged[-1].grad_z_norm == pytest.approx(float(g_z.norm()), rel=1e-10)
     if mode == "pde_diagonal":
         g_y_norm = float((opt.model_precond.scale * g_z).norm())
@@ -493,7 +459,7 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
 
     def closure():
         lbfgs.zero_grad()
-        L = opt.objective(u_re, u_im, z, record=False)
+        L = opt.objective(u_re, u_im, z)
         L.backward()
         return L
 
@@ -538,7 +504,7 @@ def test_model_scale_target_is_the_curvature_in_v_with_both_preconditioners():
 
     def grad_v_re(v):
         v = v.clone().requires_grad_(True)
-        return torch.autograd.grad(opt.objective(v, v_im, z0, record=False), v)[0]
+        return torch.autograd.grad(opt.objective(v, v_im, z0), v)[0]
 
     H_rows = grad_v_re(v_re + 1.0) - grad_v_re(v_re)
     n_int = opt.grid.interior_nx * opt.grid.interior_ny
@@ -585,7 +551,7 @@ def _frozen_model_iterations_to(target, interior, pml_width):
 
     def closure():
         lbfgs.zero_grad()
-        L = opt.objective(v_re, v_im, z_true, record=False)
+        L = opt.objective(v_re, v_im, z_true)
         L.backward()
         return L
 

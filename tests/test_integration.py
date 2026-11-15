@@ -78,7 +78,7 @@ def test_forward_to_loss_gradient_flows():
     L.backward()
     # The data misfit is non-zero (wrong model) and its gradient reaches the
     # model latent z_m (and so c).
-    assert opt.last_record["data_loss"] > 0
+    assert opt.objective_terms(u_re, u_im, z_m).data > 0
     assert z_m.grad is not None
     assert float(z_m.grad.abs().max()) > 0
 
@@ -184,17 +184,25 @@ def _built_optimiser(run_config, loss_cfg):
     return runner.build_optimiser(problem, band, cfg.band_n_iter(first))
 
 
-def _spy_built_optimisers(monkeypatch) -> list:
-    """A list that collects every optimiser ``runner.build_optimiser`` builds."""
-    built = []
+def _spy_band_solves(monkeypatch) -> list:
+    """A list that collects the ``BandSolve`` of every optimiser
+    ``runner.build_optimiser`` builds."""
+    solves = []
     original = runner.build_optimiser
 
     def spy(*args, **kwargs):
-        built.append(original(*args, **kwargs))
-        return built[-1]
+        opt = original(*args, **kwargs)
+        minimise = opt.minimise
+
+        def recorded(*a, **kw):
+            solves.append(minimise(*a, **kw))
+            return solves[-1]
+
+        opt.minimise = recorded
+        return opt
 
     monkeypatch.setattr(runner, "build_optimiser", spy)
-    return built
+    return solves
 
 
 def _objective_off_truth(opt):
@@ -202,8 +210,8 @@ def _objective_off_truth(opt):
     term is non-zero); returns ``(Phi, unweighted pde_term, unweighted data_term)``."""
     u_re, u_im, z = opt.init_params()
     z = z + 0.1 * torch.randn(z.shape, generator=torch.Generator().manual_seed(0))
-    L = float(opt.objective(u_re, u_im, z, record=True))
-    return L, opt._last["pde_loss"], opt._last["data_loss"]
+    terms = opt.objective_terms(u_re, u_im, z)
+    return float(opt.objective(u_re, u_im, z)), terms.pde, terms.data
 
 
 def test_loss_weights_scale_the_joint_objective(tiny_run_config):
@@ -242,19 +250,10 @@ def test_optimiser_result_loss_is_at_the_final_iterate(tiny_run_config):
     """The result loss is the objective at the returned (u, z), not pre-step."""
     plain = {"weights": {"pde": 1.0, "data": 1.0, "reg": 0.0}}
     opt = _built_optimiser(tiny_run_config, plain)
-    _, tape = opt.minimise()
-    result = tape.result
-    s = opt.final_state
+    solve = opt.minimise()
     with torch.no_grad():
-        L = float(opt.objective(s["u_re"], s["u_im"], s["z_m"], record=False))
-    assert result["loss"] == pytest.approx(L, rel=1e-12)
-    assert not {
-        "n_factor",
-        "n_forward_solves",
-        "n_adjoint_solves",
-        "n_outer_budget",
-    } & set(result)
-    assert {"n_outer_iter", "n_closure", "n_evaluations"} <= set(result)
+        L = float(opt.objective(*solve.params))
+    assert solve.loss == pytest.approx(L, rel=1e-12)
 
 
 def test_pde_diagonal_preconditioner_runs_end_to_end(tiny_run_config, new_run):
@@ -343,13 +342,12 @@ def test_run_inverse_started_at_the_truth_stays_there(
         ]
     )
 
-    built = _spy_built_optimisers(monkeypatch)
+    solves = _spy_band_solves(monkeypatch)
     assert run_inverse(cfg, new_run()).status == "completed"
 
-    (opt,) = built
-    assert opt.callback.result["loss"] < 1e-20
+    (final,) = solves
+    assert final.loss < 1e-20
     grid = problem.grid
-    final = opt.final_state
     c_true = problem.truth_velocity.c
-    assert rel_interior_error(final["c_full_final"], c_true, grid) < 1e-8
-    assert rel_interior_error(final["u_final"], u_true, grid) < 1e-8
+    assert rel_interior_error(final.velocity_model.c, c_true, grid) < 1e-8
+    assert rel_interior_error(final.u, u_true, grid) < 1e-8

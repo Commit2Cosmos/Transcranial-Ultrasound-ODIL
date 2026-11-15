@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 from odil_wave.grid import Grid
 from odil_wave.band import Band
-from odil_wave.loss import LossTape, Regulariser
+from odil_wave.loss import Regulariser
 
 from . import envinfo
 from .arrays import BandArrays, save_problem
@@ -32,7 +32,7 @@ from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, write_json
 from .tape import MetricTape
 
-# Name of the (only) solver, recorded in run metadata and loss-tape names.
+# Name of the (only) solver, recorded in run metadata and the run summary.
 SOLVER_NAME = "joint"
 
 
@@ -104,12 +104,7 @@ def band_label(frequencies_hz: List[float]) -> str:
 # --------------------------------------------------------------------------- #
 # Optimiser dispatch (matches the notebook helpers exactly)
 # --------------------------------------------------------------------------- #
-def build_optimiser(
-    problem: Problem,
-    band: Band,
-    n_iter: int,
-    callback: Optional[LossTape] = None,
-):
+def build_optimiser(problem: Problem, band: Band, n_iter: int):
     """The joint optimiser for ``band``, configured from ``problem.cfg``."""
     cfg = problem.cfg
     opt = cfg.optimiser
@@ -138,7 +133,6 @@ def build_optimiser(
         model_preconditioner=opt.model_preconditioner,
         wavefield_preconditioner=opt.wavefield_preconditioner,
         regulariser=_build_regulariser(cfg, problem.grid),
-        callback=callback,
     )
 
 
@@ -175,13 +169,7 @@ def run_frequency_band(
     band = problem.make_band(freqs, velocity_model)
 
     band_tape = tape.start_band(band_index, band)
-    # The loss callback keeps the solver's scalar history and result; the
-    # tape rows come from ``record_row``.
-    loss_tape = LossTape(
-        name=f"{SOLVER_NAME}_{label}",
-        store_c_history=False,
-    )
-    opt = build_optimiser(problem, band, n_iter, loss_tape)
+    opt = build_optimiser(problem, band, n_iter)
 
     band_arrays = BandArrays(band, opt.pde_scale)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
@@ -205,11 +193,9 @@ def run_frequency_band(
             )
 
     t_opt = time.perf_counter()
-    recovered_wfs, _ = opt.minimise(on_log=record_row)
+    solve = opt.minimise(on_log=record_row)
     optimise_s = time.perf_counter() - t_opt
 
-    recovered_velocity = recovered_wfs[0].velocity_model
-    opt_result = dict(loss_tape.result or {})
     start_metrics = band_tape.start_row
     final_metrics = band_tape.final_row
 
@@ -239,7 +225,11 @@ def run_frequency_band(
                 "wavefield_solve_s": opt.wavefield_solve_s,
                 "start_metrics": start_metrics,
                 "final_metrics": final_metrics,
-                "optimiser_result": opt_result,
+                "optimiser_result": {
+                    "loss": solve.loss,
+                    "n_evaluations": solve.n_evaluations,
+                    "scale_info": opt.scale_info,
+                },
                 "warnings": list(health.warnings),
                 "worst_fit_shot": band_arrays.worst_fit_shot,
                 "saved_shots": band_arrays.shots,
@@ -266,7 +256,7 @@ def run_frequency_band(
         start_metrics=start_metrics,
         final_metrics=final_metrics,
         band_dir=band_dir,
-        velocity_model=recovered_velocity,
+        velocity_model=solve.velocity_model,
         warnings=list(health.warnings),
     )
 
@@ -467,7 +457,6 @@ def _write_run_summary(result: RunResult, warnings: List[str], wall_s: float) ->
             "status": result.status,
             "wall_s": wall_s,
             "warnings": list(warnings),
-            "n_bands": len(result.config.continuation.bands),
             "metrics_summary": result.metrics_summary,
             "error": result.error,
         },

@@ -105,7 +105,7 @@ def test_n_evaluations_is_cumulative_over_the_run(tiny_two_band_run):
     """Each band's closures add on; band 1 starts where band 0 ended."""
     run_dir = tiny_two_band_run.run_dir
     _, rows = read_tape(run_dir)
-    closures = [s["optimiser_result"]["n_closure"] for s in band_summaries(run_dir)]
+    closures = [s["optimiser_result"]["n_evaluations"] for s in band_summaries(run_dir)]
     assert all(n > 0 for n in closures)
     b0, b1 = band_rows(rows, 0), band_rows(rows, 1)
     assert b0[0]["n_evaluations"] == 0
