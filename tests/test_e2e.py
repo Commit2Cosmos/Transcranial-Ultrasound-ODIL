@@ -65,7 +65,7 @@ def test_cli_tiny_two_band_run_float32(tmp_path, git_repo, tiny_run_config, devi
 
     summary = json.loads((run_dir / "run_summary.json").read_text())
     assert summary["status"] == "completed"
-    assert summary["n_bands"] == 2
+    assert meta["n_bands"] == 2
     metrics = summary["metrics_summary"]
     final_err = metrics["final_metrics"]["rmse_brain"]
     assert np.isfinite(final_err)

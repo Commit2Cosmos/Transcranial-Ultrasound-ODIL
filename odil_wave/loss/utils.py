@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.colors import Normalize
@@ -14,10 +13,11 @@ from odil_wave.plot_utils import length_scale
 
 @dataclass
 class LossTape:
-    """Tape to store scalar loss/residual diagnostics + optional c-history.
+    """Scalar loss history and optional ``c`` snapshots, for notebook plots.
 
-    Important: this does NOT store full PDE/data residual tensors, because those
-    are huge and can make Jupyter memory grow until the kernel crashes.
+    Filled live by passing :meth:`log` as ``JointFreqODIL.minimise(on_log=...)``,
+    or from a saved run's tape rows by :meth:`from_records`. Full residual
+    tensors are never stored: they can grow a Jupyter kernel until it crashes.
     """
 
     name: str = "Default LossTape"
@@ -27,87 +27,24 @@ class LossTape:
     history: dict = field(
         default_factory=lambda: {
             "loss": [],
-            "pde_rms": [],
-            "data_rms": [],
-            "pde_loss": [],
-            "data_loss": [],
             "pde_rel_residual": [],
+            "rel_data_residual": [],
             "c_history": [],
         }
     )
-    _result: object = field(init=False, default=None)
 
-    def log(
-        self,
-        loss: float,
-        residuals,
-        pde_rel_residual: float | None = None,
-    ) -> None:
-        """Log scalar loss and residual diagnostics for one iteration.
-
-        Parameters
-        ----------
-        loss : float
-            Scalar loss value.
-        residuals : dict or tuple of torch.Tensor
-            Either ``{"pde_rms": ..., "data_rms": ...}`` or a tuple
-            ``(r_pde, r_data)`` from which RMS values are derived.
-        pde_rel_residual : float, optional
-            Scaled PDE residual RMS (the tape's ``pde_rel_residual``) to append.
-
-        Notes
-        -----
-        Only floats are stored; full residual tensors are never retained.
-        """
-        self.history["loss"].append(float(loss))
-
-        if isinstance(residuals, dict):
-            for key, value in residuals.items():
-                self.history.setdefault(key, []).append(float(value))
-
-        else:
-            r_pde = residuals[0]
-            with torch.no_grad():
-                if r_pde.is_complex():
-                    pde_sq = r_pde.real.square() + r_pde.imag.square()
-                else:
-                    pde_sq = r_pde.detach().square()
-                self.history["pde_rms"].append(float(pde_sq.mean().sqrt().cpu()))
-                self.history["pde_loss"].append(float(pde_sq.mean().cpu()))
-
-                if len(residuals) > 1:
-                    r_data = residuals[1]
-                    if r_data.is_complex():
-                        data_sq = r_data.real.square() + r_data.imag.square()
-                    else:
-                        data_sq = r_data.detach().square()
-                    self.history["data_rms"].append(float(data_sq.mean().sqrt().cpu()))
-                    self.history["data_loss"].append(float(data_sq.mean().cpu()))
-
-        if pde_rel_residual is not None:
-            self.history["pde_rel_residual"].append(float(pde_rel_residual))
-
-    def log_c(self, c_arr: np.ndarray) -> None:
-        """Record a snapshot of the full-grid velocity field.
-
-        Parameters
-        ----------
-        c_arr : np.ndarray
-            Full-grid velocity field to snapshot (stored as float32).
-
-        Notes
-        -----
-        No-op when ``store_c_history`` is False or the iteration count is not
-        a multiple of ``c_history_every``.
-        """
-        if not self.store_c_history:
-            return
-
-        n_logged = len(self.history["loss"])
-        if n_logged % self.c_history_every != 0:
-            return
-
-        self.history["c_history"].append(np.asarray(c_arr, dtype=np.float32).copy())
+    def log(self, iterate) -> None:
+        """Append one :class:`~odil_wave.optimisation.Iterate`'s scalars, and
+        its ``c_full`` every ``c_history_every``-th call if ``store_c_history``."""
+        self.history["loss"].append(float(iterate.loss))
+        self.history["pde_rel_residual"].append(float(iterate.pde_rel_residual))
+        self.history["rel_data_residual"].append(float(iterate.rel_data_residual))
+        if (
+            self.store_c_history
+            and len(self.history["loss"]) % self.c_history_every == 0
+        ):
+            c = iterate.c_full.detach().cpu().numpy()
+            self.history["c_history"].append(np.asarray(c, dtype=np.float32).copy())
 
     @classmethod
     def from_records(cls, records, name: str = "loaded run") -> "LossTape":
@@ -152,39 +89,29 @@ class LossTape:
         return tape
 
     def show(self, title: str = "Loss History"):
-        """Plot loss and PDE/data RMS residual histories.
-
-        Parameters
-        ----------
-        title : str
-            Figure suptitle.
-
-        Notes
-        -----
-        Asserts that a loss history exists; the data-RMS panel is shown only
-        when a data-residual series was logged.
-        """
+        """Plot the loss and residual-ratio histories; the data panel only when
+        a ``rel_data_residual`` series exists."""
         assert len(self.history["loss"]) > 0, "No loss history to show."
 
-        has_data = len(self.history.get("data_rms", [])) > 0
+        has_data = len(self.history.get("rel_data_residual", [])) > 0
         ncols = 3 if has_data else 2
         fig, axs = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
 
         axs[0].semilogy(self.history["loss"])
         axs[0].set_title("Loss")
-        axs[0].set_xlabel("Iteration")
+        axs[0].set_xlabel("Logged iteration")
         axs[0].set_ylabel("Loss Value")
 
-        axs[1].semilogy(self.history["pde_rms"])
-        axs[1].set_title("PDE RMS Residual")
-        axs[1].set_xlabel("Iteration")
-        axs[1].set_ylabel("RMS")
+        axs[1].semilogy(self.history["pde_rel_residual"])
+        axs[1].set_title("PDE residual (relative)")
+        axs[1].set_xlabel("Logged iteration")
+        axs[1].set_ylabel("RMS(r_pde / pde_scale)")
 
         if has_data:
-            axs[2].semilogy(self.history["data_rms"])
-            axs[2].set_title("Data RMS Residual")
-            axs[2].set_xlabel("Iteration")
-            axs[2].set_ylabel("RMS")
+            axs[2].semilogy(self.history["rel_data_residual"])
+            axs[2].set_title("Data residual (relative)")
+            axs[2].set_xlabel("Logged iteration")
+            axs[2].set_ylabel("||d_syn - d_obs|| / ||d_obs||")
 
         fig.suptitle(title)
         plt.tight_layout()
@@ -417,25 +344,3 @@ class LossTape:
         fig.suptitle(title)
         plt.tight_layout()
         plt.show()
-
-    @property
-    def result(self):
-        """Optional result object attached to this tape.
-
-        Returns
-        -------
-        object or None
-            The stored result, or None if unset.
-        """
-        return self._result
-
-    @result.setter
-    def result(self, value):
-        """Attach a result object to this tape.
-
-        Parameters
-        ----------
-        value : object
-            Result to store.
-        """
-        self._result = value

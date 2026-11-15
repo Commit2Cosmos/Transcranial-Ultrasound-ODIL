@@ -3,9 +3,7 @@
 A single joint optimiser over **both** the complex wavefield block ``u`` (all
 sources and frequencies) and a squared-slowness model latent ``z_m`` — no
 alternating updates, no closed-form / reduced-FWI / WRI / augmented-Lagrangian
-c-block, no multigrid, no adaptive loss balancing. It exists to test whether a
-properly scaled, verified full-space joint formulation recovers ``m``/``c`` from
-receiver-trace data, and to diagnose precisely why it does or does not.
+c-block, no multigrid, no adaptive loss balancing.
 
 Formulation
 -----------
@@ -95,24 +93,23 @@ Formulation
   ``pde_weight / (N_int n_s n_f)`` with it. ``T``, and so ``s``, then
   differs by about the size of ``A``'s column norms over ``|lambda_tt|``.
 
-The class is pure library code (no file IO). Per-iteration diagnostics are
-exposed on :attr:`diag_rows` and mirrored into the loss callback history; the
-``sandbox/joint_odil`` drivers persist the full §10 artifact set.
+The class is pure library code (no file IO). ``minimise`` reports through
+``on_log`` (an :class:`Iterate` per logged point) and returns a
+:class:`BandSolve`; the run's tape and artifacts are written in
+``odil_wave.experiment``.
 """
 
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import torch
 
 from odil_wave.band import Band
-from odil_wave.loss import LossTape, Regulariser
+from odil_wave.loss import Regulariser
 from odil_wave.models import VelocityModel
-from odil_wave.wavefield import Wavefield
 
 from .preconditioners import (
     InitialModelWavefieldPreconditioner,
@@ -136,9 +133,8 @@ def real_scalar_count(x: torch.Tensor) -> int:
 def mean_real_sq(x: torch.Tensor) -> torch.Tensor:
     """Mean of ``|x|^2`` over the count of **real** scalar entries.
 
-    For complex ``x`` this divides ``sum(re^2 + im^2)`` by ``2 * numel`` — the
-    real degrees of freedom (real + imaginary), as required by the task's
-    objective averaging. Equals ``0.5 * mean(|x|^2)`` for complex ``x``.
+    For complex ``x`` this divides ``sum(re^2 + im^2)`` by ``2 * numel``, the
+    real degrees of freedom (real + imaginary): ``0.5 * mean(|x|^2)``.
     """
     if x.is_complex():
         ssq = x.real.square().sum() + x.imag.square().sum()
@@ -222,6 +218,28 @@ class Iterate:
     u: torch.Tensor  # (n_shots, nf, Nx, Ny) complex wavefield, detached
 
 
+@dataclass(frozen=True)
+class ObjectiveTerms:
+    """The objective's terms before weighting, from
+    :meth:`JointFreqODIL.objective_terms`:
+    ``loss = pde_weight * pde + data_weight * data + reg_weight * reg``."""
+
+    pde: float
+    data: float
+    reg: float  # R(c_interior); 0.0 without a regulariser
+
+
+@dataclass(frozen=True)
+class BandSolve:
+    """What one band's joint solve produced: what ``minimise`` returns."""
+
+    velocity_model: VelocityModel  # the recovered model, full grid
+    u: torch.Tensor  # (n_shots, nf, Nx, Ny) complex physical wavefield, detached
+    params: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]  # final (v_re, v_im, z_m)
+    loss: float  # the objective at the final iterate
+    n_evaluations: int  # L-BFGS closures in this solve
+
+
 # --------------------------------------------------------------------------- #
 # Solver
 # --------------------------------------------------------------------------- #
@@ -234,13 +252,12 @@ class JointFreqODIL:
     library defaults. See the module docstring for the formulation. The
     operator, sources, observed data, initial model and warm start all come
     from ``band``; ``wavefield_preconditioner="initial_model"`` needs a band
-    built with ``keep_factors``. ``callback`` receives the scalar history and
-    result.
+    built with ``keep_factors``.
 
-    ``init_params``, ``objective``, ``residuals`` and ``physical_u`` take the
-    optimised wavefield variable ``(v_re, v_im)``, as do the ``u_re`` /
-    ``u_im`` entries of ``final_state``; the logged ``Iterate.u`` and the
-    returned wavefields are the physical ``u``.
+    ``init_params``, ``objective``, ``objective_terms``, ``residuals`` and
+    ``physical_u`` take the optimised wavefield variable ``(v_re, v_im)``, as
+    does ``BandSolve.params``; ``Iterate.u`` and ``BandSolve.u`` are the
+    physical ``u``.
     """
 
     def __init__(
@@ -262,14 +279,12 @@ class JointFreqODIL:
         model_preconditioner: str,
         wavefield_preconditioner: str,
         regulariser: Optional[Regulariser],
-        callback: Optional[LossTape] = None,
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
         eps_pde: float = 1e-30,
         z_scale: float = 1.0,
         logit_clip: float = 1e-6,
-        eps_grad: float = 1e-30,
         eps_precond: float = 1e-2,
     ) -> None:
         if model_preconditioner not in MODEL_PRECONDITIONERS:
@@ -290,7 +305,6 @@ class JointFreqODIL:
 
         self.band = band
         self.regulariser = regulariser
-        self.callback = callback if callback is not None else LossTape()
         wavefield = band.wavefield
         grid = wavefield.grid
         self.grid = grid
@@ -316,7 +330,6 @@ class JointFreqODIL:
         # losses. lambda_data (== data_weight) stays fixed.
         self.pde_weight = float(pde_weight)
         self.reg_weight = float(reg_weight)
-        self.eps_grad = float(eps_grad)
         self.log_every = max(1, int(log_every))
         self.verbose = bool(verbose)
 
@@ -371,14 +384,7 @@ class JointFreqODIL:
         self.data_scale = data_scale.view(self.n_shots, self.nf, 1)
         # ||d_obs||_2 over shots x frequencies x receivers, for rel_data_residual.
         self.obs_norm = float(torch.linalg.vector_norm(self._obs_traces))
-        # Fixed model reference for reporting: c_ref = homogeneous background.
-        c0_int = self.vm_in.c[self._interior_slice].detach()
-        self.c_ref = float(c0_int.mean().item())
-        self.m_ref = 1.0 / self.c_ref**2
 
-        # Diagnostics buffers.
-        self.diag_rows: List[Dict[str, float]] = []
-        self.scale_info: Dict[str, object] = {}
         self._build_diag_scale_info(u_ref, pde_scale, data_scale)
 
         # Wavefield preconditioner (v <-> u_tilde), then the model one (y <-> z_m),
@@ -419,8 +425,6 @@ class JointFreqODIL:
             "c_max": self.c_max,
             "m_min": self.m_min,
             "m_max": self.m_max,
-            "c_ref": self.c_ref,
-            "m_ref": self.m_ref,
             "z_scale": self.latent.z_scale,
             "pde_weight": self.pde_weight,
             "data_weight": self.data_weight,
@@ -501,11 +505,6 @@ class JointFreqODIL:
     def c_full_of_z(self, z_m: torch.Tensor) -> torch.Tensor:
         return self.vm_in.build_full_c(self.latent.c_of_z(z_m))
 
-    @property
-    def last_record(self) -> Dict[str, float]:
-        """Diagnostics of the latest ``objective(..., record=True)`` call."""
-        return dict(self._last)
-
     # ------------------------------------------------------------------ #
     # Residuals and objective (the production code path).
     # ------------------------------------------------------------------ #
@@ -525,148 +524,80 @@ class JointFreqODIL:
         return r_pde, r_data
 
     def objective(
-        self,
-        v_re: torch.Tensor,
-        v_im: torch.Tensor,
-        z_m: torch.Tensor,
-        *,
-        record: bool = True,
+        self, v_re: torch.Tensor, v_im: torch.Tensor, z_m: torch.Tensor
     ) -> torch.Tensor:
         """Phi at the optimised wavefield variable and the physical latent."""
-        return self._objective_of_u(self.physical_u(v_re, v_im), z_m, record=record)
+        pde, data, reg, _ = self._terms_of_u(self.physical_u(v_re, v_im), z_m)
+        return self._loss(pde, data, reg)
 
-    def _objective_of_u(
-        self, u: torch.Tensor, z_m: torch.Tensor, *, record: bool
-    ) -> torch.Tensor:
+    def objective_terms(
+        self, v_re: torch.Tensor, v_im: torch.Tensor, z_m: torch.Tensor
+    ) -> ObjectiveTerms:
+        """The terms of ``objective`` at the same point, unweighted."""
+        with torch.no_grad():
+            pde, data, reg, _ = self._terms_of_u(self.physical_u(v_re, v_im), z_m)
+        return ObjectiveTerms(pde=float(pde), data=float(data), reg=float(reg))
+
+    def _terms_of_u(self, u: torch.Tensor, z_m: torch.Tensor):
+        """Unweighted ``(pde, data, reg)`` terms and the data residual."""
         r_pde, r_data = self._residuals_of_u(u, z_m)
-        pde_term = self.pde_node_factor * mean_real_sq(r_pde / self.pde_scale)
-        data_term = mean_real_sq(r_data / self.data_scale)
-        L = self.pde_weight * pde_term + self.data_weight * data_term
-        reg_term = torch.zeros((), dtype=self.dtype, device=self.device)
+        pde = self.pde_node_factor * mean_real_sq(r_pde / self.pde_scale)
+        data = mean_real_sq(r_data / self.data_scale)
+        reg = torch.zeros((), dtype=self.dtype, device=self.device)
         if self.reg_weight != 0.0 and self.regulariser is not None:
-            c_int = self.latent.c_of_z(z_m)
-            reg_term = self.reg_weight * self.regulariser(c_int)
-            L = L + reg_term
-        if L.is_complex():
-            L = L.real
-        if record:
-            with torch.no_grad():
-                self._last = {
-                    "pde_weight": self.pde_weight,
-                    "pde_term": float(pde_term.detach()),
-                    "pde_term_weighted": float((self.pde_weight * pde_term).detach()),
-                    "data_term": float((self.data_weight * data_term).detach()),
-                    "reg_term": float(reg_term.detach()),
-                    "pde_loss": float(pde_term.detach()),
-                    "data_loss": float(data_term.detach()),
-                    "pde_rms_raw": float(rms_abs(r_pde).detach()),
-                    "data_rms_raw": float(rms_abs(r_data).detach()),
-                    "pde_rms_scaled": float(rms_abs(r_pde / self.pde_scale).detach()),
-                    "data_rms_scaled": float(
-                        rms_abs(r_data / self.data_scale).detach()
-                    ),
-                    "pde_rel_residual": math.sqrt(2.0 * float(pde_term.detach())),
-                    "rel_data_residual": float(torch.linalg.vector_norm(r_data))
-                    / max(self.obs_norm, 1e-30),
-                }
+            reg = self.regulariser(self.latent.c_of_z(z_m))
+        return pde, data, reg, r_data
+
+    def _loss(self, pde, data, reg) -> torch.Tensor:
+        L = self.pde_weight * pde + self.data_weight * data
+        if self.reg_weight != 0.0 and self.regulariser is not None:
+            L = L + self.reg_weight * reg
         return L
 
     # ------------------------------------------------------------------ #
-    def _model_stats(self, z_m: torch.Tensor) -> Dict[str, float]:
-        with torch.no_grad():
-            m = self.latent.m_of_z(z_m)
-            c = m.clamp_min(1e-30).rsqrt()
-            sderiv = self.latent.sigmoid_deriv(z_m)
-            # near-bound fraction: sigmoid within 1e-3 of 0 or 1
-            s = torch.sigmoid(self.latent.z_scale * z_m)
-            near = ((s < 1e-3) | (s > 1.0 - 1e-3)).float().mean()
-            return {
-                "m_min": float(m.min()),
-                "m_max": float(m.max()),
-                "c_min": float(c.min()),
-                "c_max": float(c.max()),
-                "sigmoid_deriv_mean": float(sderiv.mean()),
-                "sigmoid_deriv_min": float(sderiv.min()),
-                "sat_frac": float(near),
-            }
+    def _snapshot(self, n_done: int, v_re, v_im, z_m) -> Iterate:
+        """The :class:`Iterate` after ``n_done`` outer iterations; the
+        evaluation is not counted as a closure.
 
-    def _grad_norms(
-        self, v_re: torch.Tensor, v_im: torch.Tensor, z_m: torch.Tensor
-    ) -> Dict[str, float]:
-        gu = 0.0
-        if v_re.grad is not None:
-            gu += float(v_re.grad.pow(2).sum())
-        if v_im.grad is not None:
-            gu += float(v_im.grad.pow(2).sum())
-        gu = math.sqrt(gu)
-        gz = float(z_m.grad.norm()) if z_m.grad is not None else 0.0
-        return {
-            "grad_u_norm": gu,
-            "grad_z_norm": gz,
-            "grad_ratio": gz / max(gu, self.eps_grad),
-        }
-
-    def _diag_grads(self, v_re_val, v_im_val, z_m_val):
-        """Φ and *physical* block-gradient norms (∇_{u_tilde}, ∇_{z_m}) at a point.
-
-        Uses fresh leaves on ``u_tilde`` and ``z_m`` so the reported gradients are
-        always with respect to the scaled wavefield and the physical latent —
-        comparable across runs with and without either preconditioner — and
-        records ``self._last``.
+        Gradients are taken on fresh leaves in ``u_tilde`` and ``z_m``, so
+        they are comparable across runs with and without either
+        preconditioner.
         """
+        z_m = z_m.detach()
         with torch.no_grad():
-            u_tilde = self.wavefield_precond.u_tilde_of_v(
-                v_re_val.detach(), v_im_val.detach()
-            )
+            u_tilde = self.wavefield_precond.u_tilde_of_v(v_re.detach(), v_im.detach())
         a = u_tilde.real.clone().requires_grad_(True)
         b = u_tilde.imag.clone().requires_grad_(True)
-        c = z_m_val.detach().clone().requires_grad_(True)
-        L = self._objective_of_u(self.u_ref * torch.complex(a, b), c, record=True)
-        ga, gb, gc = torch.autograd.grad(L, (a, b, c))
-        gu = math.sqrt(float(ga.pow(2).sum() + gb.pow(2).sum()))
-        gz = float(gc.norm())
-        return float(L.detach()), {
-            "grad_u_norm": gu,
-            "grad_z_norm": gz,
-            "grad_ratio": gz / max(gu, self.eps_grad),
-        }
-
-    def _snapshot(self, n_done: int, v_re, v_im, z_m):
-        """``(Iterate, grad norms, model stats)`` after ``n_done`` outer
-        iterations; the evaluation is not counted as a closure."""
-        z_m = z_m.detach()
-        loss_scalar, gnorms = self._diag_grads(v_re, v_im, z_m)
-        mstats = self._model_stats(z_m)
+        z = z_m.clone().requires_grad_(True)
+        pde, data, reg, r_data = self._terms_of_u(self.u_ref * torch.complex(a, b), z)
+        L = self._loss(pde, data, reg)
+        ga, gb, gz = torch.autograd.grad(L, (a, b, z))
         with torch.no_grad():
-            c_full = self.c_full_of_z(z_m)
-            u = self.physical_u(v_re.detach(), v_im.detach())
-        last = self._last
-        it = Iterate(
-            iter=n_done,
-            n_evaluations=self._n_eval,
-            loss=loss_scalar,
-            pde_term=last["pde_term_weighted"],
-            data_term=last["data_term"],
-            reg_term=last["reg_term"],
-            pde_rel_residual=last["pde_rel_residual"],
-            rel_data_residual=last["rel_data_residual"],
-            grad_u_norm=gnorms["grad_u_norm"],
-            grad_z_norm=gnorms["grad_z_norm"],
-            sat_frac=mstats["sat_frac"],
-            c_full=c_full,
-            u=u,
-        )
-        return it, gnorms, mstats
+            s = torch.sigmoid(self.latent.z_scale * z_m)
+            return Iterate(
+                iter=n_done,
+                n_evaluations=self._n_eval,
+                loss=float(L),
+                pde_term=float(self.pde_weight * pde),
+                data_term=float(self.data_weight * data),
+                reg_term=float(self.reg_weight * reg),
+                pde_rel_residual=math.sqrt(2.0 * float(pde)),
+                rel_data_residual=float(torch.linalg.vector_norm(r_data))
+                / max(self.obs_norm, 1e-30),
+                grad_u_norm=math.sqrt(float(ga.pow(2).sum() + gb.pow(2).sum())),
+                grad_z_norm=float(gz.norm()),
+                sat_frac=float(((s < 1e-3) | (s > 1.0 - 1e-3)).float().mean()),
+                c_full=self.c_full_of_z(z_m),
+                u=self.physical_u(v_re.detach(), v_im.detach()),
+            )
 
-    def minimise(self, on_log=None, **overrides) -> Tuple[List[Wavefield], LossTape]:
+    def minimise(self, on_log: Optional[Callable[[Iterate], None]] = None) -> BandSolve:
         """Run ``n_iter`` outer L-BFGS steps.
 
         ``on_log(iterate)`` receives an :class:`Iterate` at the start (before
         any update) and at every logged point: each ``log_every``-th outer
         iteration and always the final iterate.
         """
-        for k, v in overrides.items():
-            setattr(self, k, v)
         v_re0, v_im0, z0 = self.init_params()
         v_re = torch.nn.Parameter(v_re0)
         v_im = torch.nn.Parameter(v_im0)
@@ -692,112 +623,45 @@ class JointFreqODIL:
         def closure():
             self._n_eval += 1
             opt.zero_grad()
-            L = self.objective(v_re, v_im, z_of(), record=True)
+            L = self.objective(v_re, v_im, z_of())
             L.backward()
             return L
 
-        t0 = time.perf_counter()
+        reports = on_log is not None or self.verbose
         if on_log is not None:
-            on_log(self._snapshot(0, v_re, v_im, z_of())[0])
+            on_log(self._snapshot(0, v_re, v_im, z_of()))
         for i in range(self.n_iter):
             opt.step(closure)
 
-            # Diagnostic evaluation at the current (post-step) point.
             n_done = i + 1
-            if n_done % self.log_every != 0 and n_done != self.n_iter:
+            if not reports or (n_done % self.log_every != 0 and n_done != self.n_iter):
                 continue
-            it, gnorms, mstats = self._snapshot(n_done, v_re, v_im, z_of())
-            loss_scalar = it.loss
-            self.diag_rows.append(
-                {
-                    "iter": n_done,
-                    "wall_s": time.perf_counter() - t0,
-                    "loss": loss_scalar,
-                    "n_eval": self._n_eval,
-                    **self._last,
-                    **gnorms,
-                    **mstats,
-                }
-            )
-            self.last_residuals = {
-                "pde_rms": self._last["pde_rms_raw"],
-                "data_rms": self._last["data_rms_raw"],
-                "pde_loss": self._last["pde_loss"],
-                "data_loss": self._last["data_loss"],
-                # Weighted terms as minimised (weights applied here).
-                "pde_term": self._last["pde_term_weighted"],
-                "data_term": self._last["data_term"],
-                "reg_term": self._last["reg_term"],
-                "pde_rel_residual": self._last["pde_rel_residual"],
-                # Closures so far in this solve (diagnostics excluded).
-                "n_evaluations": self._n_eval,
-            }
-            self.callback.log(
-                loss_scalar,
-                self.last_residuals,
-                pde_rel_residual=self._last["pde_rel_residual"],
-            )
-            hist = self.callback.history
-            for key in ("grad_u_norm", "grad_z_norm", "grad_ratio"):
-                hist.setdefault(key, []).append(gnorms[key])
-            hist.setdefault("sat_frac", []).append(mstats["sat_frac"])
-            hist.setdefault("pde_rms_scaled", []).append(self._last["pde_rms_scaled"])
-            hist.setdefault("data_rms_scaled", []).append(self._last["data_rms_scaled"])
-            if self.callback.store_c_history:
-                self.callback.log_c(it.c_full.cpu().numpy())
+            it = self._snapshot(n_done, v_re, v_im, z_of())
             if self.verbose:
+                c = it.c_full[self._interior_slice]
                 print(
-                    f"[joint] iter {n_done:4d} | Phi={loss_scalar:.6e} | "
-                    f"pde_rel={self._last['pde_rel_residual']:.3e} | "
-                    f"|gz|/|gu|={gnorms['grad_ratio']:.3e} | "
-                    f"c=[{mstats['c_min']:.1f},{mstats['c_max']:.1f}]"
+                    f"[joint] iter {n_done:4d} | Phi={it.loss:.6e} | "
+                    f"pde_rel={it.pde_rel_residual:.3e} | "
+                    f"|gu|={it.grad_u_norm:.3e} |gz|={it.grad_z_norm:.3e} | "
+                    f"c=[{float(c.min()):.1f},{float(c.max()):.1f}]"
                 )
             if on_log is not None:
                 on_log(it)
 
-        wall_s = time.perf_counter() - t0
-
-        # Final recovered model + wavefield.
         with torch.no_grad():
+            v_re_final, v_im_final = v_re.detach(), v_im.detach()
             z_final = z_of().detach()
-            c_full_final = self.c_full_of_z(z_final)
-            vm_out = VelocityModel.from_field(
-                self.grid,
-                c_full_final,
-                pml_c=self.vm_in.pml_c,
-            )
-            u_final = self.physical_u(v_re.detach(), v_im.detach())
             # ``LBFGS.step`` returns the loss at the *start* of the step; report
             # the objective at the final iterate instead (not counted as a closure).
-            loss_final = float(
-                self.objective(v_re.detach(), v_im.detach(), z_final, record=False)
+            loss_final = float(self.objective(v_re_final, v_im_final, z_final))
+            velocity_model = VelocityModel.from_field(
+                self.grid, self.c_full_of_z(z_final), pml_c=self.vm_in.pml_c
             )
-
-        outputs: List[Wavefield] = []
-        for s in range(self.n_shots):
-            wf = Wavefield(
-                grid=self.grid,
-                frequency_selection=self.band.frequency_selection,
-                velocity_model=vm_out,
-            )
-            wf.amplitude = u_final[s]
-            outputs.append(wf)
-
-        self.final_state = {
-            "u_re": v_re.detach(),
-            "u_im": v_im.detach(),
-            "z_m": z_final,
-            "u_final": u_final,
-            "c_full_final": c_full_final,
-        }
-        self.callback.result = {
-            "loss": loss_final,
-            "n_outer_iter": self.n_iter,
-            "n_closure": self._n_eval,
-            "n_evaluations": self._n_eval,
-            "wall_s": wall_s,
-            "method": "joint",
-            "data_weight": self.data_weight,
-            "scale_info": self.scale_info,
-        }
-        return outputs, self.callback
+            u_final = self.physical_u(v_re_final, v_im_final)
+        return BandSolve(
+            velocity_model=velocity_model,
+            u=u_final,
+            params=(v_re_final, v_im_final, z_final),
+            loss=loss_final,
+            n_evaluations=self._n_eval,
+        )

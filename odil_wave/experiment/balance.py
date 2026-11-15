@@ -116,15 +116,13 @@ def _measure(cfg: RunConfig, case: GridCase) -> BalanceRow:
     opt = build_optimiser(problem, band, 1)
 
     u_re, u_im, z_m = opt.init_params()
+    data_term = opt.objective_terms(u_re, u_im, z_m).data
+    # Inverse crime (no observation PML): the observed fields are
+    # H⁻¹(c_true) on the inversion grid.
     with torch.no_grad():
-        opt.objective(u_re, u_im, z_m)
-        data_term = opt.last_record["data_loss"]
-        # Inverse crime (no observation PML): the observed fields are
-        # H⁻¹(c_true) on the inversion grid.
         u_true = torch.stack([w.amplitude for w in band.true_wavefields])
         u_true = u_true.to(dtype=opt.cdtype, device=opt.device) / opt.u_ref
-        opt.objective(*opt.wavefield_precond.v_of_u_tilde(u_true), z_m)
-        pde_term = opt.last_record["pde_term"]
+    pde_term = opt.objective_terms(*opt.wavefield_precond.v_of_u_tilde(u_true), z_m).pde
 
     grid = problem.grid
     h = float(grid.dx)

@@ -3,10 +3,11 @@
 These affirm:
 * ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
   (zero on a constant field) and rejects unknown kinds.
-* ``LossTape`` logs scalar diagnostics from dict/tuple residuals, honours the
-  c-history cadence, and rebuilds from saved records.
+* ``LossTape`` logs an ``Iterate``'s scalars, honours the c-history cadence,
+  and rebuilds from saved records into the same plots.
 """
 
+from types import SimpleNamespace
 from typing import get_args
 
 import matplotlib.pyplot as plt
@@ -153,17 +154,23 @@ def test_regulariser_rejects_non_positive_eps():
 # --------------------------------------------------------------------------- #
 # LossTape
 # --------------------------------------------------------------------------- #
-def test_loss_tape_logs_dict_and_tuple():
-    """LossTape stores scalar loss/residual series from dict or tensor residuals."""
-    tape = LossTape()
-    tape.log(1.0, {"pde_rms": 0.5, "data_rms": 0.2}, pde_rel_residual=0.1)
-    r_pde = torch.tensor([3.0, 4.0])
-    r_data = torch.tensor([1.0, 1.0])
-    tape.log(0.5, (r_pde, r_data))
+def _iterate(loss, c=0.0):
+    """The ``Iterate`` fields ``LossTape.log`` reads."""
+    return SimpleNamespace(
+        loss=loss,
+        pde_rel_residual=loss / 10,
+        rel_data_residual=loss / 100,
+        c_full=torch.full((3, 3), c),
+    )
+
+
+def test_loss_tape_logs_an_iterate():
+    tape = LossTape(store_c_history=False)
+    tape.log(_iterate(1.0))
+    tape.log(_iterate(0.5))
     assert tape.history["loss"] == [1.0, 0.5]
-    assert tape.history["pde_rms"][0] == pytest.approx(0.5)
-    # second entry derived from the tuple: rms of [3,4] = sqrt(12.5).
-    assert tape.history["pde_rms"][1] == pytest.approx(np.sqrt(12.5))
+    assert tape.history["pde_rel_residual"] == [0.1, 0.05]
+    assert tape.history["rel_data_residual"] == [0.01, 0.005]
 
 
 def recovery_velocity_norms(truth, recovered, geometry) -> list:
@@ -195,17 +202,15 @@ def test_recovery_of_another_truth_shares_a_linear_scale(
 
 
 def test_loss_tape_c_history_cadence():
-    """log_c honours store_c_history and the c_history_every cadence."""
+    """c snapshots honour store_c_history and the c_history_every cadence."""
     tape = LossTape(store_c_history=True, c_history_every=2)
     for i in range(4):
-        tape.log(float(i), {"pde_rms": 0.0})
-        tape.log_c(np.full((3, 3), float(i)))
+        tape.log(_iterate(float(i), c=float(i)))
     # snapshots kept only when the logged-count is a multiple of 2 -> 2 frames.
-    assert len(tape.history["c_history"]) == 2
+    assert [float(c[0, 0]) for c in tape.history["c_history"]] == [1.0, 3.0]
 
     off = LossTape(store_c_history=False)
-    off.log(0.0, {"pde_rms": 0.0})
-    off.log_c(np.zeros((3, 3)))
+    off.log(_iterate(0.0))
     assert off.history["c_history"] == []
 
 
@@ -222,9 +227,15 @@ def test_loss_tape_from_records():
     assert "ssim_brain" not in tape.history
 
 
-def test_loss_tape_result_property():
-    """The optional result object round-trips through the property."""
-    tape = LossTape()
-    assert tape.result is None
-    tape.result = {"loss": 0.1}
-    assert tape.result == {"loss": 0.1}
+def test_a_tape_rebuilt_from_records_plots_every_panel(monkeypatch):
+    """``show`` on a tape rebuilt from saved rows draws each panel's series,
+    as for a live run."""
+    monkeypatch.setattr(plt, "show", lambda: None)
+    records = [
+        {"loss_total": 2.0, "pde_rel_residual": 0.2, "rel_data_residual": 0.5},
+        {"loss_total": 1.0, "pde_rel_residual": 0.1, "rel_data_residual": 0.4},
+    ]
+    LossTape.from_records(records).show()
+    fig = plt.gcf()
+    assert [len(ax.lines[0].get_ydata()) for ax in fig.axes] == [2, 2, 2]
+    plt.close(fig)

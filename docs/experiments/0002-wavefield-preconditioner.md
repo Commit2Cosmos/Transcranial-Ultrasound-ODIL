@@ -127,3 +127,5 @@ Health warnings: `none` hit `c_min` within 1% of 1300 m/s from `iter` 5 and `c_m
 ## Validity
 
 Current.
+
+2026-11-15 · note · #146 · L-BFGS closures no longer compute the full-grid diagnostic norms, so `wall_s` drops in both arms by a different share; the equal-wall-time reading (0.54× against the 0.5× threshold) may move. Results at equal outer budget are unchanged.

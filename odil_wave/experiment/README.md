@@ -407,8 +407,8 @@ experiments are written" above):
   triangular solves, device copies included, `0` without it; it also counts the
   forward solves of the logged rows' diagnostics and of the final iterate, so
   it is not the L-BFGS evaluations' cost alone), `n_iter_requested`,
-  `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (costs
-  `n_outer_iter`, `n_closure`, `n_evaluations`; `scale_info`, the band's fixed
+  `start_metrics` / `final_metrics` (tape rows), `optimiser_result` (`loss` at
+  the final iterate, the band's `n_evaluations`; `scale_info`, the band's fixed
   scales, with `wavefield_preconditioner`, `model_preconditioner` and, for
   `pde_diagonal`, `precond_eps`, `precond_target`, min/median/max of `h_zz`
   and `model_scale`, and `precond_floored_frac`), `warnings`, `worst_fit_shot`
@@ -536,8 +536,8 @@ start row, from the saved synthetic and observed data (`residual_by_*.csv`,
   **closures / function evaluations** (the line search calls the closure
   several times per accepted step). It is logged only for diagnostics and is
   **not** an iteration count.
-- Per-band totals — `n_outer_iter`, `n_closure`, `n_evaluations` — are recorded
-  once in `band_summary.json` under `optimiser_result`.
+- The band's own `n_evaluations` is recorded once in `band_summary.json` under
+  `optimiser_result`; its outer iterations are `n_iter_requested`.
 
 Note: `loss_total`, `pde_term`, `data_term` and `reg_term` all come from one
 objective evaluation at the logged (post-step) point, so
