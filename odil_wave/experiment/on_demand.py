@@ -48,7 +48,7 @@ def source_spectrum(run_dir: PathLike) -> Figure:
     inversion bins (the FFT bins solved at) marked. Reads the config only."""
     problem = _problem(run_dir)
     grid, source = problem.grid, problem.source
-    s = source.waveform(grid.t).cpu().numpy()
+    s = source.waveform().cpu().numpy()
     magnitude = np.abs(np.fft.rfft(s))
     f_khz = np.fft.rfftfreq(grid.nt, d=float(grid.dt)) / 1e3
 

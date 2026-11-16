@@ -69,8 +69,14 @@ class SourceSignal:
         self.envelope = envelope
         self.offset = offset
 
-        if kind == "tone_burst":
-            self._tone_burst_signal = self._tone_burst()
+        if kind == "ricker":
+            self._signal = self._ricker(grid.t)
+        elif kind == "tone_burst":
+            self._signal = self._tone_burst()
+        else:
+            raise ValueError(
+                f"Unknown source kind '{kind}'. Use 'ricker' or 'tone_burst'."
+            )
 
     # Ricker
     def _ricker(self, t: torch.Tensor) -> torch.Tensor:
@@ -120,34 +126,23 @@ class SourceSignal:
             device=self.grid.device,
         )
 
-    def waveform(self, t: torch.Tensor) -> torch.Tensor:
-        """Evaluate the source waveform at times ``t``."""
-        if self.kind == "ricker":
-            return self._ricker(t)
-        if self.kind == "tone_burst":
-            if t.shape != self.grid.t.shape or not torch.equal(t, self.grid.t):
-                raise ValueError("the tone burst is sampled on grid.t only")
-            return self._tone_burst_signal
-        raise ValueError(
-            f"Unknown source kind '{self.kind}'. Use 'ricker' or 'tone_burst'."
-        )
+    def waveform(self) -> torch.Tensor:
+        """The source waveform sampled on ``grid.t``."""
+        return self._signal
 
     def spectrum(self, frequency_selection) -> torch.Tensor:
         """Complex spectrum of ``s(t)`` on ``FrequencySelection`` bins.
 
         FFT of the waveform on ``grid.t`` with the same norm/bins as observations.
         """
-        s_t = self.waveform(self.grid.t)
+        s_t = self.waveform()
         return frequency_selection.fft_time_series(s_t, dim=0)
-
-    def __call__(self, t: torch.Tensor) -> torch.Tensor:
-        return self.waveform(t)
 
     def plot_pulse(self, ax=None):
         """Plot the temporal waveform s(t) over the grid's time axis."""
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 3.5))
-        s = self.waveform(self.grid.t).cpu().numpy()
+        s = self.waveform().cpu().numpy()
         t = self.grid.t.cpu().numpy()
         peak_t = int(np.argmax(np.abs(s)))
 
@@ -182,7 +177,7 @@ class SourceSignal:
         if ax is None:
             _, ax = plt.subplots(figsize=(7.5, 3.2))
 
-        sig = self.waveform(self.grid.t).cpu().numpy()
+        sig = self.waveform().cpu().numpy()
         mag = np.abs(np.fft.rfft(sig))
         mag /= mag.max() + 1e-30
         fr = np.fft.rfftfreq(self.grid.nt, d=self.grid.dt)
