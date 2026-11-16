@@ -1,6 +1,6 @@
 """Tests for the ``odil_wave.operator`` package.
 
-Covers ``base.py``, ``conditions.py``, ``spatial.py``, ``utils.py``
+Covers ``conditions.py``, ``spatial.py``, ``utils.py``
 (``WaveEquation``) and ``helmholtz.py``.
 
 Most tests use hand-built tensors or a tiny synthetic :class:`Grid`/
@@ -21,14 +21,9 @@ import torch.nn.functional as F
 from odil_wave.grid import FrequencySelection
 from odil_wave.wavefield import Wavefield
 
-from odil_wave.operator.base import DenseOperator
-from odil_wave.operator.conditions import Conditions, Sponge
+from odil_wave.operator.conditions import Sponge
 from odil_wave.operator.spatial import (
-    Laplacian2ndOrder,
-    Laplacian4thOrder,
-    Laplacian6thOrder,
-    Laplacian8thOrder,
-    Laplacian10thOrder,
+    Laplacian,
     _apply_conv_laplacian,
     laplacian_stencil,
 )
@@ -83,21 +78,8 @@ def tiny_setup():
 
 
 # --------------------------------------------------------------------------- #
-# base.py
-# --------------------------------------------------------------------------- #
-def test_dense_operator_is_abstract():
-    with pytest.raises(TypeError):
-        DenseOperator(wavefield=None)
-
-
-# --------------------------------------------------------------------------- #
 # conditions.py
 # --------------------------------------------------------------------------- #
-def test_conditions_is_abstract():
-    with pytest.raises(TypeError):
-        Conditions()
-
-
 def test_sponge_apply_residual_matches_manual_formula():
     grid = _make_grid(pml_width=2)
     wf = _make_wavefield(grid)
@@ -113,18 +95,6 @@ def test_sponge_apply_residual_matches_manual_formula():
     sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
     expected = fu + 2.0 * (sigma_sum * lambda_t * u + sigma_prod * u)
     assert torch.allclose(out, expected)
-
-
-def test_sponge_apply_is_alias_for_apply_residual():
-    grid = _make_grid()
-    wf = _make_wavefield(grid)
-    sponge = Sponge(wf, weight=1.0)
-    fu = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
-    u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
-    lambda_t = torch.tensor(0.3j, dtype=torch.complex64).view(1, 1, 1, 1)
-    assert torch.equal(
-        sponge.apply(fu, u, lambda_t), sponge.apply_residual(fu, u, lambda_t)
-    )
 
 
 def test_sponge_zero_weight_is_a_no_op():
@@ -207,17 +177,8 @@ def test_laplacian_stencil_unsupported_order_raises(space_order):
         laplacian_stencil(space_order, 1.0, 1.0)
 
 
-@pytest.mark.parametrize(
-    "cls,pad",
-    [
-        (Laplacian2ndOrder, 1),
-        (Laplacian4thOrder, 2),
-        (Laplacian6thOrder, 3),
-        (Laplacian8thOrder, 4),
-        (Laplacian10thOrder, 5),
-    ],
-)
-def test_laplacian_orders_are_exact_on_a_quadratic_interior(cls, pad):
+@pytest.mark.parametrize("space_order,pad", [(2, 1), (4, 2), (6, 3), (8, 4), (10, 5)])
+def test_laplacian_orders_are_exact_on_a_quadratic_interior(space_order, pad):
     n = 2 * pad + 9
     grid = _make_grid(
         interior_shape=(n, n),
@@ -231,29 +192,22 @@ def test_laplacian_orders_are_exact_on_a_quadratic_interior(cls, pad):
     idx = torch.arange(n, dtype=torch.float64) * grid.dx_nd
     X, Y = torch.meshgrid(idx, idx, indexing="ij")
     u = X**2 + Y**2  # analytic Laplacian in non-dimensional coords = 4
-    out = cls(wf).apply(u)
+    out = Laplacian(wf, space_order=space_order).apply(u)
     center = out[pad : n - pad, pad : n - pad]
     assert torch.allclose(center, torch.full_like(center, 4.0), atol=1e-6)
+
+
+def test_laplacians_on_different_grids_are_not_equal():
+    """The removed per-order ``@dataclass`` classes had no fields, so any two
+    instances compared equal."""
+    coarse = _make_wavefield(_make_grid(interior_shape=(5, 5)))
+    fine = _make_wavefield(_make_grid(interior_shape=(9, 9)))
+    assert Laplacian(coarse, space_order=2) != Laplacian(fine, space_order=2)
 
 
 # --------------------------------------------------------------------------- #
 # utils.py: WaveEquation
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
-def test_wave_equation_selects_matching_laplacian(space_order):
-    grid = _make_grid()
-    wf = _make_wavefield(grid)
-    we = WaveEquation(wf, space_order=space_order, damping_scale=1.0)
-    expected_lap = {
-        2: Laplacian2ndOrder,
-        4: Laplacian4thOrder,
-        6: Laplacian6thOrder,
-        8: Laplacian8thOrder,
-        10: Laplacian10thOrder,
-    }[space_order]
-    assert isinstance(we._lap, expected_lap)
-
-
 def test_wave_equation_invalid_space_order_raises():
     grid = _make_grid()
     wf = _make_wavefield(grid)
@@ -288,7 +242,7 @@ def test_wave_equation_residual_matches_manual_assembly():
     lambda_t = lambda_t.to(dtype=amp.dtype)
     lambda_tt = lambda_tt.to(dtype=amp.dtype)
     wsp_nd = (c / grid.c0).to(amp.dtype)
-    lap = Laplacian2ndOrder(wf).apply(amp)
+    lap = Laplacian(wf, space_order=2).apply(amp)
     core = lambda_tt * amp - wsp_nd**2 * lap - source
     sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
     sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
@@ -343,17 +297,9 @@ def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
     invariant the sparse Helmholtz assembly depends on."""
     grid = _make_grid(pml_width=0, interior_shape=(9, 9), dtype=torch.float64)
     wf = _make_wavefield(grid)
-    dense_cls = {
-        2: Laplacian2ndOrder,
-        4: Laplacian4thOrder,
-        6: Laplacian6thOrder,
-        8: Laplacian8thOrder,
-        10: Laplacian10thOrder,
-    }[space_order]
-
     torch.manual_seed(space_order)
     u = torch.randn(grid.nx, grid.ny, dtype=torch.float64)
-    dense_out = dense_cls(wf).apply(u)
+    dense_out = Laplacian(wf, space_order=space_order).apply(u)
 
     L = HelmholtzSolver(
         wf, None, space_order=space_order, damping_scale=1.0

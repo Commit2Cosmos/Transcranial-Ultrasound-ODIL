@@ -5,14 +5,7 @@ from dataclasses import dataclass, field
 import torch
 
 from odil_wave.wavefield import Wavefield
-from .base import DenseOperator
-from .spatial import (
-    Laplacian2ndOrder,
-    Laplacian4thOrder,
-    Laplacian6thOrder,
-    Laplacian8thOrder,
-    Laplacian10thOrder,
-)
+from .spatial import Laplacian
 from .conditions import Sponge
 
 
@@ -44,28 +37,12 @@ class WaveEquation:
     space_order: int = field(kw_only=True)
     damping_scale: float = field(kw_only=True)
 
-    _lap: DenseOperator = field(init=False)
+    _lap: Laplacian = field(init=False)
     _sponge: Sponge = field(init=False)
 
     def __post_init__(self):
-        """Select the Laplacian for ``space_order`` and build the sponge.
-
-        Notes
-        -----
-        Raises ``ValueError`` for an unsupported ``space_order``.
-        """
-        if self.space_order == 2:
-            self._lap = Laplacian2ndOrder(self.wavefield)
-        elif self.space_order == 4:
-            self._lap = Laplacian4thOrder(self.wavefield)
-        elif self.space_order == 6:
-            self._lap = Laplacian6thOrder(self.wavefield)
-        elif self.space_order == 8:
-            self._lap = Laplacian8thOrder(self.wavefield)
-        elif self.space_order == 10:
-            self._lap = Laplacian10thOrder(self.wavefield)
-        else:
-            raise ValueError(f"Invalid space order: {self.space_order}")
+        """Build the Laplacian for ``space_order`` and the sponge."""
+        self._lap = Laplacian(self.wavefield, space_order=self.space_order)
         self._sponge = Sponge(self.wavefield, self.damping_scale)
 
     def sources(self, geometry) -> torch.Tensor:
@@ -112,4 +89,4 @@ class WaveEquation:
 
         lap = self._lap.apply(amp)
         r = lambda_tt * amp - wsp_nd**2 * lap - source
-        return self._sponge.apply(r, amp, lambda_t)
+        return self._sponge.apply_residual(r, amp, lambda_t)

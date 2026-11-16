@@ -1,20 +1,9 @@
-from abc import ABC, abstractmethod
-
 import torch
 
 from odil_wave.wavefield import Wavefield
 
 
-class Conditions(ABC):
-    """Base class for constraint helpers."""
-
-    @abstractmethod
-    def apply(self, *args, **kwargs):
-        """Apply this constraint; subclasses define the specific transform."""
-        raise NotImplementedError
-
-
-class Sponge(Conditions):
+class Sponge:
     """Simple absorbing sponge (not a full PML).
 
     Frequency-domain form of the time residual damping
@@ -39,9 +28,3 @@ class Sponge(Conditions):
         """Add sigma-weighted damping to a PDE residual fu."""
         # sigma: (nx, ny); lambda_t: (1, nf, 1, 1); u: (..., nf, nx, ny)
         return fu + self.weight * (self.sigma_sum * lambda_t * u + self.sigma_prod * u)
-
-    def apply(
-        self, fu: torch.Tensor, u: torch.Tensor, lambda_t: torch.Tensor
-    ) -> torch.Tensor:
-        """Alias for apply_residual, satisfying the Conditions interface."""
-        return self.apply_residual(fu, u, lambda_t)
