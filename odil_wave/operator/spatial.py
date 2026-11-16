@@ -1,13 +1,9 @@
 """Spatial finite-difference operators (Laplacian)."""
 
-from abc import abstractmethod
-from dataclasses import dataclass
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .base import DenseOperator
 from odil_wave.wavefield import Wavefield
 
 
@@ -62,13 +58,6 @@ def laplacian_stencil(
     return K, pad
 
 
-def _conv_kernel(space_order: int, wavefield: Wavefield) -> tuple[torch.Tensor, int]:
-    """:func:`laplacian_stencil` as a ``(1, 1, N, N)`` conv kernel on the grid."""
-    g = wavefield.grid
-    K, pad = laplacian_stencil(space_order, g.dx_nd, g.dy_nd)
-    return torch.as_tensor(K, dtype=g.dtype, device=g.device)[None, None], pad
-
-
 def _apply_conv_laplacian(
     utm: torch.Tensor, kernel: torch.Tensor, pad: int
 ) -> torch.Tensor:
@@ -105,146 +94,24 @@ def _apply_conv_laplacian(
     return out.reshape(*leading, *spatial)
 
 
-class SpatialOperator(DenseOperator):
-    """Spatial Laplacian on the t-1 field, cell-centred grid."""
+class Laplacian:
+    """Discrete Laplacian ``u_xx + u_yy`` of FD order ``space_order`` (2 | 4 |
+    6 | 8 | 10) via ``F.conv2d`` with reflect padding, on the wavefield's grid.
+    ``space_order`` is set by the run config and is a required keyword
+    (ADR 0001)."""
 
-    @abstractmethod
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Discrete Laplacian ``u_xx + u_yy`` on ``utm`` (reflect padding).
+    def __init__(self, wavefield: Wavefield, *, space_order: int) -> None:
+        """Build the cross-stencil kernel from the grid spacing.
 
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
+        Notes
+        -----
+        Raises ``ValueError`` for an unsupported ``space_order``.
         """
-        raise NotImplementedError
-
-
-@dataclass
-class Laplacian2ndOrder(SpatialOperator):
-    """2nd-order 5-point Laplacian via ``F.conv2d`` + reflect padding."""
-
-    def __init__(self, wavefield: Wavefield):
-        """Build the 2nd-order 5-point Laplacian kernel from the grid spacing."""
-        super().__init__(wavefield)
-        self._kernel, self._pad = _conv_kernel(2, wavefield)
+        g = wavefield.grid
+        K, self._pad = laplacian_stencil(space_order, g.dx_nd, g.dy_nd)
+        self._kernel = torch.as_tensor(K, dtype=g.dtype, device=g.device)[None, None]
 
     def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Apply the 2nd-order Laplacian kernel to ``utm``.
-
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
-        """
-        return _apply_conv_laplacian(utm, self._kernel, self._pad)
-
-
-@dataclass
-class Laplacian4thOrder(SpatialOperator):
-    """4th-order 9-point Laplacian via ``F.conv2d`` + reflect padding."""
-
-    def __init__(self, wavefield: Wavefield):
-        """Build the 4th-order 5x5 cross Laplacian kernel from the grid spacing."""
-        super().__init__(wavefield)
-        self._kernel, self._pad = _conv_kernel(4, wavefield)
-
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Apply the 4th-order Laplacian kernel to ``utm``.
-
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
-        """
-        return _apply_conv_laplacian(utm, self._kernel, self._pad)
-
-
-@dataclass
-class Laplacian6thOrder(SpatialOperator):
-    """6th-order 13-point cross Laplacian via ``F.conv2d`` + reflect padding."""
-
-    def __init__(self, wavefield: Wavefield):
-        """Build the 6th-order cross Laplacian kernel from the grid spacing."""
-        super().__init__(wavefield)
-        self._kernel, self._pad = _conv_kernel(6, wavefield)
-
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Apply the 6th-order Laplacian kernel to ``utm``.
-
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
-        """
-        return _apply_conv_laplacian(utm, self._kernel, self._pad)
-
-
-@dataclass
-class Laplacian8thOrder(SpatialOperator):
-    """8th-order 17-point cross Laplacian via ``F.conv2d`` + reflect padding."""
-
-    def __init__(self, wavefield: Wavefield):
-        """Build the 8th-order cross Laplacian kernel from the grid spacing."""
-        super().__init__(wavefield)
-        self._kernel, self._pad = _conv_kernel(8, wavefield)
-
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Apply the 8th-order Laplacian kernel to ``utm``.
-
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
-        """
-        return _apply_conv_laplacian(utm, self._kernel, self._pad)
-
-
-@dataclass
-class Laplacian10thOrder(SpatialOperator):
-    """10th-order 11-point Laplacian via ``F.conv2d`` + reflect padding."""
-
-    def __init__(self, wavefield: Wavefield):
-        """Build the 10th-order cross Laplacian kernel from the grid spacing."""
-        super().__init__(wavefield)
-        self._kernel, self._pad = _conv_kernel(10, wavefield)
-
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Apply the 10th-order Laplacian kernel to ``utm``.
-
-        Parameters
-        ----------
-        utm : torch.Tensor
-            Field with spatial dims last.
-
-        Returns
-        -------
-        torch.Tensor
-            Discrete Laplacian of ``utm``.
-        """
+        """Discrete Laplacian of ``utm`` (spatial dims last; may be complex),
+        same shape and dtype."""
         return _apply_conv_laplacian(utm, self._kernel, self._pad)
