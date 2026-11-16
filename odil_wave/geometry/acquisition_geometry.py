@@ -172,7 +172,7 @@ class AcquisitionGeometry:
             waveform times its spatial profile.
         """
         spatial = self._spatial_profile(src_idx)
-        temporal = self.source.waveform(self.grid.t)
+        temporal = self.source.waveform()
         return temporal.view(-1, 1, 1) * spatial.view(1, *self.grid.shape)
 
     def source_field(self, src_idx: int) -> torch.Tensor:
@@ -347,9 +347,7 @@ class AcquisitionGeometry:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         src = self.source_field_time(src_idx).cpu().numpy()
         if t_idx is None:
-            t_idx = int(
-                np.argmax(np.abs(self.source.waveform(self.grid.t).cpu().numpy()))
-            )
+            t_idx = int(np.argmax(np.abs(self.source.waveform().cpu().numpy())))
         (xmin, xmax), (ymin, ymax) = self.grid.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
         t_val = float(self.grid.t[t_idx].item())
