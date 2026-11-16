@@ -243,7 +243,7 @@ one-owner-per-parameter rule for library constructors
 
 ```bash
 pip install -e .           # editable install; see pyproject.toml for the full dependency list
-pip install -e ".[dev]"    # + ruff, pre-commit, pytest-xdist, ipykernel, torchinfo
+pip install -e ".[dev]"    # + ruff, pre-commit, pytest, pytest-xdist, ipykernel, nbconvert
 ```
 
 Requires Python ≥ 3.12.

@@ -24,13 +24,13 @@ class SourceSignal:
         n_cycles: float,
         envelope: str,
         dimensionless: bool,
-        t0: Optional[float] = None,
+        t_centre: Optional[float] = None,
         offset: int = 0,
     ):
         """Build a source pulse on `grid`.
 
         Every parameter set by the run config's ``source`` block is a required
-        keyword (ADR 0001); ``t0`` and ``offset`` keep library defaults.
+        keyword (ADR 0001); ``t_centre`` and ``offset`` keep library defaults.
 
         Parameters
         ----------
@@ -45,15 +45,17 @@ class SourceSignal:
             envelope.
         dimensionless
             If true the physical amplitude is ``amplitude * 2 * f0**2``.
-        t0
+        t_centre
             Ricker time centre in s; ``None`` -> ``1 / f0``.
         offset
-            tone_burst sample offset delaying the wavelet.
+            tone_burst sample offset delaying the wavelet; the burst must start
+            and end on the grid's time axis.
         """
         self.grid = grid
         self.kind = kind
         self.f0 = f0
-        self.t0 = 1.0 / f0 if t0 is None else t0  # causal delay default for ricker
+        # causal delay default for ricker
+        self.t_centre = 1.0 / f0 if t_centre is None else t_centre
         self.dimensionless = dimensionless
         # User-facing amplitude (kept as-is so plot titles read naturally),
         # and the internal physical amplitude actually fed to the waveform.
@@ -72,7 +74,7 @@ class SourceSignal:
 
     # Ricker
     def _ricker(self, t: torch.Tensor) -> torch.Tensor:
-        arg = (math.pi * self.f0 * (t - self.t0)) ** 2
+        arg = (math.pi * self.f0 * (t - self.t_centre)) ** 2
         return self._amplitude_phys * (1.0 - 2.0 * arg) * torch.exp(-arg)
 
     # Tone burst (Stride)
@@ -101,6 +103,11 @@ class SourceSignal:
         signal = signal * scipy.signal.get_window(("tukey", 0.05), n_tone, False)
 
         pad_after = n_samples - self.offset - n_tone
+        if self.offset < 0 or pad_after < 0:
+            raise ValueError(
+                f"tone burst of {n_tone} samples at offset {self.offset} does not "
+                f"fit the grid's {n_samples} time samples"
+            )
         signal = np.pad(
             signal,
             ((self.offset, pad_after),),
@@ -118,6 +125,8 @@ class SourceSignal:
         if self.kind == "ricker":
             return self._ricker(t)
         if self.kind == "tone_burst":
+            if t.shape != self.grid.t.shape or not torch.equal(t, self.grid.t):
+                raise ValueError("the tone burst is sampled on grid.t only")
             return self._tone_burst_signal
         raise ValueError(
             f"Unknown source kind '{self.kind}'. Use 'ricker' or 'tone_burst'."
@@ -157,7 +166,7 @@ class SourceSignal:
         else:
             ax.set_title(
                 rf"{self.kind} pulse ($f_0$={self.f0 * f_mult:g} {f_unit}, "
-                rf"$t_0$={self.t0 * t_mult:.2f} {t_unit}, A={self.amplitude:g})"
+                rf"$t_c$={self.t_centre * t_mult:.2f} {t_unit}, A={self.amplitude:g})"
             )
         ax.grid(alpha=0.3)
         return ax

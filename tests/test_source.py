@@ -58,6 +58,38 @@ def test_tone_burst_bad_envelope_raises(grid):
         make_source(grid, envelope="triangular")
 
 
+@pytest.mark.parametrize("offset", [-1, 10**6])
+def test_tone_burst_out_of_range_offset_raises(grid, offset):
+    """A burst that starts before t=0 or runs past the time axis is rejected."""
+    with pytest.raises(ValueError, match="offset"):
+        make_source(grid, offset=offset)
+
+
+def test_tone_burst_too_long_for_grid_raises(grid):
+    """A burst longer than the time axis is rejected, even at offset 0."""
+    with pytest.raises(ValueError, match="offset"):
+        make_source(grid, offset=0, n_cycles=100)
+
+
+def test_tone_burst_rejects_times_off_the_grid(grid):
+    """The tone burst is sampled on grid.t only, so other times are rejected."""
+    src = make_source(grid, offset=0)
+    with pytest.raises(ValueError, match="grid.t"):
+        src.waveform(grid.t[:-1])
+    with pytest.raises(ValueError, match="grid.t"):
+        src.waveform(grid.t + grid.dt / 2)
+
+
+def test_ricker_centre_time(grid):
+    """The Ricker wavelet peaks at t_centre, which defaults to 1 / f0."""
+    t = torch.linspace(0.0, 4.0 / F0, 4001, dtype=torch.float64)
+    default = make_source(grid, kind="ricker")
+    assert default.t_centre == pytest.approx(1.0 / F0)
+    shifted = make_source(grid, kind="ricker", t_centre=2.0 / F0)
+    peak = t[shifted.waveform(t).abs().argmax()]
+    assert float(peak) == pytest.approx(2.0 / F0, rel=1e-3)
+
+
 def test_unknown_kind_raises(grid):
     """waveform() rejects an unknown source kind."""
     src = make_source(grid, kind="bogus")
