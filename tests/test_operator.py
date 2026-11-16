@@ -14,6 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import odil_wave  # noqa: F401  (import before torch avoids an OpenMP abort; see test_optimisation.py)
+import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -31,7 +32,7 @@ from odil_wave.operator.utils import WaveEquation
 from odil_wave.operator.helmholtz import (
     HelmholtzSolver,
     _reflect_index,
-    assemble_laplacian_csr,
+    laplacian_csr,
     np_complex_dtype,
 )
 
@@ -264,30 +265,26 @@ def test_np_complex_dtype_mappings():
 
 
 def test_reflect_index_n_equals_one_returns_zero_for_any_idx():
-    # Regression test for a fixed infinite loop: before the fix, the
-    # `2*n - 2 - idx` fold degenerates to idx <-> -idx for n=1 and never
-    # terminates for idx != 0. With a single cell, every offset -- however
-    # far out of bounds -- refers to that same cell.
-    for idx in range(-5, 6):
-        assert _reflect_index(idx, 1) == 0
+    # Regression test for a fixed infinite loop: the `2*n - 2 - idx` fold
+    # degenerates to idx <-> -idx for n=1. With a single cell, every offset
+    # -- however far out of bounds -- refers to that same cell.
+    assert (_reflect_index(np.arange(-5, 6), 1) == 0).all()
 
 
-@pytest.mark.parametrize("n", [4, 7])
+@pytest.mark.parametrize("n", [2, 4, 7])
 def test_reflect_index_matches_torch_pad_reflect_semantics(n):
     # F.pad(..., mode="reflect") only supports 1-D reflect padding on a 2-D
     # or 3-D input's last dim (a 4-D input needs 2-D reflect padding instead).
     x = torch.arange(n, dtype=torch.float64).view(1, 1, n)
     pad = n - 1
     padded = F.pad(x, (pad, pad), mode="reflect").view(-1)
-    for idx in range(-pad, n + pad):
-        expected = padded[idx + pad].item()
-        actual = x.view(-1)[_reflect_index(idx, n)].item()
-        assert actual == expected, f"n={n}, idx={idx}"
+    idx = np.arange(-pad, n + pad)
+    assert (_reflect_index(idx, n) == padded.numpy().astype(int)).all()
 
 
 def test_reflect_index_raises_for_nonpositive_n():
     with pytest.raises(ValueError):
-        _reflect_index(0, 0)
+        _reflect_index(np.arange(1), 0)
 
 
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
@@ -295,27 +292,31 @@ def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
     """The sparse Laplacian the Helmholtz assembly uses equals the torch conv
     Laplacian (reflect boundaries) on a random field -- the key correctness
     invariant the sparse Helmholtz assembly depends on."""
-    grid = _make_grid(pml_width=0, interior_shape=(9, 9), dtype=torch.float64)
+    grid = _make_grid(pml_width=0, interior_shape=(11, 9), dtype=torch.float64)
     wf = _make_wavefield(grid)
     torch.manual_seed(space_order)
     u = torch.randn(grid.nx, grid.ny, dtype=torch.float64)
     dense_out = Laplacian(wf, space_order=space_order).apply(u)
 
-    L = HelmholtzSolver(
-        wf, None, space_order=space_order, damping_scale=1.0
-    )._laplacian_csr()
+    L = laplacian_csr(
+        grid.nx, grid.ny, space_order, float(grid.dx_nd), float(grid.dy_nd)
+    )
     sparse_out = (L @ u.numpy().reshape(-1)).reshape(grid.nx, grid.ny)
 
     assert torch.allclose(dense_out, torch.as_tensor(sparse_out), atol=1e-8)
 
 
-def test_assemble_laplacian_csr_shape():
+def test_laplacian_csr_is_cached_per_grid():
     grid = _make_grid(pml_width=0, interior_shape=(5, 6))
-    kernel, pad = laplacian_stencil(2, grid.dx_nd, grid.dy_nd)
-    L = assemble_laplacian_csr(grid.nx, grid.ny, kernel, pad)
-    n = grid.nx * grid.ny
-    assert L.shape == (n, n)
-    assert L.nnz > 0
+    args = (grid.nx, grid.ny, 2, float(grid.dx_nd), float(grid.dy_nd))
+    L = laplacian_csr(*args)
+    assert L.shape == (grid.nx * grid.ny,) * 2
+    assert laplacian_csr(*args) is L
+
+
+def test_laplacian_csr_unsupported_order_raises():
+    with pytest.raises(ValueError):
+        laplacian_csr(5, 6, 3, 1.0, 1.0)
 
 
 def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_setup):

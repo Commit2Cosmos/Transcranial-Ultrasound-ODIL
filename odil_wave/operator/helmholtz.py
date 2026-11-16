@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import functools
 import time
-from typing import List, Optional, Tuple, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 import scipy.sparse as sp
@@ -22,47 +23,44 @@ def np_complex_dtype(torch_cdtype: torch.dtype):
     raise ValueError(f"Unsupported complex dtype for Helmholtz LU: {torch_cdtype}")
 
 
-def _reflect_index(idx: int, n: int) -> int:
-    """Map an index to ``[0, n)`` like ``F.pad(..., mode='reflect')``."""
+def _reflect_index(idx: np.ndarray, n: int) -> np.ndarray:
+    """Map indices to ``[0, n)`` like ``F.pad(..., mode='reflect')``."""
     if n <= 0:
         raise ValueError("n must be positive")
     if n == 1:
-        # 2*n-2 == 0 degenerates the fold below into idx <-> -idx, which
-        # never terminates for idx != 0. With a single cell, every offset
-        # refers to that same cell.
-        return 0
-    while idx < 0 or idx >= n:
-        if idx < 0:
-            idx = -idx
-        else:
-            idx = 2 * n - 2 - idx
-    return idx
+        # The fold below has period 2*n - 2 == 0; with a single cell, every
+        # offset refers to that same cell.
+        return np.zeros_like(idx)
+    period = 2 * n - 2
+    m = np.mod(idx, period)
+    return np.where(m >= n, period - m, m)
 
 
-def assemble_laplacian_csr(
-    nx: int, ny: int, kernel: np.ndarray, pad: int
+@functools.lru_cache(maxsize=8)
+def laplacian_csr(
+    nx: int, ny: int, space_order: int, dx_nd: float, dy_nd: float
 ) -> sp.csr_matrix:
-    """Sparse Laplacian with Neumann-mirror (reflect) boundaries."""
-    kh, kw = kernel.shape
-    assert kh == 2 * pad + 1 and kw == 2 * pad + 1
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
-    for i in range(nx):
-        for j in range(ny):
-            row = i * ny + j
-            for di in range(-pad, pad + 1):
-                for dj in range(-pad, pad + 1):
-                    coeff = float(kernel[di + pad, dj + pad])
-                    if coeff == 0.0:
-                        continue
-                    ii = _reflect_index(i + di, nx)
-                    jj = _reflect_index(j + dj, ny)
-                    rows.append(row)
-                    cols.append(ii * ny + jj)
-                    data.append(coeff)
+    """Sparse Laplacian with Neumann-mirror (reflect) boundaries, cached per grid.
+
+    Row-major ``(nx, ny)`` flattening, as ``tensor.reshape(-1)``. The matrix is
+    shared between callers: don't modify it in place.
+    """
+    kernel, pad = laplacian_stencil(space_order, dx_nd, dy_nd)
+    i, j = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    i, j = i.reshape(-1), j.reshape(-1)
+    rows, cols, data = [], [], []
+    # Within a row, COO -> CSR sums entries that reflect onto the same column
+    # in the order given, so the stencil order fixes the rounding.
+    for di in range(-pad, pad + 1):
+        for dj in range(-pad, pad + 1):
+            coeff = kernel[di + pad, dj + pad]
+            if coeff == 0.0:
+                continue
+            rows.append(i * ny + j)
+            cols.append(_reflect_index(i + di, nx) * ny + _reflect_index(j + dj, ny))
+            data.append(np.full(nx * ny, coeff))
     return sp.csr_matrix(
-        (np.asarray(data, dtype=np.float64), (rows, cols)),
+        (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
         shape=(nx * ny, nx * ny),
     )
 
@@ -93,17 +91,12 @@ class HelmholtzSolver:
         self.wave_eq = WaveEquation(
             wavefield, space_order=space_order, damping_scale=damping_scale
         )
-        self._L_csr: Optional[sp.csr_matrix] = None
 
     def _laplacian_csr(self) -> sp.csr_matrix:
-        """Return the cached sparse Laplacian CSR, building it on first call."""
-        if self._L_csr is None:
-            grid = self.wavefield.grid
-            K, pad = laplacian_stencil(
-                self.space_order, float(grid.dx_nd), float(grid.dy_nd)
-            )
-            self._L_csr = assemble_laplacian_csr(grid.nx, grid.ny, K, pad)
-        return self._L_csr
+        grid = self.wavefield.grid
+        return laplacian_csr(
+            grid.nx, grid.ny, self.space_order, float(grid.dx_nd), float(grid.dy_nd)
+        )
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
         """Assemble the sparse Helmholtz matrix H for one frequency.
@@ -205,7 +198,6 @@ class HelmholtzSolver:
         factors: List[SuperLU] = []
         t_all0 = time.perf_counter()
 
-        # Cache Laplacian CSR once (geometry / space_order only).
         t_lap0 = time.perf_counter()
         _ = self._laplacian_csr()
         t_lap = time.perf_counter() - t_lap0
