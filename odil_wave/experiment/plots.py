@@ -11,7 +11,7 @@ from odil_wave.models import VelocityModel
 
 from .config import RunConfig
 from .problem import Problem, build_problem
-from .saved import SavedRun, load_run_config
+from .saved import PROBLEM_FILE, ProblemArrays, load_bands, load_run_config
 from .tape import load_tape
 
 
@@ -72,9 +72,8 @@ def load_band_velocities(
     run's saved config and ``pml_c`` to the run's frozen PML speed (in
     ``problem.npz``), so only the run directory is required.
     """
-    run = SavedRun.load(run_dir)
     if pml_c is None:
-        pml_c = run.problem.pml_c
+        pml_c = ProblemArrays.load(Path(run_dir) / PROBLEM_FILE).pml_c
     if grid is None:
         grid = rebuild_problem(run_dir).grid
     return [
@@ -83,7 +82,7 @@ def load_band_velocities(
             band.label,
             VelocityModel.from_interior(grid, torch.from_numpy(band.c), pml_c),
         )
-        for band in run.bands
+        for band in load_bands(run_dir)
     ]
 
 

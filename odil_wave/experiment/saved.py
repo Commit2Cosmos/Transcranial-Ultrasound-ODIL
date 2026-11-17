@@ -312,8 +312,12 @@ class SavedBand:
 
     @property
     def c(self) -> np.ndarray:
-        """The interior velocity at the band's final iterate."""
-        return self.arrays.c
+        """The interior velocity at the band's final iterate (reads only ``c``
+        unless the arrays are already loaded)."""
+        if "arrays" in self.__dict__:
+            return self.arrays.c
+        with np.load(self.path / BAND_ARRAYS_FILE) as z:
+            return z["c"]
 
 
 def load_bands(run_dir: PathLike) -> List[SavedBand]:

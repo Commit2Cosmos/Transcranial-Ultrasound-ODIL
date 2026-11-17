@@ -215,13 +215,13 @@ class VelocityModel:
         cls, grid: Grid, c_interior: torch.Tensor, pml_c: float
     ) -> "VelocityModel":
         """A model from an interior ``c`` ``(interior_nx, interior_ny)``, its PML
-        ring filled with ``pml_c`` by :meth:`build_full_c`: a saved band's model."""
+        filled with ``pml_c`` by :meth:`build_full_c`: a saved band's model."""
         vm = cls.from_field(grid, torch.full(grid.shape, float(pml_c)), pml_c=pml_c)
         vm.c = vm.build_full_c(c_interior.to(dtype=grid.dtype, device=grid.device))
         return vm
 
     def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:
-        """Embed an interior ``c`` into the full grid, filling the PML ring.
+        """Embed an interior ``c`` into the full grid, filling the PML.
 
         Parameters
         ----------
@@ -235,7 +235,7 @@ class VelocityModel:
 
         Notes
         -----
-        The PML ring is padded with the fixed ``pml_c``, leaving a jump once
+        The PML is padded with the fixed ``pml_c``, leaving a jump once
         the interior edge drifts from it.
         """
         p = self.grid.pml_width
@@ -306,7 +306,7 @@ class VelocityModel:
         interior_np : np.ndarray
             Interior-shaped array to embed.
         fill : float
-            Value used for the surrounding PML ring.
+            Value used for the surrounding PML.
 
         Returns
         -------
