@@ -16,7 +16,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 from .atomic import atomic_open
 from .config import ConfigError
@@ -32,6 +32,7 @@ from .rundir import (
     run_git,
     write_json,
 )
+from .saved import load_final_metrics
 from .spec import ExperimentSpec, SweepRun, format_value, load_spec
 from .tape import TAPE_COLUMNS
 
@@ -213,7 +214,7 @@ def write_summary(exp_dir: Path) -> None:
     header = ["index", "label", *keys, "is_baseline", "status"] + TAPE_COLUMNS
     rows = []
     for entry in record["runs"]:
-        final = _final_metrics(exp_dir / entry["dir"]) or {}
+        final = load_final_metrics(exp_dir / entry["dir"]) or {}
         if entry["status"] != "completed":
             final = {}
         row = {
@@ -229,14 +230,6 @@ def write_summary(exp_dir: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(rows)
-
-
-def _final_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
-    """The run's final tape row from its ``run_summary.json``, if any."""
-    path = run_dir / "run_summary.json"
-    if not path.is_file():
-        return None
-    return json.loads(path.read_text())["metrics_summary"]["final_metrics"]
 
 
 def _value_text(value: Any) -> str:

@@ -11,7 +11,6 @@ Public entry points
 
 from __future__ import annotations
 
-import shutil
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -24,12 +23,22 @@ from odil_wave.band import Band
 from odil_wave.loss import Regulariser
 
 from . import envinfo
-from .arrays import BandArrays, save_problem
 from .config import BandCfg, ConfigError, RunConfig, validate_config
 from .health import HealthCheck
 from .postprocess import draw_reported, postprocess_run
 from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, write_json
+from .saved import (
+    BANDS_DIR,
+    CONFIG_FILE,
+    METADATA_FILE,
+    PROBLEM_FILE,
+    BandArraysCollector,
+    ProblemArrays,
+    band_label,
+    save_band,
+    write_run_summary,
+)
 from .tape import MetricTape
 
 # Name of the (only) solver, recorded in run metadata and the run summary.
@@ -77,28 +86,6 @@ class LoggedRow:
     c: np.ndarray  # interior velocity at this iterate (m/s)
     c_star: np.ndarray  # interior truth velocity (m/s)
     band_final: bool  # the row is the band's final iterate
-
-
-# --------------------------------------------------------------------------- #
-# Small helpers
-# --------------------------------------------------------------------------- #
-def band_label(frequencies_hz: List[float]) -> str:
-    """Human-readable kHz label for a band's frequencies.
-
-    Parameters
-    ----------
-    frequencies_hz : list of float
-        Band frequencies in Hz.
-
-    Returns
-    -------
-    str
-        ``"60khz"`` for a single frequency, else ``"40-70khz"`` (min-max).
-    """
-    khz = [f / 1e3 for f in frequencies_hz]
-    if len(khz) == 1:
-        return f"{int(round(khz[0]))}khz"
-    return f"{int(round(min(khz)))}-{int(round(max(khz)))}khz"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,11 +158,11 @@ def run_frequency_band(
     band_tape = tape.start_band(band_index, band)
     opt = build_optimiser(problem, band, n_iter)
 
-    band_arrays = BandArrays(band, opt.pde_scale)
+    collector = BandArraysCollector(band, opt.pde_scale)
     health = HealthCheck(c_min=problem.grid.c_min, c_max=problem.grid.c_max)
 
     def record_row(it):
-        band_arrays(it)
+        collector(it)
         row = band_tape.record(it)
         for w in health(row):
             print(f"  [health warning] {w}")
@@ -199,45 +186,36 @@ def run_frequency_band(
     start_metrics = band_tape.start_row
     final_metrics = band_tape.final_row
 
-    # ---- per-band artifacts --------------------------------------------- #
-    # Written into a hidden directory renamed into place once complete, so a
-    # failed or interrupted band leaves no band directory.
-    band_dir = bands_dir / f"band_{band_index:02d}_{label}"
-    tmp_dir = bands_dir / f".{band_dir.name}.tmp"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    try:
-        band_arrays.save(tmp_dir / "arrays.npz")
-        wall_s = time.perf_counter() - t0
-        write_json(
-            tmp_dir / "band_summary.json",
-            {
-                "band_index": band_index,
-                "frequencies_hz": freqs,
-                "label": label,
-                "n_frequencies": int(band.frequency_selection.n_frequencies),
-                "fft_bins": band.frequency_selection.fft_bins.detach().cpu().tolist(),
-                "n_iter_requested": n_iter,
-                "n_transducers": int(band.geometry.n_transducers),
-                "t_start_epoch_s": t_start_epoch,
-                "wall_s": wall_s,
-                "warm_start_s": band.warm_start_s,
-                "optimise_s": optimise_s,
-                "wavefield_solve_s": opt.wavefield_solve_s,
-                "start_metrics": start_metrics,
-                "final_metrics": final_metrics,
-                "optimiser_result": {
-                    "loss": solve.loss,
-                    "n_evaluations": solve.n_evaluations,
-                    "scale_info": opt.scale_info,
-                },
-                "warnings": list(health.warnings),
-                "worst_fit_shot": band_arrays.worst_fit_shot,
-                "saved_shots": band_arrays.shots,
+    arrays = collector.arrays()
+    wall_s = time.perf_counter() - t0
+    band_dir = save_band(
+        bands_dir,
+        arrays,
+        {
+            "band_index": band_index,
+            "frequencies_hz": freqs,
+            "label": label,
+            "n_frequencies": int(band.frequency_selection.n_frequencies),
+            "fft_bins": band.frequency_selection.fft_bins.detach().cpu().tolist(),
+            "n_iter_requested": n_iter,
+            "n_transducers": int(band.geometry.n_transducers),
+            "t_start_epoch_s": t_start_epoch,
+            "wall_s": wall_s,
+            "warm_start_s": band.warm_start_s,
+            "optimise_s": optimise_s,
+            "wavefield_solve_s": opt.wavefield_solve_s,
+            "start_metrics": start_metrics,
+            "final_metrics": final_metrics,
+            "optimiser_result": {
+                "loss": solve.loss,
+                "n_evaluations": solve.n_evaluations,
+                "scale_info": opt.scale_info,
             },
-        )
-        tmp_dir.replace(band_dir)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+            "warnings": list(health.warnings),
+            "worst_fit_shot": collector.worst_fit_shot,
+            "saved_shots": [int(s) for s in arrays.shots],
+        },
+    )
 
     print(
         f"  [band {band_index} {label}] iters {n_iter} "
@@ -330,13 +308,13 @@ def run_inverse(
 
     run_dir = run_directory.path
     run_id = run_directory.run_id
-    bands_dir = run_dir / "bands"
+    bands_dir = run_dir / BANDS_DIR
     bands_dir.mkdir(parents=True, exist_ok=True)
 
     # Config first, so a crash still leaves the run reproducible. The fully
     # resolved config records every effective value, so it is the single source
     # of truth for how the run was produced.
-    config.to_yaml(run_dir / "config_resolved.yaml")
+    config.to_yaml(run_dir / CONFIG_FILE)
 
     seed_record = envinfo.seed_everything(
         config.run.seed, deterministic=config.runtime.deterministic
@@ -364,14 +342,16 @@ def run_inverse(
     try:
         problem = build_problem(config)
         meta["grid"] = grid_summary(problem)
-        write_json(run_dir / "metadata.json", meta)
+        write_json(run_dir / METADATA_FILE, meta)
 
         # Raises ConfigError, before any band, if the truth gives nothing to score.
         tape = MetricTape(
             run_dir / "tape.csv", run_id=run_id, problem=problem, t0=t_run0
         )
         scored = tape.model_error
-        save_problem(run_dir / "problem.npz", problem, scored.brain, scored.skull)
+        ProblemArrays.of(problem, scored.brain, scored.skull).save(
+            run_dir / PROBLEM_FILE
+        )
 
         current = problem.init_velocity
         for bi, band_cfg in enumerate(config.continuation.bands):
@@ -449,8 +429,8 @@ def _write_run_summary(result: RunResult, warnings: List[str], wall_s: float) ->
         "final_metrics": bands[-1].final_metrics if bands else None,
         "per_band": [b.final_metrics for b in bands],
     }
-    write_json(
-        result.run_dir / "run_summary.json",
+    write_run_summary(
+        result.run_dir,
         {
             "run_id": result.run_id,
             "optimiser": SOLVER_NAME,

@@ -27,14 +27,13 @@ from .rundir import load_experiment_record
 from .postprocess import (
     DIFF_CMAP,
     ColourScales,
-    PathLike,
     Plot,
-    SavedRun,
     draw_map,
     tape_value,
     head_centre,
     save_plot,
 )
+from .saved import PathLike, ProblemArrays, SavedRun
 
 
 @dataclass
@@ -102,7 +101,7 @@ class SavedExperiment:
         return reference.run.tape[0]
 
     @property
-    def problem(self) -> Optional[Dict[str, np.ndarray]]:
+    def problem(self) -> Optional[ProblemArrays]:
         """``problem.npz`` of the first run (every run shares the truth)."""
         return self.runs[0].run.problem
 
@@ -219,7 +218,7 @@ def difference_maps(
     difference scale."""
     if exp.problem is None or scales is None:
         return None
-    c_star = exp.problem["c_star"]
+    c_star = exp.problem.c_star
     n = len(exp.runs)
     cols = min(n, 4)
     rows = -(-n // cols)
@@ -244,7 +243,7 @@ def profile_overlay(
         return None
     _, jc = head_centre(exp.problem)
     x, y = exp.runs[0].run.interior_axes
-    c_star = exp.problem["c_star"][:, jc]
+    c_star = exp.problem.c_star[:, jc]
     fig = Figure(figsize=(9, 5), layout="constrained")
     ax = fig.subplots()
     ax.plot(x * 1e3, c_star, "k-", linewidth=2, label="c*")

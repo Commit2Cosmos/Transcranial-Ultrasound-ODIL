@@ -36,7 +36,7 @@ Everything importable lives under the `odil_wave` package:
 | `loss`            | `Regulariser` (Tikhonov / TV); `LossTape` plots a solve's or a saved run's loss history. |
 | `optimisation`    | Inversion driver: `JointFreqODIL` (full-space joint L-BFGS over `u` and `c`). |
 | `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
-| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands, writes artifacts), `recorder`, `plots`. |
+| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands), `saved` (the run directory's format: writes and reads every artifact), `recorder`, `plots`. |
 
 Top-level `main.py` is the CLI entry point. The **default config** is defined in
 code — the `RunConfig` dataclass defaults in `odil_wave/experiment/config.py`,

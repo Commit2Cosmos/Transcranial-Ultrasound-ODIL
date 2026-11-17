@@ -121,6 +121,17 @@ def test_from_field_build_full_c_pads_with_pml_c(grid):
     assert torch.all(full[_pml_ring(grid)] == 1500.0)
 
 
+def test_from_interior_pads_an_interior_c_with_pml_c(grid):
+    """A saved band's interior c becomes a full-grid model, its PML ring at the
+    run's pml_c."""
+    ci = torch.full(grid.interior_shape, 1700.0, dtype=torch.float32)
+    vm = VelocityModel.from_interior(grid, ci, 1500.0)
+    assert vm.c.shape == grid.shape and vm.c.dtype == grid.dtype
+    assert torch.all(vm.c[grid.interior_slice] == 1700.0)
+    assert torch.all(vm.c[_pml_ring(grid)] == 1500.0)
+    assert vm.pml_c == 1500.0
+
+
 def test_from_field_custom_profile(grid):
     """from_field wraps an arbitrary field as a maskless 'custom' model."""
     c = torch.full(grid.shape, 1600.0, dtype=grid.dtype)

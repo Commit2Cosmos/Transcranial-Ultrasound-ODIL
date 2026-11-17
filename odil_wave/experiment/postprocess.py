@@ -19,11 +19,9 @@ are identical across the runs of one experiment.
 from __future__ import annotations
 
 import csv
-import json
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from matplotlib.colors import Normalize
@@ -31,9 +29,8 @@ from matplotlib.figure import Figure
 
 from odil_wave.models import profile_velocity_norm
 
-from .config import load_config_file
-from .rundir import load_versioned_json
-from .tape import load_tape, rows_by_band
+from .saved import PathLike, ProblemArrays, SavedBand, SavedRun
+from .tape import rows_by_band
 
 # Resolution of every saved PNG.
 DPI = 150
@@ -44,117 +41,6 @@ DIFF_FRACTION = 0.5
 
 VELOCITY_CMAP = "viridis"
 DIFF_CMAP = "RdBu_r"
-
-PathLike = Union[str, Path]
-
-
-# --------------------------------------------------------------------------- #
-# Reading a run directory
-# --------------------------------------------------------------------------- #
-def load_run_config(run_dir: PathLike) -> Dict[str, Any]:
-    """Read ``config_resolved.yaml``, the run's Resolved config, as a dict.
-
-    Raises
-    ------
-    FileNotFoundError
-        ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
-        directory.
-    """
-    path = Path(run_dir) / "config_resolved.yaml"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{str(run_dir)!r} is not a run directory (no config_resolved.yaml)"
-        )
-    return load_config_file(path)
-
-
-def load_bands(run_dir: PathLike) -> List["SavedBand"]:
-    """The run's completed bands (each with a ``band_summary.json``), in band
-    order; their arrays are read lazily."""
-    bands = []
-    for summary_path in Path(run_dir).glob("bands/band_*/band_summary.json"):
-        summary = json.loads(summary_path.read_text())
-        bands.append(
-            SavedBand(
-                index=int(summary["band_index"]),
-                label=str(summary["label"]),
-                path=summary_path.parent,
-                summary=summary,
-            )
-        )
-    return sorted(bands, key=lambda b: b.index)
-
-
-def _load_npz(path: Path) -> Dict[str, np.ndarray]:
-    with np.load(path) as z:
-        return {k: z[k] for k in z.files}
-
-
-@dataclass
-class SavedBand:
-    """A completed band of a saved run: its summary and (lazily) its arrays."""
-
-    index: int
-    label: str
-    path: Path
-    summary: Dict[str, Any]
-
-    @cached_property
-    def arrays(self) -> Dict[str, np.ndarray]:
-        """The band's ``arrays.npz``."""
-        return _load_npz(self.path / "arrays.npz")
-
-    @property
-    def c(self) -> np.ndarray:
-        """The interior velocity at the band's final iterate."""
-        return self.arrays["c"]
-
-
-@dataclass
-class SavedRun:
-    """A read-only view of a run directory, as post-processing sees it.
-
-    ``problem`` is ``problem.npz`` (``None`` if the run stopped before writing
-    it) and ``bands`` the completed bands in band order.
-    """
-
-    path: Path
-    config: Dict[str, Any]
-    tape: List[Dict[str, Any]]
-    problem: Optional[Dict[str, np.ndarray]]
-    bands: List[SavedBand]
-
-    @classmethod
-    def load(cls, run_dir: PathLike) -> "SavedRun":
-        """Read the run directory ``run_dir``.
-
-        Raises
-        ------
-        FileNotFoundError
-            ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
-            directory.
-        SchemaVersionError
-            Its ``metadata.json`` is of a format this code can't read.
-        """
-        path = Path(run_dir)
-        config = load_run_config(path)
-        if (path / "metadata.json").exists():  # a run may stop before writing it
-            load_versioned_json(path / "metadata.json")
-        problem_path = path / "problem.npz"
-        return cls(
-            path=path,
-            config=config,
-            tape=load_tape(path) if (path / "tape.csv").exists() else [],
-            problem=_load_npz(problem_path) if problem_path.exists() else None,
-            bands=load_bands(path),
-        )
-
-    @property
-    def interior_axes(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Interior node coordinates ``(x, y)`` in metres."""
-        nx, ny = self.config["grid"]["interior_shape"]
-        (x0, x1), (y0, y1) = self.config["grid"]["interior_extent"]
-        return np.linspace(x0, x1, nx), np.linspace(y0, y1, ny)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,8 +82,8 @@ class ColourScales:
         if run.problem is None:
             return None
         return cls.from_truth(
-            run.problem["c_star"],
-            run.problem["brain_mask"],
+            run.problem.c_star,
+            run.problem.brain_mask,
             run.config["truth"]["profile"],
         )
 
@@ -306,9 +192,7 @@ def draw_map(ax, run: SavedRun, field: np.ndarray, norm: Normalize, cmap: str):
         norm=norm,
         cmap=cmap,
     )
-    brain = run.problem["brain_mask"]
-    head = brain | run.problem["skull_mask"]
-    for mask in (head, brain):
+    for mask in (run.problem.head_mask, run.problem.brain_mask):
         ax.contour(x, y, mask.T.astype(float), levels=[0.5], colors="k", linewidths=0.7)
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
@@ -321,7 +205,7 @@ def velocity(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Plot]:
     interior, with brain and skull outlines."""
     if run.problem is None or not run.bands or scales is None:
         return None
-    c_star = run.problem["c_star"]
+    c_star = run.problem.c_star
     final = run.bands[-1]
     fig = Figure(figsize=(15, 4.5), layout="constrained")
     axes = fig.subplots(1, 3)
@@ -348,7 +232,7 @@ def per_band_error(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Pl
     scale; only with more than one band."""
     if run.problem is None or len(run.bands) < 2 or scales is None:
         return None
-    c_star = run.problem["c_star"]
+    c_star = run.problem.c_star
     n = len(run.bands)
     fig = Figure(figsize=(4.5 * n + 1, 4.5), layout="constrained")
     axes = np.atleast_1d(fig.subplots(1, n))
@@ -359,10 +243,9 @@ def per_band_error(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Pl
     return Plot("per_band_error", fig)
 
 
-def head_centre(problem: Dict[str, np.ndarray]) -> Tuple[int, int]:
+def head_centre(problem: ProblemArrays) -> Tuple[int, int]:
     """Interior index of the head region's centroid (brain plus skull)."""
-    head = problem["brain_mask"] | problem["skull_mask"]
-    i, j = np.nonzero(head)
+    i, j = np.nonzero(problem.head_mask)
     return int(round(i.mean())), int(round(j.mean()))
 
 
@@ -374,8 +257,8 @@ def profiles(run: SavedRun, scales: Optional[ColourScales] = None) -> Optional[P
     ic, jc = head_centre(run.problem)
     x, y = run.interior_axes
     fields = {
-        "c_star": run.problem["c_star"],
-        "c0": run.problem["c0"],
+        "c_star": run.problem.c_star,
+        "c0": run.problem.c0,
         "c_final": run.bands[-1].c,
     }
     # line -> (slice, x and y of each sample, position along it, axis, title)
@@ -535,7 +418,7 @@ def residual_by_offset(
     frequency and receiver pair at that offset."""
     if run.problem is None or not run.bands:
         return None
-    offsets = offsets_deg(run.problem["transducer_angles_deg"].astype(np.float64))
+    offsets = offsets_deg(run.problem.transducer_angles_deg.astype(np.float64))
     # Distinct offsets up to float32 rounding of the ring angles.
     keys = np.round(offsets, 3)
     distinct = np.unique(keys)
@@ -545,8 +428,8 @@ def residual_by_offset(
     table: List[Dict[str, Any]] = []
     for band in run.bands:
         # (shot, receiver, frequency), so a pair mask picks every frequency.
-        d_syn = band.arrays["d_syn_final"].transpose(0, 2, 1)
-        d_obs = band.arrays["d_obs"].transpose(0, 2, 1)
+        d_syn = band.arrays.d_syn_final.transpose(0, 2, 1)
+        d_obs = band.arrays.d_obs.transpose(0, 2, 1)
         values = []
         for offset in distinct:
             pairs = keys == offset
@@ -573,7 +456,7 @@ def residual_by_frequency(
     """``rel_data_residual`` at each band's final iterate per solved frequency
     (over every shot and receiver); only with more than one frequency in the
     run."""
-    freqs = {float(f) for band in run.bands for f in band.arrays["freqs"]}
+    freqs = {float(f) for band in run.bands for f in band.arrays.freqs}
     if len(freqs) < 2:
         return None
     fig, ax = _per_band_figure(
@@ -583,8 +466,8 @@ def residual_by_frequency(
     )
     table: List[Dict[str, Any]] = []
     for band in run.bands:
-        d_syn, d_obs = band.arrays["d_syn_final"], band.arrays["d_obs"]
-        band_freqs = band.arrays["freqs"]
+        d_syn, d_obs = band.arrays.d_syn_final, band.arrays.d_obs
+        band_freqs = band.arrays.freqs
         values = [
             _rel_residual(d_syn[:, f], d_obs[:, f]) for f in range(len(band_freqs))
         ]
@@ -609,7 +492,7 @@ def residual_by_transmitter(
     frequencies and receivers) against the transmitting transducer's ring angle."""
     if run.problem is None or not run.bands:
         return None
-    angles = run.problem["transducer_angles_deg"]
+    angles = run.problem.transducer_angles_deg
     fig, ax = _per_band_figure(
         "Data residual by transmitter (final iterate)",
         "transmitter angle [deg]",
@@ -617,7 +500,7 @@ def residual_by_transmitter(
     )
     table: List[Dict[str, Any]] = []
     for band in run.bands:
-        d_syn, d_obs = band.arrays["d_syn_final"], band.arrays["d_obs"]
+        d_syn, d_obs = band.arrays.d_syn_final, band.arrays.d_obs
         values = [_rel_residual(d_syn[s], d_obs[s]) for s in range(len(d_obs))]
         table += [
             {
@@ -684,9 +567,9 @@ def phase_gap(run: SavedRun, scales: Optional[ColourScales] = None) -> Optional[
     )
     table: List[Dict[str, Any]] = []
     for band in run.bands:
-        d_obs = band.arrays["d_obs"]
-        over = np.abs(phase_gap_per_pair(band.arrays["d_syn_start"], d_obs)) > np.pi
-        freqs = band.arrays["freqs"]
+        d_obs = band.arrays.d_obs
+        over = np.abs(phase_gap_per_pair(band.arrays.d_syn_start, d_obs)) > np.pi
+        freqs = band.arrays.freqs
         fractions = [float(over[:, f].mean()) for f in range(len(freqs))]
         table += [
             {

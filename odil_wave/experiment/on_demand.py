@@ -12,7 +12,7 @@ CPU and evaluate fixed formulas or the operator on the saved arrays.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -20,16 +20,15 @@ from matplotlib.colors import LogNorm, Normalize
 from matplotlib.figure import Figure
 
 from odil_wave.grid import FrequencySelection
+from odil_wave.models import VelocityModel
 from odil_wave.operator import WaveEquation
 from odil_wave.wavefield import Wavefield
 
 from .config import RunConfig, deep_merge
-from .postprocess import DIFF_CMAP, SavedBand, SavedRun, draw_map, load_run_config
+from .postprocess import DIFF_CMAP, draw_map
 from .problem import Problem, build_problem
-from .runner import band_label
+from .saved import PathLike, SavedBand, SavedRun, band_label, load_run_config
 from .tape import rows_by_band
-
-PathLike = Union[str, Path]
 
 MAGNITUDE_CMAP = "magma"
 
@@ -147,7 +146,7 @@ def _band(run: SavedRun, band: int) -> SavedBand:
 
 def _frequency(saved: SavedBand, frequency: int) -> float:
     """The solved frequency (Hz) at index ``frequency`` of ``saved``'s bins."""
-    freqs = saved.arrays["freqs"]
+    freqs = saved.arrays.freqs
     if not -len(freqs) <= frequency < len(freqs):
         raise ValueError(
             f"no frequency {frequency} in band {saved.index} "
@@ -159,7 +158,7 @@ def _frequency(saved: SavedBand, frequency: int) -> float:
 def _saved_shot(saved: SavedBand, shot: Optional[int]) -> Tuple[int, int]:
     """``(shot, position in arrays.npz's shots)``; ``shot`` defaults to the
     band's worst-fit shot, which is always saved."""
-    shots = [int(s) for s in saved.arrays["shots"]]
+    shots = [int(s) for s in saved.arrays.shots]
     if shot is None:
         shot = int(saved.summary["worst_fit_shot"])
     if shot not in shots:
@@ -168,11 +167,6 @@ def _saved_shot(saved: SavedBand, shot: Optional[int]) -> Tuple[int, int]:
             f"saved shots: {shots}"
         )
     return shot, shots.index(shot)
-
-
-def _interior(run: SavedRun) -> Tuple[slice, slice]:
-    (x0, x1), (y0, y1) = run.problem["interior_slice"]
-    return slice(int(x0), int(x1)), slice(int(y0), int(y1))
 
 
 def wavefield_comparison(
@@ -189,8 +183,8 @@ def wavefield_comparison(
     saved = _band(run, band)
     f_hz = _frequency(saved, frequency)
     shot, k = _saved_shot(saved, shot)
-    u = saved.arrays["u"][k, frequency][_interior(run)]
-    u_star = saved.arrays["u_star"][k, frequency]
+    u = saved.arrays.u[k, frequency][run.problem.interior_slice]
+    u_star = saved.arrays.u_star[k, frequency]
     peak = float(np.abs(u_star).max()) or 1.0
 
     fig = Figure(figsize=(15, 9), layout="constrained")
@@ -227,16 +221,16 @@ def shot_data_fit(
     run = SavedRun.load(run_dir)
     saved = _band(run, band)
     f_hz = _frequency(saved, frequency)
-    d_obs = saved.arrays["d_obs"]
+    d_obs = saved.arrays.d_obs
     if shot is None:
         shot = int(saved.summary["worst_fit_shot"])
     if not 0 <= shot < len(d_obs):
         raise ValueError(f"no shot {shot}: the run has {len(d_obs)} shots")
-    angles = np.delete(run.problem["transducer_angles_deg"], shot)
+    angles = np.delete(run.problem.transducer_angles_deg, shot)
     traces = [
         ("d_obs", d_obs, "k-"),
-        ("d_syn", saved.arrays["d_syn_final"], "C0-"),
-        ("d_syn (start row)", saved.arrays["d_syn_start"], "C7:"),
+        ("d_syn", saved.arrays.d_syn_final, "C0-"),
+        ("d_syn (start row)", saved.arrays.d_syn_start, "C7:"),
     ]
 
     fig = Figure(figsize=(12, 4.5), layout="constrained")
@@ -251,7 +245,7 @@ def shot_data_fit(
     phase.set_title("Phase")
     for ax in (amplitude, phase):
         ax.axvline(
-            run.problem["transducer_angles_deg"][shot],
+            run.problem.transducer_angles_deg[shot],
             color="crimson",
             ls="--",
             lw=1,
@@ -295,14 +289,14 @@ def pde_residual_map(
         damping_scale=problem.damping_scale,
     )
     cdtype = wave_eq.wavefield.cdtype
-    c_full = np.pad(saved.c, grid.pml_width, constant_values=run.problem["pml_c"])
+    model = VelocityModel.from_interior(
+        grid, torch.from_numpy(saved.c), run.problem.pml_c
+    )
     with torch.no_grad():
-        u = torch.as_tensor(saved.arrays["u"][k], dtype=cdtype)
+        u = torch.as_tensor(saved.arrays.u[k], dtype=cdtype)
         q = wave_eq.sources(geom)[shot]
-        r = wave_eq.residual(
-            u[None], torch.as_tensor(c_full, dtype=grid.dtype), q[None]
-        )[0, frequency]
-    scale = float(saved.arrays["pde_scale"][shot, frequency])
+        r = wave_eq.residual(u[None], model.c, q[None])[0, frequency]
+    scale = float(saved.arrays.pde_scale[shot, frequency])
     ratio = r.abs().cpu().numpy() / max(scale, 1e-30)
     n_int = len(run.interior_axes[0]) * len(run.interior_axes[1])
 
@@ -325,8 +319,7 @@ def pde_residual_map(
         lw=0.8,
         label="interior (PML outside)",
     )
-    head = run.problem["brain_mask"] | run.problem["skull_mask"]
-    for mask in (head, run.problem["brain_mask"]):
+    for mask in (run.problem.head_mask, run.problem.brain_mask):
         ax.contour(x, y, mask.T.astype(float), levels=[0.5], colors="w", linewidths=0.6)
     fig.colorbar(im, ax=ax, shrink=0.85, label="|r_pde| / (|λ_tt|·u_ref)")
     ax.set_xlabel("x [mm]")
