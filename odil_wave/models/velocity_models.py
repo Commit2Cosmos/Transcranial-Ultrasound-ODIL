@@ -111,33 +111,25 @@ class VelocityModel:
 
     ``shepp_logan`` / ``shepp_logan_skull`` kwargs (via ``**profile_kwargs``):
 
-    * ``scale`` (float, **required**) — fraction of the interior the phantom
-      occupies.
     * ``c_water``, ``c_skull``, ``threshold``; ``soft_intercept`` /
       ``soft_slope`` (``shepp_logan``); ``interior_value``
       (``shepp_logan_skull``).
 
-    ``shepp_logan_skull`` only (via ``**profile_kwargs``):
-
-    * ``skull_alpha`` (float in ``[0, 1]``, **required**) — contrast scale:
-      ``c = c_water + alpha * G_σ(c_perfect - c_water)``. ``0`` = water;
-      ``1`` = full skull peak (before / after mild blur).
-    * ``skull_sigma`` (float >= 0, **required**) — Gaussian σ in **grid cells**
-      applied to the skull contrast. Try ``1``–``3`` for a mild soft edge;
-      ``0`` keeps a sharp rim.
-
-    The required profile kwargs are set by the run config (ADR 0001); a
-    profile that reads one raises ``TypeError`` when it is missing.
+    The library owns the defaults of the keyword arguments the run config sets
+    (ADR 0001).
     """
 
     def __init__(
         self,
         grid: Grid,
         *,
-        profile: str,
-        base: float,
-        contrast: float,
-        pml_c: Optional[float],
+        profile: str = "shepp_logan",
+        base: float = 1500.0,
+        contrast: float = 0.4,
+        pml_c: Optional[float] = None,
+        scale: float = 0.85,
+        skull_alpha: float = 1.0,
+        skull_sigma: float = 0.0,
         **profile_kwargs,
     ):
         """Build a velocity field for the given profile on the full grid.
@@ -156,6 +148,17 @@ class VelocityModel:
         pml_c : float or None
             Fixed PML speed; ``None`` -> the interior background (skull
             profiles) or the field minimum otherwise.
+        scale : float
+            ``shepp_logan`` / ``shepp_logan_skull``: fraction of the interior
+            the phantom occupies.
+        skull_alpha : float in [0, 1]
+            ``shepp_logan_skull``: contrast scale,
+            ``c = c_water + alpha * G_σ(c_perfect - c_water)``; ``0`` = water,
+            ``1`` = full skull peak.
+        skull_sigma : float >= 0
+            ``shepp_logan_skull``: Gaussian σ in **grid cells** applied to the
+            skull contrast; try ``1``–``3`` for a mild soft edge, ``0`` keeps a
+            sharp rim.
         **profile_kwargs
             Extra per-profile parameters (see the class docstring).
         """
@@ -163,6 +166,9 @@ class VelocityModel:
         self.profile = profile
         self.base = base
         self.contrast = contrast
+        self.scale = scale
+        self.skull_alpha = skull_alpha
+        self.skull_sigma = skull_sigma
         self.profile_kwargs = profile_kwargs
         self.c = self._build()
         if pml_c is not None:
@@ -351,8 +357,7 @@ class VelocityModel:
 
         Notes
         -----
-        Raises ``ValueError`` for an unknown profile and ``TypeError`` when a
-        required profile kwarg is missing.
+        Raises ``ValueError`` for an unknown profile.
         """
         g = self.grid
         base_field = torch.full(g.shape, self.base, dtype=g.dtype, device=g.device)
@@ -375,7 +380,7 @@ class VelocityModel:
             )
 
         if self.profile == "shepp_logan":
-            scale = self._required_kwarg("scale")
+            scale = self.scale
             threshold = self.profile_kwargs.get("threshold", SHEPP_THRESHOLD)
             c_water = self.profile_kwargs.get("c_water", SOS_WATER)
             c_skull = self.profile_kwargs.get("c_skull", SOS_SKULL)
@@ -401,16 +406,16 @@ class VelocityModel:
             return self._embed_interior(model, c_water)
 
         if self.profile == "shepp_logan_skull":
-            scale = self._required_kwarg("scale")
+            scale = self.scale
             threshold = self.profile_kwargs.get("threshold", SHEPP_THRESHOLD)
             c_water = self.profile_kwargs.get("c_water", SOS_WATER)
             c_skull = self.profile_kwargs.get("c_skull", SOS_SKULL)
             # c = c_water + α G_σ(c_perfect - c_water)
-            skull_alpha = float(self._required_kwarg("skull_alpha"))
+            skull_alpha = float(self.skull_alpha)
             if skull_alpha < 0.0 or skull_alpha > 1.0:
                 raise ValueError(f"skull_alpha must be in [0, 1]; got {skull_alpha}")
             # σ in grid cells. Prefer 1–3 for mild edges.
-            skull_sigma = float(self._required_kwarg("skull_sigma"))
+            skull_sigma = float(self.skull_sigma)
             if skull_sigma < 0.0:
                 raise ValueError(f"skull_sigma must be >= 0; got {skull_sigma}")
 
@@ -437,15 +442,6 @@ class VelocityModel:
             return self._embed_interior(model, c_water)
 
         raise ValueError(f"Unknown velocity profile: {self.profile!r}")
-
-    def _required_kwarg(self, name: str):
-        """Return profile kwarg ``name``; ``TypeError`` if the caller omitted it."""
-        if name not in self.profile_kwargs:
-            raise TypeError(
-                f"VelocityModel profile {self.profile!r} requires the "
-                f"keyword argument {name!r}"
-            )
-        return self.profile_kwargs[name]
 
     @property
     def head_mask(self) -> Optional[torch.Tensor]:

@@ -198,7 +198,7 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
     if args.experiment is not None:
         return _experiment(args, repo_root)
 
-    # config resolution is torch-free; import lazily so --help stays instant.
+    # import lazily so --help stays instant.
     import yaml
 
     from odil_wave.experiment.config import (

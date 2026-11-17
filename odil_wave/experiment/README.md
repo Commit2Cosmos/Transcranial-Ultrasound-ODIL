@@ -560,10 +560,9 @@ the resolved config; the scoring rule is in the `ssim_brain` row above.
 
 Each parameter has exactly one owner (ADR 0001):
 
-1. Add the field with its default and a docstring entry to the matching frozen
-   dataclass in `config.py`; that default is part of the default config and is
-   serialised into `config_resolved.yaml` for every run automatically.
-2. Make the library constructor it feeds take it as a required keyword-only
-   argument (no library default), and pass it in `problem.py` / `runner.py`.
-
-A numerical-method detail that is not in the config keeps its library default.
+1. If one value serves most calls, the library constructor it feeds owns the
+   default; otherwise it is a required keyword-only argument there.
+2. Add the field and a docstring entry to the matching frozen dataclass in
+   `config.py`. Its default is `library_default(<constructor>, "<name>")` when
+   the library owns one, else the default problem's value. Pass it in
+   `problem.py` / `runner.py`.

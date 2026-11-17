@@ -9,6 +9,7 @@ import scipy.sparse as sp
 import torch
 from scipy.sparse.linalg import SuperLU, splu
 
+from odil_wave.defaults import library_default
 from odil_wave.wavefield import Wavefield
 from .spatial import laplacian_stencil
 from .utils import WaveEquation
@@ -78,7 +79,7 @@ class HelmholtzSolver:
         geometry,
         *,
         space_order: int,
-        damping_scale: float,
+        damping_scale: float = library_default(WaveEquation, "damping_scale"),
     ) -> None:
         """Bind to a wavefield/geometry and build the matching WaveEquation.
 
@@ -153,7 +154,7 @@ class HelmholtzSolver:
         return H.tocsr()
 
     def solve(
-        self, verbose: bool = True, return_factors: bool = False
+        self, verbose: bool = False, return_factors: bool = False
     ) -> Union[List[Wavefield], Tuple[List[Wavefield], List[SuperLU]]]:
         """Solve H(c) u = f for every shot and frequency; one Wavefield per shot.
 

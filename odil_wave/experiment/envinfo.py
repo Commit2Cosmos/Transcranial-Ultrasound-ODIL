@@ -1,4 +1,4 @@
-"""Environment capture, seeding, and device/dtype resolution.
+"""Environment capture, seeding, and device resolution.
 
 Everything here is best-effort and side-effect-light: capturing metadata must
 never fail a run. ``torch`` is imported lazily so ``--dry-run`` can summarise a
@@ -40,24 +40,6 @@ def seed_everything(seed: int, deterministic: bool = False) -> Dict[str, Any]:
         except Exception as exc:  # pragma: no cover - platform dependent
             record["deterministic_error"] = repr(exc)
     return record
-
-
-def resolve_dtype(name: str):
-    """Map a dtype name (``float32``/``float64``) to a ``torch.dtype``."""
-    import torch
-
-    mapping = {
-        "float32": torch.float32,
-        "float": torch.float32,
-        "f32": torch.float32,
-        "float64": torch.float64,
-        "double": torch.float64,
-        "f64": torch.float64,
-    }
-    key = str(name).strip().lower()
-    if key not in mapping:
-        raise ValueError(f"unsupported dtype {name!r}; expected float32 or float64")
-    return mapping[key]
 
 
 def resolve_device(name: str):

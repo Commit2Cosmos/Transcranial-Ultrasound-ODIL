@@ -36,7 +36,7 @@ Everything importable lives under the `odil_wave` package:
 | `loss`            | `Regulariser` (Tikhonov / TV); `LossTape` plots a solve's or a saved run's loss history. |
 | `optimisation`    | Inversion driver: `JointFreqODIL` (full-space joint L-BFGS over `u` and `c`). |
 | `metrics`         | `ssim` / `ssim_map`, `mse`, `mae` for scoring a recovered `c` against truth. |
-| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation — **torch-free**), `problem` (builds grid/source/data once), `runner` (drives the bands), `saved` (the run directory's format: writes and reads every artifact), `recorder`, `plots`. |
+| `experiment`      | The reproducible run layer: `config` (schema, resolution, validation), `problem` (builds grid/source/data once), `runner` (drives the bands), `saved` (the run directory's format: writes and reads every artifact), `recorder`, `plots`. |
 
 Top-level `main.py` is the CLI entry point. The **default config** is defined in
 code — the `RunConfig` dataclass defaults in `odil_wave/experiment/config.py`,
@@ -72,8 +72,8 @@ python main.py --config configs/example_multiband.yaml \
 python main.py --scratch --config configs/example_multiband.yaml
 ```
 
-Config resolution is lazy and torch-free, so `--help` and `--dry-run` are
-instant; the numerical stack is only imported once a real run starts.
+`--help` is instant: the numerical stack is only imported once a command
+needs a config.
 
 ### Programmatic use
 

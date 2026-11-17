@@ -19,8 +19,8 @@ class WaveEquation:
           + w_sponge [ σ_sum_nd D_t[u] + σ_prod_nd u ]
 
     with ``w_sponge = damping_scale`` (``1`` = designed PML absorption, ``0``
-    disables it). ``space_order`` (2 | 4 | 6 | 8 | 10) and ``damping_scale`` are
-    set by the run config and required keywords (ADR 0001).
+    disables it). ``space_order`` (2 | 4 | 6 | 8 | 10) is required; the library
+    owns the ``damping_scale`` default (ADR 0001).
 
     Frequency form (2nd-order centered symbols from FrequencySelection)::
 
@@ -35,7 +35,7 @@ class WaveEquation:
 
     wavefield: Wavefield
     space_order: int = field(kw_only=True)
-    damping_scale: float = field(kw_only=True)
+    damping_scale: float = field(default=1.0, kw_only=True)
 
     _lap: Laplacian = field(init=False)
     _sponge: Sponge = field(init=False)

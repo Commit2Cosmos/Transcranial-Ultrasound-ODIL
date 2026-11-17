@@ -19,18 +19,18 @@ class SourceSignal:
         *,
         kind: str,
         f0: float,
-        amplitude: float,
+        amplitude: float = 1.0,
         # tone_burst-only parameters
-        n_cycles: float,
-        envelope: str,
-        dimensionless: bool,
+        n_cycles: float = 3.0,
+        envelope: str = "gaussian",
+        dimensionless: bool = True,
         t_centre: Optional[float] = None,
         offset: int = 0,
     ):
         """Build a source pulse on `grid`.
 
-        Every parameter set by the run config's ``source`` block is a required
-        keyword (ADR 0001); ``t_centre`` and ``offset`` keep library defaults.
+        ``kind`` and ``f0`` are required; the library owns the other defaults
+        (ADR 0001).
 
         Parameters
         ----------

@@ -1,16 +1,15 @@
 """Typed, serialisable run configuration for frequency-domain FWI runs.
 
-Dependency-light (standard library + PyYAML only, no ``torch`` / ``odil_wave``
-imports) so a config can be resolved and validated without importing the
-numerical stack.
-
 The dataclass defaults below are the **default config**, the only one: there is
-no default YAML file (ADR 0001). A run config names only the values it
-changes; :func:`resolve_config` applies it (and any CLI overrides) to these
-defaults, and the resolved config written to ``config_resolved.yaml`` records
-every value. ``python main.py --print-defaults`` prints the default config.
-The docstrings here are the single place each field is documented. The
-dataclasses are frozen (immutable once resolved).
+no default YAML file (ADR 0001). A field the library has a default for reads it
+with :func:`~odil_wave.defaults.library_default`; the other fields are the
+library's required arguments, and their defaults here define the default
+problem. A run config names only the values it changes; :func:`resolve_config`
+applies it (and any CLI overrides) to these defaults, and the resolved config
+written to ``config_resolved.yaml`` records every value.
+``python main.py --print-defaults`` prints the default config. The docstrings
+here are the single place each field is documented. The dataclasses are frozen
+(immutable once resolved).
 """
 
 from __future__ import annotations
@@ -33,6 +32,17 @@ from typing import (
 )
 
 import yaml
+
+from odil_wave import (
+    AcquisitionGeometry,
+    Grid,
+    JointFreqODIL,
+    Regulariser,
+    SourceSignal,
+    VelocityModel,
+    WaveEquation,
+)
+from odil_wave.defaults import library_default
 
 from .atomic import write_text_atomic
 
@@ -66,18 +76,18 @@ class RuntimeCfg:
 
     Params:
     * ``device``: ``"cpu"`` | ``"cuda"`` | ``"mps"``.
-    * ``dtype``: ``"float32"`` | ``"float64"`` (aliases ``f32``/``float``,
-      ``f64``/``double``); float64 is more reproducible for the inverse solve.
+    * ``dtype``: ``"float32"`` | ``"float64"``; float64 is more reproducible
+      for the inverse solve.
     * ``torch_num_threads``: ``None`` -> torch default, else int >= 1.
     * ``deterministic``: force deterministic torch kernels.
     * ``verbose``: print Helmholtz-solve and per-iteration optimiser progress.
     """
 
-    device: str = "cpu"
-    dtype: str = "float32"
+    device: str = library_default(Grid, "device")
+    dtype: str = library_default(Grid, "dtype")
     torch_num_threads: Optional[int] = None
     deterministic: bool = False
-    verbose: bool = False
+    verbose: bool = library_default(JointFreqODIL, "verbose")
 
 
 @dataclass(frozen=True)
@@ -126,10 +136,10 @@ class PmlCfg:
       receiver traces.
     """
 
-    width: int = 40
-    power: int = 3
-    R0: float = 1e-6
-    damping_scale: float = 1.0
+    width: int = library_default(Grid, "pml_width")
+    power: int = library_default(Grid, "pml_power")
+    R0: float = library_default(Grid, "pml_R0")
+    damping_scale: float = library_default(WaveEquation, "damping_scale")
     observation_width: Optional[int] = None
 
 
@@ -147,8 +157,8 @@ class TimeCfg:
     """
 
     t_max: float = 500e-6
-    init_nt: Optional[int] = 1300
-    cfl_safety: float = 0.9
+    init_nt: Optional[int] = library_default(Grid, "init_nt")
+    cfl_safety: float = library_default(Grid, "cfl_safety")
 
 
 @dataclass(frozen=True)
@@ -168,10 +178,10 @@ class SourceCfg:
 
     kind: str = "tone_burst"
     f0: float = 80e3
-    amplitude: float = 1.0
-    n_cycles: float = 3.0
-    envelope: str = "gaussian"
-    dimensionless: bool = True
+    amplitude: float = library_default(SourceSignal, "amplitude")
+    n_cycles: float = library_default(SourceSignal, "n_cycles")
+    envelope: str = library_default(SourceSignal, "envelope")
+    dimensionless: bool = library_default(SourceSignal, "dimensionless")
 
 
 @dataclass(frozen=True)
@@ -183,8 +193,8 @@ class AcquisitionCfg:
       transmits one shot, recorded by the other ``n_transducers - 1``.
     * ``a_frac`` / ``b_frac``: (0, 1]; ring semi-axes as a fraction of the
       interior half-extent in x / y.
-    * ``ring_center``: ``"grid_center"`` (centre of the interior extent) |
-      ``[x, y]`` in metres.
+    * ``ring_center``: ``null`` (centre of the interior extent) | ``[x, y]`` in
+      metres.
     * ``sigma_s``: > 0 metres; width of the Gaussian source density
       ``exp(-r**2 / sigma_s**2) / (pi sigma_s**2)``, i.e. a Gaussian with
       standard deviation ``sigma_s / sqrt(2)`` (used when
@@ -199,11 +209,13 @@ class AcquisitionCfg:
     """
 
     n_transducers: int = 64
-    a_frac: float = 0.9
-    b_frac: float = 0.9
-    ring_center: Union[str, List[float]] = "grid_center"
-    sigma_s: float = 2.5e-3
-    source_spatial: str = "gaussian"
+    a_frac: float = library_default(AcquisitionGeometry, "a_frac")
+    b_frac: float = library_default(AcquisitionGeometry, "b_frac")
+    ring_center: Optional[List[float]] = library_default(
+        AcquisitionGeometry, "ring_center"
+    )
+    sigma_s: float = library_default(AcquisitionGeometry, "sigma_s")
+    source_spatial: str = library_default(AcquisitionGeometry, "source_spatial")
 
 
 @dataclass(frozen=True)
@@ -227,13 +239,13 @@ class ModelCfg:
       ``soft_slope`` / ``interior_value`` (Shepp-Logan profiles).
     """
 
-    profile: str = "shepp_logan"
-    scale: float = 0.85
-    base: float = 1500.0
-    contrast: float = 0.4
-    pml_c: Optional[float] = None
-    skull_alpha: float = 1.0
-    skull_sigma: float = 0.0
+    profile: str = library_default(VelocityModel, "profile")
+    scale: float = library_default(VelocityModel, "scale")
+    base: float = library_default(VelocityModel, "base")
+    contrast: float = library_default(VelocityModel, "contrast")
+    pml_c: Optional[float] = library_default(VelocityModel, "pml_c")
+    skull_alpha: float = library_default(VelocityModel, "skull_alpha")
+    skull_sigma: float = library_default(VelocityModel, "skull_sigma")
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -283,8 +295,8 @@ class RegulariserCfg:
       a contrast of ``sqrt(eps) * c0`` across ``L0`` (1% of ``c0`` at 1e-4).
     """
 
-    name: str = "tv_iso"
-    eps: float = 1e-4
+    name: str = library_default(Regulariser, "kind")
+    eps: float = library_default(Regulariser, "eps")
 
 
 @dataclass(frozen=True)
@@ -319,7 +331,7 @@ class OptimiserCfg:
     * ``inner_max_iter``: int >= 1 L-BFGS iterations per logged outer step; keep
       >= ~5 for a genuine continuous solve (inner=1 stalls the line search).
     * ``history_size``: int >= 1 L-BFGS history length.
-    * ``line_search_fn``: ``"strong_wolfe"`` | ``"none"``.
+    * ``line_search_fn``: ``"strong_wolfe"`` | ``null`` (no line search).
     * ``lbfgs_lr``: L-BFGS learning rate.
     * ``tolerance_grad`` / ``tolerance_change``: L-BFGS stopping tolerances.
     * ``model_preconditioner``: ``"none"`` | ``"pde_diagonal"``. ``pde_diagonal``
@@ -332,15 +344,17 @@ class OptimiserCfg:
     """
 
     n_iter: int = 20
-    log_every: int = 5
-    inner_max_iter: int = 20
-    history_size: int = 20
-    line_search_fn: str = "strong_wolfe"
-    lbfgs_lr: float = 1.0
-    tolerance_grad: float = 1e-12
-    tolerance_change: float = 1e-14
-    model_preconditioner: str = "none"
-    wavefield_preconditioner: str = "none"
+    log_every: int = library_default(JointFreqODIL, "log_every")
+    inner_max_iter: int = library_default(JointFreqODIL, "inner_max_iter")
+    history_size: int = library_default(JointFreqODIL, "history_size")
+    line_search_fn: Optional[str] = library_default(JointFreqODIL, "line_search_fn")
+    lbfgs_lr: float = library_default(JointFreqODIL, "lbfgs_lr")
+    tolerance_grad: float = library_default(JointFreqODIL, "tolerance_grad")
+    tolerance_change: float = library_default(JointFreqODIL, "tolerance_change")
+    model_preconditioner: str = library_default(JointFreqODIL, "model_preconditioner")
+    wavefield_preconditioner: str = library_default(
+        JointFreqODIL, "wavefield_preconditioner"
+    )
 
 
 @dataclass(frozen=True)
@@ -587,11 +601,11 @@ def apply_overrides(
     return out
 
 
-# Accepted values of the enum-like fields. config.py stays torch-free, so these
-# mirror the library: WaveEquation's stencil orders, the Regulariser kinds and
-# the VelocityModel profiles / profile kwargs.
+# Accepted values of the enum-like fields, mirroring the library (checked by
+# tests/test_config_mirrors.py): WaveEquation's stencil orders, the Regulariser
+# kinds and the VelocityModel profiles / profile kwargs.
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
-_LINE_SEARCHES = ("strong_wolfe", "none")
+_LINE_SEARCHES = ("strong_wolfe", None)
 _MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
 _WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
@@ -637,8 +651,11 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     for key in ("n_iter", "log_every", "inner_max_iter", "history_size"):
         if getattr(opt, key) < 1:
             raise ConfigError(f"optimiser.{key} must be >= 1")
-    if str(opt.line_search_fn).lower() not in _LINE_SEARCHES:
-        raise ConfigError("optimiser.line_search_fn must be 'strong_wolfe' or 'none'")
+    if opt.line_search_fn not in _LINE_SEARCHES:
+        raise ConfigError(
+            f"optimiser.line_search_fn must be 'strong_wolfe' or null, "
+            f"got {opt.line_search_fn!r}"
+        )
 
     if not cfg.continuation.bands:
         raise ConfigError("continuation.bands must contain at least one band")
@@ -655,6 +672,14 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"acquisition.n_transducers must be >= 2, "
             f"got {cfg.acquisition.n_transducers}"
         )
+
+    rc = cfg.acquisition.ring_center
+    if rc is not None and not (
+        isinstance(rc, list)
+        and len(rc) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in rc)
+    ):
+        raise ConfigError(f"acquisition.ring_center must be null or [x, y], got {rc!r}")
 
     sigma = cfg.acquisition.sigma_s
     if isinstance(sigma, bool) or not isinstance(sigma, (int, float)) or sigma <= 0:
@@ -679,15 +704,10 @@ def validate_config(cfg: "RunConfig") -> List[str]:
             f"pml.observation_width must be >= 0 when set, got {pml.observation_width}"
         )
 
-    if cfg.runtime.dtype.lower() not in (
-        "float32",
-        "float",
-        "f32",
-        "float64",
-        "double",
-        "f64",
-    ):
-        raise ConfigError(f"runtime.dtype {cfg.runtime.dtype!r} is not supported")
+    if cfg.runtime.dtype not in ("float32", "float64"):
+        raise ConfigError(
+            f"runtime.dtype must be 'float32' or 'float64', got {cfg.runtime.dtype!r}"
+        )
 
     loss = cfg.loss
     weights = loss.weights
@@ -763,7 +783,7 @@ def _source_width_warnings(cfg: "RunConfig") -> List[str]:
     f_max = max(float(f) for b in cfg.continuation.bands for f in b.frequencies_hz)
     k_max = 2.0 * math.pi * f_max / float(cfg.grid.c_min)
     rc = cfg.acquisition.ring_center
-    cx, cy = ((x0 + x1) / 2, (y0 + y1) / 2) if isinstance(rc, str) else map(float, rc)
+    cx, cy = ((x0 + x1) / 2, (y0 + y1) / 2) if rc is None else map(float, rc)
     a = cfg.acquisition.a_frac * (x1 - x0) / 2
     b = cfg.acquisition.b_frac * (y1 - y0) / 2
     clearance = min(cx - a - x0, x1 - cx - a, cy - b - y0, y1 - cy - b)
