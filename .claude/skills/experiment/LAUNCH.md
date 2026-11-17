@@ -1,6 +1,6 @@
 # Stage 2: Spec, probe, launch
 
-Turn the Protocol into a committed, tagged experiment spec, post the launch comment, and hand the user the command. The spec format and every flag are in `odil_wave/experiment/README.md`, "Experiments".
+Turn the Protocol into a committed, tagged experiment spec, post the launch comment, and hand the user the command. The spec format and the flags are in `odil_wave/experiment/README.md`, "Experiments"; the spec's rules are enforced in `odil_wave/experiment/spec.py`.
 
 Before starting, re-check the Protocol's gate (config-selectable; see [PROTOCOL.md](PROTOCOL.md) §3). If it fails, go back to the Protocol stage.
 

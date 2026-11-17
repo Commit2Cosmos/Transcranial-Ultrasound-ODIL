@@ -1,6 +1,6 @@
 """The arrays a run saves (``problem.npz``, each band's ``arrays.npz``) and its
-band summaries, as laid out in the run-layer README's "Where each artifact is
-written", checked against values recomputed independently of the run."""
+band summaries, as :mod:`odil_wave.experiment.saved` writes them, checked
+against values recomputed independently of the run."""
 
 from __future__ import annotations
 

@@ -5,7 +5,6 @@ An **experiment spec** (``configs/experiments/NNNN-slug.yaml``) holds a
 and its values. Every combination of one value per axis is a run, each value
 applied at its key like a run config (dicts deep-merge, lists replace).
 :func:`load_spec` parses and validates a spec, resolving every run's config.
-The run-layer README's "Experiment spec" section is the contract.
 """
 
 from __future__ import annotations

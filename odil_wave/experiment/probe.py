@@ -4,8 +4,8 @@
 :data:`PROBE_ITERATIONS` iterations of the baseline's first band, run into
 ``outputs/probes/<YYMMDD-HHMMSS>/``; its seconds per iteration times each run's
 total iterations is that run's estimate. It is allowed on a dirty tree and
-reserves no experiment id. The run-layer README's ``--experiment`` section is
-the contract.
+reserves no experiment id. Seconds per iteration are timed
+between the band's first and last tape rows, so they exclude setup.
 """
 
 from __future__ import annotations

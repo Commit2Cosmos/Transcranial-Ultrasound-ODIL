@@ -16,7 +16,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import odil_wave  # noqa: F401,E402  (import before torch: see test_optimisation.py)
+import odil_wave  # noqa: F401,E402  (import before torch avoids an OpenMP abort)
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402

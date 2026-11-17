@@ -37,9 +37,6 @@ where = ["."]
 include = ["odil_wave*"]
 
 
-[project.scripts]
-#odil-wave = "odil_wave.cli:main"
-
 [tool.ruff]
 line-length = 88
 # match pre-commit's ruff hooks, which only see Python files

@@ -493,7 +493,9 @@ class JointFreqODIL:
     @property
     def wavefield_solve_s(self) -> float:
         """Wall time of the wavefield preconditioner's triangular solves so far
-        (forward and adjoint); ``0.0`` without it."""
+        (forward and adjoint, device copies included); ``0.0`` without it. It
+        counts the logged rows' diagnostic solves too, so it is not the L-BFGS
+        evaluations' cost alone."""
         return self.wavefield_precond.solve_seconds
 
     def physical_u(self, v_re: torch.Tensor, v_im: torch.Tensor) -> torch.Tensor:

@@ -5,8 +5,9 @@
 (``docs/experiments/<id>.md``), adds a detached worktree at that commit, runs
 the **recorded** entry point there with
 ``uv run --frozen python main.py --experiment <spec> --out <target>`` and
-removes the worktree. It compares nothing and never edits the record. The
-run-layer README's "``--reproduce``" section is the contract.
+removes the worktree. It compares nothing and never edits the record. Because it
+runs the old ``main.py``, the flags it passes are part of the stable CLI
+contract in the run-layer README.
 """
 
 from __future__ import annotations

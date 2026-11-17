@@ -1,5 +1,5 @@
 """A run directory's format: the one module that writes what a run saves and
-reads it back, as in the run-layer README's "Where each artifact is written".
+reads it back.
 
 Writers: :class:`ProblemArrays` (``problem.npz``, once per run),
 :class:`BandArraysCollector` and :func:`save_band` (``bands/band_<NN>_<label>/``
@@ -342,6 +342,8 @@ def load_bands(run_dir: PathLike) -> List[SavedBand]:
 # The whole run
 # --------------------------------------------------------------------------- #
 def write_run_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
+    """Write ``run_summary.json``, which every run ends with whatever its status
+    (``completed | failed | interrupted``); the runner builds ``summary``."""
     write_json(run_dir / RUN_SUMMARY_FILE, summary)
 
 

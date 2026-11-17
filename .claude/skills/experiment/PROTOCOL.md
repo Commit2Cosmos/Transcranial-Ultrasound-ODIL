@@ -32,7 +32,7 @@ The records consulted, with any notes weighed; the record this follows up on.
 Only for an Experiment chain: the planned next questions.
 ```
 
-Metrics are tape columns (`odil_wave/experiment/README.md`, "Iteration-level log record"), read at the final iterate from `summary.csv`. The record judges the outcome over all of them. An expected effect size (e.g. "`rmse_brain` drops by ≥ 5 m/s") sharpens that judgement but is optional.
+Metrics are tape columns (`COLUMNS` in `odil_wave/experiment/tape.py`), read at the final iterate from `summary.csv`. The record judges the outcome over all of them. An expected effect size (e.g. "`rmse_brain` drops by ≥ 5 m/s") sharpens that judgement but is optional.
 
 ## 3. Pass the gate
 
