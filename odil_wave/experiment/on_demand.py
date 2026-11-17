@@ -27,6 +27,7 @@ from .config import RunConfig, deep_merge
 from .postprocess import DIFF_CMAP, SavedBand, SavedRun, draw_map, load_run_config
 from .problem import Problem, build_problem
 from .runner import band_label
+from .tape import rows_by_band
 
 PathLike = Union[str, Path]
 
@@ -81,10 +82,7 @@ def source_spectrum(run_dir: PathLike) -> Figure:
 def _plot_by_band(ax, rows: List[Dict[str, Any]], column: str, style: str, colour: str):
     """``column`` against ``iter_total``, one line per band (``gid`` = column,
     labelled once), with each later band's start marked."""
-    by_band: Dict[int, List[Dict[str, Any]]] = {}
-    for row in rows:
-        by_band.setdefault(row["band_index"], []).append(row)
-    for i, (_, band_rows) in enumerate(sorted(by_band.items())):
+    for i, band_rows in enumerate(rows_by_band(rows)):
         ax.plot(
             [r["iter_total"] for r in band_rows],
             [np.nan if r[column] is None else r[column] for r in band_rows],

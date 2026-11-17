@@ -1,7 +1,9 @@
 """The metric tape: one ``tape.csv`` row per logged iterate of a run.
 
 Columns and their meaning are the run-layer README's "Iteration-level log
-record". :class:`MetricTape` owns the file for a run; each band gets a
+record"; :data:`COLUMNS` holds each one's name, type and finiteness, and
+:func:`load_tape` reads the file back by them. :class:`MetricTape` owns the
+file for a run; each band gets a
 :class:`BandTape` whose :meth:`BandTape.record` is the joint optimiser's
 ``on_log`` hook, so rows are the band's start row (``iter = 0``), every
 ``log_every``-th outer iteration and its final iterate.
@@ -15,8 +17,9 @@ from __future__ import annotations
 
 import csv
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -27,50 +30,53 @@ from odil_wave.optimisation import Iterate
 
 from .config import ConfigError, ssim_window_size
 
-# ``tape.csv`` columns, in order.
-TAPE_COLUMNS: List[str] = [
-    # identity and cost
-    "run_id",
-    "band_index",
-    "iter",
-    "iter_total",
-    "wall_s",
-    "n_evaluations",
-    # objective
-    "loss_total",
-    "pde_term",
-    "data_term",
-    "reg_term",
-    # normalised residuals
-    "rel_data_residual",
-    "pde_rel_residual",
-    "rel_wavefield_error",
-    "rel_model_update",
-    # model error (m/s, against c*)
-    "rmse_brain",
-    "bias_brain",
-    "rmse_skull",
-    "bias_skull",
-    "ssim_brain",
-    # optimiser health
-    "c_min",
-    "c_max",
-    "sat_frac",
-    "grad_u_norm",
-    "grad_z_norm",
-]
 
-# A non-finite loss, gradient or velocity in any of these fails the run.
-FINITE_COLUMNS: List[str] = [
-    "loss_total",
-    "pde_term",
-    "data_term",
-    "reg_term",
-    "grad_u_norm",
-    "grad_z_norm",
-    "c_min",
-    "c_max",
-]
+@dataclass(frozen=True)
+class Column:
+    """One ``tape.csv`` column: its name, the type its cells read as, and
+    whether a non-finite value in it fails the run."""
+
+    name: str
+    type: type
+    finite: bool = False
+
+
+# ``tape.csv`` columns, in order. An empty cell is ``None`` whatever the type.
+COLUMNS: Tuple[Column, ...] = (
+    # identity and cost
+    Column("run_id", str),
+    Column("band_index", int),
+    Column("iter", int),
+    Column("iter_total", int),
+    Column("wall_s", float),
+    Column("n_evaluations", int),
+    # objective
+    Column("loss_total", float, finite=True),
+    Column("pde_term", float, finite=True),
+    Column("data_term", float, finite=True),
+    Column("reg_term", float, finite=True),
+    # normalised residuals
+    Column("rel_data_residual", float),
+    Column("pde_rel_residual", float),
+    Column("rel_wavefield_error", float),
+    Column("rel_model_update", float),
+    # model error (m/s, against c*)
+    Column("rmse_brain", float),
+    Column("bias_brain", float),
+    Column("rmse_skull", float),
+    Column("bias_skull", float),
+    Column("ssim_brain", float),
+    # optimiser health
+    Column("c_min", float, finite=True),
+    Column("c_max", float, finite=True),
+    Column("sat_frac", float),
+    Column("grad_u_norm", float, finite=True),
+    Column("grad_z_norm", float, finite=True),
+)
+
+TAPE_COLUMNS: List[str] = [c.name for c in COLUMNS]
+
+_TYPES: Dict[str, type] = {c.name: c.type for c in COLUMNS}
 
 
 class NonFiniteError(RuntimeError):
@@ -219,7 +225,14 @@ class MetricTape:
         return BandTape(self, band_index, band)
 
     def append(self, row: Dict[str, Any]) -> None:
-        """Append one row (``None`` -> empty cell) and flush it to disk."""
+        """Append one row (``None`` -> empty cell) and flush it to disk.
+
+        Raises
+        ------
+        ValueError
+            If the row's keys are not exactly :data:`TAPE_COLUMNS`.
+        """
+        _check_keys(row)
         with open(self.path, "a", newline="") as f:
             csv.writer(f).writerow(
                 ["" if row[k] is None else row[k] for k in TAPE_COLUMNS]
@@ -253,7 +266,7 @@ class BandTape:
         ------
         NonFiniteError
             After writing the row, if a loss, gradient or velocity column in it
-            is non-finite (:data:`FINITE_COLUMNS`).
+            is non-finite (a :class:`Column` with ``finite``).
         """
         sl = self._interior
         c = _np(it.c_full[sl])
@@ -294,7 +307,9 @@ class BandTape:
         self.final_row = row
         self.tape.append(row)
         bad = [
-            k for k in FINITE_COLUMNS if row[k] is not None and not np.isfinite(row[k])
+            c.name
+            for c in COLUMNS
+            if c.finite and row[c.name] is not None and not np.isfinite(row[c.name])
         ]
         if bad:
             raise NonFiniteError(
@@ -302,6 +317,46 @@ class BandTape:
                 f"iter {row['iter']}"
             )
         return row
+
+
+def load_tape(run_dir: Union[str, Path]) -> List[Dict[str, Any]]:
+    """Read a run's ``tape.csv``: one dict per row, each cell read as its
+    :class:`Column` type (an empty cell is ``None``).
+
+    Raises
+    ------
+    ValueError
+        If the header names a column that is not in :data:`COLUMNS`.
+    """
+    path = Path(run_dir) / "tape.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"no tape.csv under {str(run_dir)!r} ({path})")
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        unknown = [k for k in reader.fieldnames or [] if k not in _TYPES]
+        if unknown:
+            raise ValueError(f"{path}: unknown tape columns {unknown}")
+        return [
+            {k: None if v == "" else _TYPES[k](v) for k, v in row.items()}
+            for row in reader
+        ]
+
+
+def rows_by_band(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Tape rows grouped by ``band_index``, in band order."""
+    by_band: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_band.setdefault(row["band_index"], []).append(row)
+    return [by_band[b] for b in sorted(by_band)]
+
+
+def _check_keys(row: Dict[str, Any]) -> None:
+    unknown = [k for k in row if k not in _TYPES]
+    missing = [k for k in TAPE_COLUMNS if k not in row]
+    if unknown or missing:
+        raise ValueError(
+            f"tape row has unknown columns {unknown} and lacks columns {missing}"
+        )
 
 
 def _np(x) -> np.ndarray:

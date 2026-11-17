@@ -24,6 +24,16 @@ from odil_wave import (
     Wavefield,
 )
 from odil_wave.experiment import build_problem, deep_merge, resolve_config
+from odil_wave.experiment.experiment_figures import FINAL_METRICS, OVERLAY_METRICS
+from odil_wave.experiment.health import GRAD_NORMS
+from odil_wave.experiment.postprocess import CONTRIBUTION_METRICS
+from odil_wave.experiment.tape import (
+    COLUMNS,
+    TAPE_COLUMNS,
+    MetricTape,
+    load_tape,
+    rows_by_band,
+)
 
 import main
 from conftest import TINY_RUN_CONFIG
@@ -91,6 +101,52 @@ def test_each_band_has_one_start_row_and_one_final_row(tiny_two_band_run):
     assert [r["iter_total"] for r in rows] == [0, 2, 3, 3, 5, 6]
     wall = [r["wall_s"] for r in rows]
     assert wall == sorted(wall) and wall[0] > 0
+
+
+def test_load_tape_reads_each_column_as_its_type(tiny_two_band_run):
+    rows = load_tape(tiny_two_band_run.run_dir)
+    assert rows
+    for row in rows:
+        assert list(row) == TAPE_COLUMNS
+        for column in COLUMNS:
+            v = row[column.name]
+            assert v is None or type(v) is column.type, (column.name, v)
+
+
+def test_load_tape_refuses_an_unknown_column(tmp_path):
+    (tmp_path / "tape.csv").write_text(",".join([*TAPE_COLUMNS, "extra"]) + "\n")
+    with pytest.raises(ValueError, match="extra"):
+        load_tape(tmp_path)
+
+
+@pytest.mark.parametrize("change", ["unknown", "missing"])
+def test_a_row_without_exactly_the_tape_columns_is_refused(
+    tiny_two_band_run, tmp_path, change
+):
+    row = load_tape(tiny_two_band_run.run_dir)[-1]
+    if change == "unknown":
+        row["extra"] = 1.0
+    else:
+        del row["ssim_brain"]
+    problem = build_problem(resolve_config(TINY_RUN_CONFIG))
+    tape = MetricTape(tmp_path / "tape.csv", run_id="x", problem=problem)
+    with pytest.raises(ValueError, match="extra" if change == "unknown" else "ssim"):
+        tape.append(row)
+    assert (tmp_path / "tape.csv").read_text().count("\n") == 1  # header only
+
+
+def test_rows_by_band_groups_in_band_order(tiny_two_band_run):
+    bands = rows_by_band(load_tape(tiny_two_band_run.run_dir))
+    assert [[r["band_index"] for r in rows] for rows in bands] == [[0] * 3, [1] * 3]
+
+
+def test_figures_and_health_rules_name_only_tape_columns():
+    named = (
+        [column for column, _ in FINAL_METRICS + OVERLAY_METRICS]
+        + CONTRIBUTION_METRICS
+        + list(GRAD_NORMS)
+    )
+    assert set(named) <= set(TAPE_COLUMNS)
 
 
 def band_summaries(run_dir: Path) -> list:

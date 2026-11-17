@@ -23,12 +23,12 @@ from .plots import (
     load_loss_tape,
     rebuild_problem,
 )
-from .postprocess import ColourScales, SavedRun, load_tape, postprocess_run
+from .postprocess import ColourScales, SavedRun, postprocess_run
 from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
 from .spec import ExperimentSpec, SweepRun, load_spec
 from .launch import postprocess_experiment
-from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError
+from .tape import TAPE_COLUMNS, BandTape, MetricTape, NonFiniteError, load_tape
 from .runner import (
     BandResult,
     LoggedRow,

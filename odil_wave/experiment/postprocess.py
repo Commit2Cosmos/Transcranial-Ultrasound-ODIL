@@ -33,6 +33,7 @@ from odil_wave.models import profile_velocity_norm
 
 from .config import load_config_file
 from .rundir import load_versioned_json
+from .tape import load_tape, rows_by_band
 
 # Resolution of every saved PNG.
 DPI = 150
@@ -44,38 +45,12 @@ DIFF_FRACTION = 0.5
 VELOCITY_CMAP = "viridis"
 DIFF_CMAP = "RdBu_r"
 
-# Tape columns read as ints; an empty cell is ``None``, the rest floats.
-_TAPE_INTS = {"band_index", "iter", "iter_total", "n_evaluations"}
-
 PathLike = Union[str, Path]
 
 
 # --------------------------------------------------------------------------- #
 # Reading a run directory
 # --------------------------------------------------------------------------- #
-def load_tape(run_dir: PathLike) -> List[Dict[str, Any]]:
-    """Read ``tape.csv``: one dict per row, column -> value.
-
-    ``run_id`` is a string, ``band_index``, ``iter``, ``iter_total`` and
-    ``n_evaluations`` ints, the rest floats; an empty cell is ``None``.
-    """
-    path = Path(run_dir) / "tape.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"no tape.csv under {run_dir!r} ({path})")
-    with open(path, newline="") as f:
-        return [
-            {
-                k: v
-                if k == "run_id"
-                else None
-                if v == ""
-                else (int if k in _TAPE_INTS else float)(v)
-                for k, v in row.items()
-            }
-            for row in csv.DictReader(f)
-        ]
-
-
 def load_run_config(run_dir: PathLike) -> Dict[str, Any]:
     """Read ``config_resolved.yaml``, the run's Resolved config, as a dict.
 
@@ -294,15 +269,13 @@ def convergence(run: SavedRun, scales: Optional[ColourScales] = None) -> Optiona
     RMSE (solid) and bias (dashed) in m/s, and ``ssim_brain``."""
     if not run.tape:
         return None
-    by_band: Dict[int, List[Dict[str, Any]]] = {}
-    for row in run.tape:
-        by_band.setdefault(row["band_index"], []).append(row)
-    boundaries = [rows[0]["iter_total"] for b, rows in sorted(by_band.items()) if b]
+    bands = rows_by_band(run.tape)
+    boundaries = [rows[0]["iter_total"] for rows in bands[1:]]
 
     fig = Figure(figsize=(11, 8), layout="constrained")
     for ax, (title, columns, log) in zip(fig.subplots(2, 2).flat, _CONVERGENCE_PANELS):
         for column, colour, style in columns:
-            for i, (_, rows) in enumerate(sorted(by_band.items())):
+            for i, rows in enumerate(bands):
                 ax.plot(
                     [r["iter_total"] for r in rows],
                     [tape_value(r[column], log) for r in rows],

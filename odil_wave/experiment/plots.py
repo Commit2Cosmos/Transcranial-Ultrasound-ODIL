@@ -11,7 +11,8 @@ from odil_wave.loss import LossTape
 from odil_wave.models import VelocityModel
 
 from .config import RunConfig
-from .postprocess import load_bands, load_run_config, load_tape
+from .postprocess import load_bands, load_run_config
+from .tape import load_tape
 from .problem import Problem, build_problem
 
 
