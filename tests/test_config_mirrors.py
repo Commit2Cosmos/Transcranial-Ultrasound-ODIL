@@ -1,4 +1,4 @@
-"""config.py stays torch-free, so its enum constants mirror the library's
+"""config.py's enum constants mirror the library's
 accepted values by hand. These tests fail when the two drift apart."""
 
 from typing import get_args

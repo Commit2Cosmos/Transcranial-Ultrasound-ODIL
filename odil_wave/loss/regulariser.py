@@ -38,11 +38,13 @@ def _edge_mean(f: torch.Tensor, dim: int) -> torch.Tensor:
 class Regulariser:
     """Smoothness / TV prior on c(x, y) (interior cells only)."""
 
-    def __init__(self, *, kind: RegKind, eps: float, grid: Grid) -> None:
+    def __init__(
+        self, *, grid: Grid, kind: RegKind = "tv_iso", eps: float = 1e-4
+    ) -> None:
         """Configure the regulariser kind.
 
-        ``kind`` and ``eps`` are set by the run config's ``loss.regulariser``
-        block and, with ``grid``, are required keywords (ADR 0001).
+        ``grid`` is required; the library owns the ``kind`` and ``eps``
+        defaults (ADR 0001).
 
         Parameters
         ----------

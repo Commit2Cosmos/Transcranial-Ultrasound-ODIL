@@ -49,13 +49,16 @@ class AcquisitionGeometry:
         frequency_selection: FrequencySelection,
         *,
         n_transducers: int,
-        sigma_s: float,
-        a_frac: float,
-        b_frac: float,
-        ring_center: Optional[Tuple[float, float]],
-        source_spatial: str,
+        sigma_s: float = 2.5e-3,
+        a_frac: float = 0.9,
+        b_frac: float = 0.9,
+        ring_center: Optional[Tuple[float, float]] = None,
+        source_spatial: str = "gaussian",
     ):
         """Build the transducer ring for a given grid.
+
+        ``n_transducers`` is required; the library owns the other defaults
+        (ADR 0001).
 
         Parameters
         ----------

@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -8,6 +8,9 @@ from matplotlib.patches import Rectangle
 import torch
 
 from odil_wave.plot_utils import length_scale, time_scale
+
+# The floating dtypes a Grid accepts by name.
+_DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
 
 @dataclass(kw_only=True)
@@ -35,20 +38,20 @@ class Grid:
     Defaults: ``c0 = c_max`` and ``L0 = max(interior extents)``.
     """
 
-    # Configured by the run config (grid / pml / time / runtime blocks): no
-    # library defaults, every caller passes them (ADR 0001).
+    # Required: they define the problem (ADR 0001).
     interior_shape: Tuple[int, int]  # (nx, ny) interior nodes
     interior_extent: Tuple[Tuple[float, float], Tuple[float, float]]  # x then y
     c_min: Optional[float]
     c_max: float
-    pml_width: int  # extra cells per side wrapping the interior
-    pml_power: int  # sigma(d) = sigma_max * (d / L_pml)^pml_power
-    pml_R0: float  # target theoretical reflection coefficient
     t_max: float  # time window [s]; sets dt and the FFT bins
-    init_nt: Optional[int]
-    cfl_safety: float
-    device: torch.device
-    dtype: torch.dtype
+    # The library owns these defaults; the run config reads them (ADR 0001).
+    pml_width: int = 40  # extra cells per side wrapping the interior
+    pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
+    pml_R0: float = 1e-6  # target theoretical reflection coefficient
+    init_nt: Optional[int] = 1300  # None -> CFL-derived from c_max
+    cfl_safety: float = 0.9
+    device: Union[torch.device, str] = "cpu"
+    dtype: Union[torch.dtype, str] = "float32"  # "float32" | "float64"
     # characteristic scales for non-dimensionalisation; None -> sensible defaults
     L0: Optional[float] = None
     c0: Optional[float] = None
@@ -88,6 +91,13 @@ class Grid:
         PML profiles.
         """
         self.interior_nx, self.interior_ny = self.interior_shape
+        self.device = torch.device(self.device)
+        if isinstance(self.dtype, str):
+            if self.dtype not in _DTYPES:
+                raise ValueError(
+                    f"dtype must be one of {list(_DTYPES)}, got {self.dtype!r}"
+                )
+            self.dtype = _DTYPES[self.dtype]
         (ix_min, ix_max), (iy_min, iy_max) = self.interior_extent
 
         if self.device.type == "mps":

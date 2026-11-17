@@ -31,7 +31,6 @@ from odil_wave.operator import HelmholtzSolver
 from odil_wave.wavefield import Wavefield
 from odil_wave.source import SourceSignal
 
-from . import envinfo
 from .config import ModelCfg, RunConfig
 
 
@@ -178,45 +177,26 @@ def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
     cfg : RunConfig
         Config carrying ``acquisition.ring_center``.
     grid : Grid
-        Grid providing the physical extent for ``"grid_center"``.
+        Grid whose interior centre a null ``ring_center`` means.
 
     Returns
     -------
     tuple of float
         The ring centre in metres.
-
-    Notes
-    -----
-    Raises :class:`ValueError` for an unrecognised ``ring_center``.
     """
     rc = cfg.acquisition.ring_center
-    if isinstance(rc, str):
-        if rc != "grid_center":
-            raise ValueError(
-                f"acquisition.ring_center string must be 'grid_center', got {rc!r}"
-            )
-        (x0, x1), (y0, y1) = grid.extent
-        return ((x1 + x0) / 2.0, (y1 + y0) / 2.0)
-    if isinstance(rc, (list, tuple)) and len(rc) == 2:
-        return (float(rc[0]), float(rc[1]))
-    raise ValueError(
-        f"acquisition.ring_center must be 'grid_center' or [x, y], got {rc!r}"
-    )
+    if rc is None:
+        return grid.interior_center
+    return (float(rc[0]), float(rc[1]))
 
 
-def _make_grid(
-    cfg: RunConfig, device: torch.device, dtype: torch.dtype, pml_width: int
-) -> Grid:
+def _make_grid(cfg: RunConfig, pml_width: int) -> Grid:
     """Build a :class:`Grid` from the config with an explicit PML width.
 
     Parameters
     ----------
     cfg : RunConfig
-        Config carrying the ``grid``, ``pml`` and ``time`` blocks.
-    device : torch.device
-        Target device.
-    dtype : torch.dtype
-        Target floating dtype.
+        Config carrying the ``grid``, ``pml``, ``time`` and ``runtime`` blocks.
     pml_width : int
         PML thickness in cells (inverse or forward grid).
 
@@ -237,8 +217,8 @@ def _make_grid(
         t_max=tm.t_max,
         init_nt=tm.init_nt,
         cfl_safety=tm.cfl_safety,
-        device=device,
-        dtype=dtype,
+        device=cfg.runtime.device,
+        dtype=cfg.runtime.dtype,
     )
 
 
@@ -271,12 +251,10 @@ def _make_source(cfg: RunConfig, grid: Grid) -> SourceSignal:
 
 def build_problem(cfg: RunConfig) -> Problem:
     """Build the shared physical problem from a fully-resolved config."""
-    device = envinfo.resolve_device(cfg.runtime.device)
-    dtype = envinfo.resolve_dtype(cfg.runtime.dtype)
     if cfg.runtime.torch_num_threads is not None:
         torch.set_num_threads(int(cfg.runtime.torch_num_threads))
 
-    grid = _make_grid(cfg, device, dtype, cfg.pml.width)
+    grid = _make_grid(cfg, cfg.pml.width)
     center = _resolve_center(cfg, grid)
     source = _make_source(cfg, grid)
 
@@ -289,7 +267,7 @@ def build_problem(cfg: RunConfig) -> Problem:
     forward_source = None
     obs_pml = cfg.pml.observation_width
     if obs_pml is not None and int(obs_pml) != int(cfg.pml.width):
-        forward_grid = _make_grid(cfg, device, dtype, int(obs_pml))
+        forward_grid = _make_grid(cfg, int(obs_pml))
         # Shared time base required so FFT bins line up across the split.
         if (
             int(forward_grid.nt) != int(grid.nt)
@@ -306,8 +284,8 @@ def build_problem(cfg: RunConfig) -> Problem:
 
     return Problem(
         cfg=cfg,
-        device=device,
-        dtype=dtype,
+        device=grid.device,
+        dtype=grid.dtype,
         grid=grid,
         source=source,
         center=center,

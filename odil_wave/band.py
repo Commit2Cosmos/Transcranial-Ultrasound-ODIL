@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import torch
 
+from odil_wave.defaults import library_default
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.models import VelocityModel
 from odil_wave.operator import HelmholtzSolver, WaveEquation
@@ -24,8 +25,8 @@ class Band:
 
     Constructing it runs the warm start on ``initial_model``. ``factors`` are
     the warm start's per-frequency ``splu`` factors when ``keep_factors``,
-    else ``None``. ``space_order`` and ``damping_scale`` are configured
-    (ADR 0001).
+    else ``None``. ``space_order`` is required; ``damping_scale`` and
+    ``verbose`` take their consumers' defaults (ADR 0001).
     """
 
     def __init__(
@@ -35,10 +36,10 @@ class Band:
         observed_traces: torch.Tensor,
         *,
         space_order: int,
-        damping_scale: float,
+        damping_scale: float = library_default(WaveEquation, "damping_scale"),
         keep_factors: bool,
         true_wavefields: Optional[List[Wavefield]] = None,
-        verbose: bool = False,
+        verbose: bool = library_default(HelmholtzSolver.solve, "verbose"),
     ) -> None:
         """
         Parameters

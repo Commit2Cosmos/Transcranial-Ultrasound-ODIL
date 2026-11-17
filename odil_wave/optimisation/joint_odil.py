@@ -246,13 +246,11 @@ class BandSolve:
 class JointFreqODIL:
     """Pure joint full-space frequency-domain ODIL solver.
 
-    Every parameter the run config sets (the ``optimiser`` block, the
-    ``loss.weights`` and ``runtime.verbose``) is a required keyword (ADR 0001);
-    the numerical-method details (``eps_*``, ``z_scale``, ``logit_clip``) keep
-    library defaults. See the module docstring for the formulation. The
-    operator, sources, observed data, initial model and warm start all come
-    from ``band``; ``wavefield_preconditioner="initial_model"`` needs a band
-    built with ``keep_factors``.
+    ``n_iter``, the objective weights and ``regulariser`` are required; the
+    library owns every other default (ADR 0001). See the module docstring for
+    the formulation. The operator, sources, observed data, initial model and
+    warm start all come from ``band``; ``wavefield_preconditioner="initial_model"``
+    needs a band built with ``keep_factors``.
 
     ``init_params``, ``objective``, ``objective_terms``, ``residuals`` and
     ``physical_u`` take the optimised wavefield variable ``(v_re, v_im)``, as
@@ -265,20 +263,20 @@ class JointFreqODIL:
         band: Band,
         *,
         n_iter: int,
-        inner_max_iter: int,
-        history_size: int,
-        line_search_fn: Optional[str],
-        tolerance_grad: float,
-        tolerance_change: float,
-        lbfgs_lr: float,
         pde_weight: float,
         data_weight: float,
         reg_weight: float,
-        log_every: int,
-        verbose: bool,
-        model_preconditioner: str,
-        wavefield_preconditioner: str,
         regulariser: Optional[Regulariser],
+        inner_max_iter: int = 20,
+        history_size: int = 20,
+        line_search_fn: Optional[str] = "strong_wolfe",
+        tolerance_grad: float = 1e-12,
+        tolerance_change: float = 1e-14,
+        lbfgs_lr: float = 1.0,
+        log_every: int = 5,
+        verbose: bool = False,
+        model_preconditioner: str = "none",
+        wavefield_preconditioner: str = "none",
         # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,

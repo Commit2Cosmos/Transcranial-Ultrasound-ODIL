@@ -102,13 +102,12 @@ def build_optimiser(problem: Problem, band: Band, n_iter: int):
     from odil_wave.optimisation import JointFreqODIL
 
     w = cfg.loss.weights
-    ls = None if str(opt.line_search_fn).lower() == "none" else opt.line_search_fn
     return JointFreqODIL(
         band,
         n_iter=n_iter,
         inner_max_iter=opt.inner_max_iter,
         history_size=opt.history_size,
-        line_search_fn=ls,
+        line_search_fn=opt.line_search_fn,
         tolerance_grad=opt.tolerance_grad,
         tolerance_change=opt.tolerance_change,
         lbfgs_lr=opt.lbfgs_lr,
