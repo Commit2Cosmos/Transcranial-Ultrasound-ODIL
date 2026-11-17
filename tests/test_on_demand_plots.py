@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ import torch
 
 from odil_wave import HelmholtzSolver, VelocityModel
 from odil_wave.experiment import build_problem, on_demand
+from odil_wave.experiment.saved import BandArrays
 
 from test_saved_run import band_dirs, load_npz
 from test_tape import band_rows, read_tape, saved_final_model
@@ -141,7 +143,7 @@ def with_helmholtz_wavefields(run_dir: Path, tmp_path: Path, config) -> Path:
     copy = tmp_path / "helmholtz"
     shutil.copytree(run_dir, copy)
     band_dir = band_dirs(copy)[-1]
-    arrays = load_npz(band_dir / "arrays.npz")
+    arrays = BandArrays.load(band_dir / "arrays.npz")
     problem = build_problem(config)
     model = VelocityModel.from_field(
         problem.grid,
@@ -149,9 +151,8 @@ def with_helmholtz_wavefields(run_dir: Path, tmp_path: Path, config) -> Path:
         pml_c=problem.init_velocity.pml_c,
     )
     band = problem.make_band(config.continuation.bands[-1].frequencies_hz, model)
-    u = band.u_init.numpy()
-    arrays["u"] = u[arrays["shots"]].astype(np.complex64)
-    np.savez(band_dir / "arrays.npz", **arrays)
+    u = band.u_init.numpy()[arrays.shots]
+    replace(arrays, u=u).save(band_dir / "arrays.npz")
     return copy
 
 

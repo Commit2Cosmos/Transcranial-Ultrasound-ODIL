@@ -23,7 +23,8 @@ from .plots import (
     load_loss_tape,
     rebuild_problem,
 )
-from .postprocess import ColourScales, SavedRun, postprocess_run
+from .postprocess import ColourScales, postprocess_run
+from .saved import SavedRun
 from .problem import Problem, build_problem, grid_summary
 from .rundir import RunDirectory, RunStartError, new_run_directory
 from .spec import ExperimentSpec, SweepRun, load_spec

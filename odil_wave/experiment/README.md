@@ -353,7 +353,8 @@ rename, remove or change the meaning of these.
 ## Where each artifact is written
 
 One self-contained directory per run (located as in "Where runs and
-experiments are written" above):
+experiments are written" above). `saved.py` writes and reads it, `tape.py`
+owns `tape.csv` and `rundir.py` the provenance in `metadata.json`:
 
 ```
 <run_dir>/

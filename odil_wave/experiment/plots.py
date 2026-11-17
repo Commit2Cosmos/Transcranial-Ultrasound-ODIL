@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-import numpy as np
 import torch
 
 from odil_wave.grid import Grid
@@ -11,9 +10,9 @@ from odil_wave.loss import LossTape
 from odil_wave.models import VelocityModel
 
 from .config import RunConfig
-from .postprocess import load_bands, load_run_config
-from .tape import load_tape
 from .problem import Problem, build_problem
+from .saved import SavedRun, load_run_config
+from .tape import load_tape
 
 
 RunDirOrRecords = Union[str, Path, List[dict]]
@@ -30,22 +29,6 @@ def load_config(run_dir: Union[str, Path]) -> RunConfig:
 def rebuild_problem(run_dir: Union[str, Path]) -> Problem:
     """Rebuild the physical :class:`Problem` from a run's saved config."""
     return build_problem(load_config(run_dir))
-
-
-def _resolve_grid_pml(
-    run_dir: Union[str, Path], grid: Optional[Grid], pml_c: Optional[float]
-) -> Tuple[Grid, Optional[float]]:
-    """Fill a missing ``grid`` from the run's rebuilt problem and a missing
-    ``pml_c`` with the run's frozen PML speed (in ``problem.npz``).
-
-    Rebuilds the problem only when the grid is missing.
-    """
-    if pml_c is None:
-        with np.load(Path(run_dir) / "problem.npz") as saved:
-            pml_c = float(saved["pml_c"])
-    if grid is None:
-        grid = rebuild_problem(run_dir).grid
-    return grid, pml_c
 
 
 # --------------------------------------------------------------------------- #
@@ -89,21 +72,19 @@ def load_band_velocities(
     run's saved config and ``pml_c`` to the run's frozen PML speed (in
     ``problem.npz``), so only the run directory is required.
     """
-    grid, pml_c = _resolve_grid_pml(run_dir, grid, pml_c)
-    out: List[Tuple[int, str, VelocityModel]] = []
-    for band in load_bands(run_dir):
-        with np.load(band.path / "arrays.npz") as saved:  # just c, not every array
-            c = torch.from_numpy(saved["c"]).to(grid.dtype)
-        p = grid.pml_width
-        c_full = torch.nn.functional.pad(c, (p, p, p, p), value=float(pml_c))
-        out.append(
-            (
-                band.index,
-                band.label,
-                VelocityModel.from_field(grid, c_full, pml_c=pml_c),
-            )
+    run = SavedRun.load(run_dir)
+    if pml_c is None:
+        pml_c = run.problem.pml_c
+    if grid is None:
+        grid = rebuild_problem(run_dir).grid
+    return [
+        (
+            band.index,
+            band.label,
+            VelocityModel.from_interior(grid, torch.from_numpy(band.c), pml_c),
         )
-    return out
+        for band in run.bands
+    ]
 
 
 def load_loss_tape(source: RunDirOrRecords, name: str = "loaded run") -> LossTape:

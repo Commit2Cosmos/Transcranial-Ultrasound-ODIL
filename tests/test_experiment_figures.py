@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ from odil_wave.experiment import experiment_figures
 from odil_wave.experiment.experiment_figures import SavedExperiment
 from odil_wave.experiment.launch import postprocess_experiment
 from odil_wave.experiment.postprocess import ColourScales
+from odil_wave.experiment.saved import BandArrays
 from odil_wave.experiment.tape import load_tape
 from test_saved_run import band_dirs, load_npz
 from test_tape import read_tape
@@ -60,9 +62,8 @@ def shifted_copy(run_dir: Path, dest: Path, shift: float) -> None:
                 row["n_evaluations"] = round(row["n_evaluations"] * (1 + 2 * shift))
             writer.writerow({c: "" if row[c] is None else row[c] for c in header})
     for band in band_dirs(dest):
-        arrays = load_npz(band / "arrays.npz")
-        arrays["c"] = arrays["c"] + np.float32(100 * shift)
-        np.savez(band / "arrays.npz", **arrays)
+        arrays = BandArrays.load(band / "arrays.npz")
+        replace(arrays, c=arrays.c + 100 * shift).save(band / "arrays.npz")
 
 
 def make_experiment(tmp_path: Path, source: Path, runs: list) -> Path:

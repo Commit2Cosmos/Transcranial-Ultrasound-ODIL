@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from odil_wave.experiment import build_problem, deep_merge
+from odil_wave.experiment.saved import BandArrays, ProblemArrays
 
 from conftest import TINY_RUN_CONFIG
 from test_tape import band_rows, read_tape, run_cli
@@ -77,6 +78,23 @@ def test_saved_arrays_are_single_precision_and_masks_bool(tiny_two_band_run):
                 assert arr.dtype == np.complex64, (path.name, key)
             else:
                 assert arr.dtype == np.float32, (path.name, key)
+
+
+def test_saved_arrays_survive_a_read_and_rewrite(tiny_two_band_run, tmp_path):
+    """Fixtures edit saved arrays through the reader and writer, so a read
+    then a write must leave every key, dtype and value as the run wrote it."""
+    run_dir = tiny_two_band_run.run_dir
+    files = [(ProblemArrays, run_dir / "problem.npz")] + [
+        (BandArrays, d / "arrays.npz") for d in band_dirs(run_dir)
+    ]
+    for kind, path in files:
+        rewritten = tmp_path / path.name
+        kind.load(path).save(rewritten)
+        original, copy = load_npz(path), load_npz(rewritten)
+        assert list(copy) == list(original), path
+        for key, arr in original.items():
+            assert copy[key].dtype == arr.dtype, (path.name, key)
+            np.testing.assert_array_equal(copy[key], arr)
 
 
 # --------------------------------------------------------------------------- #
@@ -217,7 +235,7 @@ def interrupt_when(monkeypatch, target, name: str, fires) -> None:
 def test_an_interrupted_band_saves_no_arrays_or_summary(
     tmp_path, git_repo, monkeypatch, moment
 ):
-    from odil_wave.experiment import runner, tape
+    from odil_wave.experiment import saved, tape
 
     if moment == "at the final row":
         # Ctrl-C as the band's final iterate is logged (n_iter = 1).
@@ -228,7 +246,7 @@ def test_an_interrupted_band_saves_no_arrays_or_summary(
         # Ctrl-C after arrays.npz is written, before band_summary.json.
         interrupt_when(
             monkeypatch,
-            runner,
+            saved,
             "write_json",
             lambda path, *_: Path(path).name == "band_summary.json",
         )

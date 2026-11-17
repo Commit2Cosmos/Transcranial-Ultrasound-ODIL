@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,8 @@ from odil_wave.experiment import (
     resolve_config,
     run_inverse,
 )
-from odil_wave.experiment.postprocess import ColourScales, SavedRun
+from odil_wave.experiment.postprocess import ColourScales
+from odil_wave.experiment.saved import BandArrays, SavedRun
 
 from conftest import TINY_RUN_CONFIG
 from test_saved_run import band_dirs, load_npz
@@ -189,9 +191,8 @@ def test_colour_scales_come_from_the_truth_alone(tiny_two_band_run, tmp_path):
     """Two runs of one truth with different recovered models share every scale."""
     other = copy_run(tiny_two_band_run.run_dir, tmp_path)
     for band in band_dirs(other):
-        arrays = load_npz(band / "arrays.npz")
-        arrays["c"] = arrays["c"] * 1.3 + 50.0
-        np.savez(band / "arrays.npz", **arrays)
+        arrays = BandArrays.load(band / "arrays.npz")
+        replace(arrays, c=arrays.c * 1.3 + 50.0).save(band / "arrays.npz")
 
     clims = []
     for run_dir in (tiny_two_band_run.run_dir, other):
@@ -465,13 +466,13 @@ def test_a_phase_ramp_skips_a_cycle_only_past_half_a_cycle(tiny_two_band_run, tm
     """d_syn lagging d_obs by 1 rad per ring step: of each shot's 7 pairs only
     the opposite one (4 rad) is more than pi out."""
     run_dir = copy_run(tiny_two_band_run.run_dir, tmp_path)
+    steps = np.array(
+        [[ring_steps(s, r) for r in receiver_ids(s)] for s in range(N_TRANSDUCERS)]
+    )
     for band in band_dirs(run_dir):
-        arrays = load_npz(band / "arrays.npz")
-        steps = np.array(
-            [[ring_steps(s, r) for r in receiver_ids(s)] for s in range(N_TRANSDUCERS)]
-        )
-        arrays["d_syn_start"] = arrays["d_obs"] * np.exp(-1j * steps)[:, None, :]
-        np.savez(band / "arrays.npz", **arrays)
+        arrays = BandArrays.load(band / "arrays.npz")
+        ramped = arrays.d_obs * np.exp(-1j * steps)[:, None, :]
+        replace(arrays, d_syn_start=ramped).save(band / "arrays.npz")
 
     postprocess.postprocess_run(run_dir)
 
