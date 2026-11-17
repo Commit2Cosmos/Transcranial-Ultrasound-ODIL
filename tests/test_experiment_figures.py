@@ -21,7 +21,8 @@ import main
 from odil_wave.experiment import experiment_figures
 from odil_wave.experiment.experiment_figures import SavedExperiment
 from odil_wave.experiment.launch import postprocess_experiment
-from odil_wave.experiment.postprocess import ColourScales, load_tape
+from odil_wave.experiment.postprocess import ColourScales
+from odil_wave.experiment.tape import load_tape
 from test_saved_run import band_dirs, load_npz
 from test_tape import read_tape
 
