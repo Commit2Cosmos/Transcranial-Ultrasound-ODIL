@@ -62,7 +62,8 @@ Formulation
 
   with ``k = (c / c0)^2``, evaluated once per band at the warm start (never
   refreshed, which would invalidate the L-BFGS history). The data term and the
-  regulariser are left out of both curvatures. ``H_zz`` comes from
+  regulariser are left out of both curvatures. ``z_scale`` cancels from
+  ``z_scale * s``. ``H_zz`` comes from
   :meth:`JointFreqODIL.model_curvature`, ``T`` from
   ``wavefield_precond.pde_curvature()``.
 
@@ -244,7 +245,6 @@ class JointFreqODIL:
         verbose: bool = False,
         model_preconditioner: str = "none",
         wavefield_preconditioner: str = "none",
-        # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
         eps_pde: float = 1e-30,
@@ -324,7 +324,6 @@ class JointFreqODIL:
         # Active (non-PML interior) mask over the full grid, for RMS_active.
         self._interior_slice = grid.interior_slice
 
-        # u_init warm-start wavefields -> u_ref.
         u_seed = band.u_init.to(dtype=self.cdtype, device=self.device).contiguous()
         self.u_seed = u_seed
         u_int = u_seed[:, :, self._interior_slice[0], self._interior_slice[1]]

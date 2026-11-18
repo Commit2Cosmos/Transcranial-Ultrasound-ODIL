@@ -1,7 +1,7 @@
 """Spatial-smoothness / TV regularisers on the velocity field c(x, y).
 
-Each regulariser returns the *unweighted* penalty value; the optimiser objective
-applies the weight.
+Each regulariser returns the regularisation term unweighted; the optimiser
+objective applies the weight.
 
 The value is dimensionless and resolution-independent: with the grid's
 scales ``c' = c / c0`` and ``grad' = L0 * grad``, it is the interior mean
@@ -53,7 +53,7 @@ class Regulariser:
         self.c0 = grid.c0
 
     def __call__(self, c: torch.Tensor) -> torch.Tensor:
-        """The unweighted penalty of interior ``c`` ``(interior_nx,
+        """The unweighted regularisation term of interior ``c`` ``(interior_nx,
         interior_ny)``, m/s."""
         c = c / self.c0
         gx = (c[1:, :] - c[:-1, :]) / self.dx_nd  # x-edges, (nx-1, ny)

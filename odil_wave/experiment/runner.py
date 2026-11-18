@@ -270,8 +270,8 @@ def run_inverse(
     ``on_band_end(band_result, run_result)`` is called after every completed
     band, ``on_log(logged_row)`` with a :class:`LoggedRow` after every tape
     row (e.g. :class:`odil_wave.experiment.LiveVelocityView`). An exception
-    from either is reported, never aborting the run; a ``KeyboardInterrupt``
-    ends it as ``interrupted``.
+    from either is reported, never aborting the run (``on_log`` is then not
+    called again); a ``KeyboardInterrupt`` ends it as ``interrupted``.
     """
     warnings = validate_config(config)
     for w in warnings:

@@ -144,8 +144,8 @@ class Wavefield:
         """Show frequency slice ``idx`` as a 2x2 panel of the complex field.
 
         Panels are ``|u|``, ``Re(u)``, ``Im(u)`` and ``arg(u)``. ``normalize``
-        is as for :func:`_normalize_amplitude` (both modes rescale by the
-        slice's peak).
+        is ``None`` / ``"none"``, or ``"global"`` / ``"per_frame"`` (both
+        rescale by the slice's peak).
         """
         if not (0 <= idx < self.n_frequencies):
             raise ValueError(f"idx should be in [0, {self.n_frequencies}), got {idx}.")
@@ -201,7 +201,8 @@ class Wavefield:
         normalize: str | None = None,
     ) -> str:
         """Animate ``|u|`` over frequency index into a GIF at ``filename`` and
-        return it; ``normalize`` as for :func:`_normalize_amplitude`."""
+        return it; ``normalize`` is ``None`` / ``"none"``, ``"global"`` or
+        ``"per_frame"``."""
         amp = np.abs(self.amplitude.detach().cpu().numpy())
         amp = _normalize_amplitude(amp, normalize)
         nf = self.n_frequencies

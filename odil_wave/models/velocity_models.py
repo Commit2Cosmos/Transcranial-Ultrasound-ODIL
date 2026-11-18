@@ -163,7 +163,7 @@ class VelocityModel:
     def _shepp_logan_interior_phantom(self, scale: float, threshold: float):
         """``(phantom, head, inner, rim)`` on the interior: a float32 phantom in
         [0, 1] and interior-shaped bool masks. Built on the interior, as
-        ``stride_forward_shepp.py::shepp_logan_sos`` does, so the morphology
+        ``stride/stride_forward_shepp.py::shepp_logan_sos`` does, so the morphology
         sees the same array borders."""
         g = self.grid
         shape = (g.interior_nx, g.interior_ny)
@@ -197,7 +197,6 @@ class VelocityModel:
         return phantom, head, inner, rim
 
     def _embed_interior(self, interior_np: np.ndarray, fill: float) -> torch.Tensor:
-
         g = self.grid
         full = torch.full(g.shape, float(fill), dtype=g.dtype, device=g.device)
         full[g.interior_slice] = torch.from_numpy(np.ascontiguousarray(interior_np)).to(
@@ -247,7 +246,7 @@ class VelocityModel:
             phantom, head, inner, rim = self._shepp_logan_interior_phantom(
                 scale, threshold
             )
-            # As stride shepp_logan_sos.
+            # As stride/stride_forward_shepp.py::shepp_logan_sos.
             model = np.full(phantom.shape, c_water, dtype=np.float32)
             interior_values = soft_intercept + soft_slope * phantom
             model[head] = interior_values[head]

@@ -32,7 +32,6 @@ def test_spacings_from_extent():
     g = make_grid(interior_shape=(11, 21), interior_extent=((0.0, 1.0), (0.0, 2.0)))
     assert g.dx == pytest.approx(1.0 / (11 - 1))
     assert g.dy == pytest.approx(2.0 / (21 - 1))
-    # coordinate axes span the PML-extended box and have the total length.
     (xmin, xmax), _ = g.extent
     assert g.x[0].item() == pytest.approx(xmin)
     assert g.x[-1].item() == pytest.approx(xmax)
