@@ -55,12 +55,12 @@ Formulation
 * One persistent ``torch.optim.LBFGS([v_re, v_im, z_m])`` (strong-Wolfe) — a
   single joint optimiser over the full space, no alternation. It is advanced by
   ``n_iter`` outer ``.step`` calls, each running up to ``inner_max_iter`` L-BFGS
-  iterations on the shared history (total ~= ``n_iter * inner_max_iter``), so the
-  per-step trajectory is logged while the solve stays continuous. (A single
-  iteration per step, ``inner_max_iter=1``, stalls the strong-Wolfe line search
-  and is *not* representative of L-BFGS on this problem.) The objective is
-  matrix-free (one conv2d Laplacian per evaluation); ``A(c)`` is never factorised
-  inside optimisation.
+  iterations on the shared history (at most ``n_iter * inner_max_iter`` in
+  total), so the per-step trajectory is logged while the solve stays
+  continuous. (A single iteration per step, ``inner_max_iter=1``, stalls the
+  strong-Wolfe line search and is *not* representative of L-BFGS on this
+  problem.) The objective is matrix-free (one conv2d Laplacian per evaluation);
+  ``A(c)`` is never factorised inside optimisation.
 
 * Block preconditioners (:mod:`odil_wave.optimisation.preconditioners`). Each
   block's optimised variable is mapped to its own unknown by one object, held

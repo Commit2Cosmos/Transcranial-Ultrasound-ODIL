@@ -8,17 +8,15 @@ file for a run; each band gets a :class:`BandTape` whose
 Rows per band: a start row (``iter = 0``, after the warm start and before any
 update, so its data residual is the forward-model misfit), one every
 ``optimiser.log_every`` outer iterations, and one at the band's final iterate.
-``iter`` counts **outer** iterations (one L-BFGS ``step``); ``n_evaluations``
-counts closure calls, which the line search makes several of per step. The
-objective columns come from one evaluation at the logged point, so they sum to
-``loss_total``. Band and run summaries report these same columns.
+The objective columns come from one evaluation at the logged point, so they
+sum to ``loss_total``. Band and run summaries report these same columns.
 
 The optimiser supplies the objective terms, residual ratios, gradient norms and
 ``sat_frac`` (:class:`~odil_wave.optimisation.Iterate`); this module adds the
 run-wide counters and everything measured against the truth (regions as in
-``GLOSSARY.md``). A truth that gives nothing to score is a config error before
-the first band, never an empty cell; a non-finite value is written as ``nan`` /
-``inf``.
+``GLOSSARY.md``). A truth that gives nothing to score is a config error
+(:class:`ModelError` raises it) before the first band, never an empty cell; a
+non-finite value is written as ``nan`` / ``inf``.
 """
 
 from __future__ import annotations
@@ -81,7 +79,7 @@ COLUMNS: Tuple[Column, ...] = (
     Column(
         "n_evaluations",
         int,
-        "Cumulative L-BFGS closure calls over the whole run, diagnostic evaluations excluded; the cost axis for equal-cost comparisons.",
+        "Cumulative L-BFGS closure calls over the whole run, diagnostic evaluations excluded; the line search makes several per outer iteration. The cost axis for equal-cost comparisons.",
     ),
     # objective
     Column(
@@ -148,7 +146,7 @@ COLUMNS: Tuple[Column, ...] = (
     Column(
         "bias_skull",
         float,
-        "Mean of ``c − c*`` over the skull region, m/s; catches a skull left at its start.",
+        "Mean of ``c − c*`` over the skull region, m/s; catches a skull left at the initial model.",
     ),
     Column(
         "ssim_brain",
