@@ -97,12 +97,9 @@ def run_experiment(
     ``completed`` when every run completed, ``interrupted`` when a run was
     (the remaining runs are not started), else ``failed``.
 
-    Raises
-    ------
-    RunStartError
-        A dirty tree, a spec not committed in ``repo_root``, or an existing
-        ``exp_dir`` that isn't this experiment at this commit and spec on this
-        device type.
+    Raises :class:`RunStartError` on a dirty tree, a spec not committed in
+    ``repo_root``, or an existing ``exp_dir`` that isn't this experiment at
+    this commit and spec on this device type.
     """
     state = clean_git_state(repo_root, needs="an experiment")
     spec_rel = _committed_spec(spec, repo_root)
@@ -257,12 +254,9 @@ def _resumable_record(
     """The ``experiment.json`` of an earlier launch to resume, or ``None`` if
     ``exp_dir`` is new or empty.
 
-    Raises
-    ------
-    RunStartError
-        ``exp_dir`` holds files but no record, a record of a format this code
-        can't read, or the record's commit, spec
-        hash or device type differs from HEAD's or this spec's.
+    Raises :class:`RunStartError` when ``exp_dir`` holds files but no record,
+    a record of a format this code can't read, or one whose commit, spec hash
+    or device type differs from HEAD's or this spec's.
     """
     if not exp_dir.exists() or not any(exp_dir.iterdir()):
         return None

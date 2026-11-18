@@ -1,11 +1,4 @@
-"""Tests for :mod:`odil_wave.loss` — LossTape and the Regulariser.
-
-These affirm:
-* ``Regulariser`` computes Tikhonov / anisotropic-TV / isotropic-TV penalties
-  (zero on a constant field) and rejects unknown kinds.
-* ``LossTape`` logs an ``Iterate``'s scalars, honours the c-history cadence,
-  and rebuilds from saved records into the same plots.
-"""
+"""Tests for :mod:`odil_wave.loss`: LossTape and the Regulariser."""
 
 from types import SimpleNamespace
 from typing import get_args
@@ -22,9 +15,6 @@ from odil_wave.loss.regulariser import RegKind
 from conftest import make_grid, make_model
 
 
-# --------------------------------------------------------------------------- #
-# Regulariser
-# --------------------------------------------------------------------------- #
 # A 10 cm square interior at 1500 m/s background; c0 = c_max = 1600 m/s.
 REG_EXTENT = ((0.0, 0.1), (0.0, 0.1))
 REG_C0 = 1600.0
@@ -151,9 +141,6 @@ def test_regulariser_rejects_non_positive_eps():
         Regulariser(kind="tv_iso", eps=0.0, grid=_reg_grid())
 
 
-# --------------------------------------------------------------------------- #
-# LossTape
-# --------------------------------------------------------------------------- #
 def _iterate(loss, c=0.0):
     """The ``Iterate`` fields ``LossTape.log`` reads."""
     return SimpleNamespace(

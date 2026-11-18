@@ -99,7 +99,7 @@ def test_resolve_config_overlays_user_fields():
     """User fields override the defaults; untouched fields keep their defaults."""
     cfg = resolve_config({"grid": {"interior_shape": [16, 16]}})
     assert cfg.grid.interior_shape == [16, 16]
-    assert cfg.pml.width == 40  # default preserved
+    assert cfg.pml.width == 40
 
 
 def test_default_runconfig_dict_roundtrip():

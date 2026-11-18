@@ -8,8 +8,7 @@ problem. A run config names only the values it changes; :func:`resolve_config`
 applies it (and any CLI overrides) to these defaults, and the resolved config
 written to ``config_resolved.yaml`` records every value.
 ``python main.py --print-defaults`` prints the default config. The docstrings
-here are the single place each field is documented. The dataclasses are frozen
-(immutable once resolved).
+here are the single place each field is documented.
 """
 
 from __future__ import annotations
@@ -58,11 +57,6 @@ class ConfigError(ValueError):
 class RunMetaCfg:
     """Run seed and free-form labels. The run's directory is not a config value:
     the entry point picks it (see ``odil_wave.experiment.rundir``).
-
-    Params:
-    * ``seed``: int RNG seed for reproducibility.
-    * ``tags``: list[str] free-form labels recorded in the config.
-    * ``notes``: str free-form description.
     """
 
     seed: int = 0
@@ -130,7 +124,7 @@ class PmlCfg:
       absorption, ``0`` disables absorption (reflecting borders).
     * ``observation_width``: ``None`` -> same as ``width``: observations are
       generated on the inversion grid with the inversion operator (the inverse
-      crime; the true model fits the data exactly). An int >= 0 different from
+      crime). An int >= 0 different from
       ``width`` opts into a deliberate modelling error: observations are
       synthesised on a separate grid with that PML width and reduced to
       receiver traces.
@@ -200,10 +194,9 @@ class AcquisitionCfg:
       standard deviation ``sigma_s / sqrt(2)`` (used when
       ``source_spatial == "gaussian"``). The default 2.5 mm is just under
       ``1 / k_max`` = 2.59 mm at 80 kHz in 1300 m/s (1.24 h on the default grid,
-      ring clearance 5 ``sigma_s``). The config warns when ``sigma_s < 1.0 h``
-      (under-resolved), when ``k_max * sigma_s > 1`` for the top band
-      frequency (the source low-pass filters it) and when the ring is within
-      ``3 sigma_s`` of the PML.
+      ring clearance 5 ``sigma_s``). :func:`validate_config` warns when it is
+      under-resolved, low-pass filters the top band frequency or reaches into
+      the PML.
     * ``source_spatial``: ``"gaussian"`` | ``"point"``; either is a density
       that integrates to 1 (the point source is ``1 / (dx dy)``).
     """
@@ -268,8 +261,6 @@ class BandCfg:
 class ContinuationCfg:
     """Frequency-band continuation schedule.
 
-    Every band warm-starts ``u`` with a Helmholtz solve on the current model.
-
     Params:
     * ``bands``: ordered list[:class:`BandCfg`], solved in sequence (typically
       low-to-high frequency).
@@ -280,11 +271,8 @@ class ContinuationCfg:
 
 @dataclass(frozen=True)
 class RegulariserCfg:
-    """Regulariser on the interior velocity; active iff ``loss.weights.reg > 0``.
-
-    The regularisation value ``R`` is dimensionless and resolution-independent: the
-    interior mean of ``|grad' c'|^p`` with ``c' = c / c0`` and
-    ``grad' = L0 * grad`` (the grid's scales).
+    """The :class:`~odil_wave.loss.Regulariser` on the interior velocity; active
+    iff ``loss.weights.reg > 0``.
 
     Params:
     * ``name``: ``"tv_iso"`` (mean of ``sqrt(|grad' c'|^2 + eps) - sqrt(eps)``)
@@ -319,10 +307,7 @@ class LossCfg:
 
 @dataclass(frozen=True)
 class OptimiserCfg:
-    """Joint full-space L-BFGS solver (``JointFreqODIL``) settings.
-
-    A single L-BFGS over the complex wavefield block and a squared-slowness
-    model latent bounded by a sigmoid onto ``[grid.c_min, grid.c_max]``. The
+    """Joint full-space L-BFGS solver (``JointFreqODIL``) settings. The
     objective weights are not set here: they come from ``loss.weights``.
 
     Params:
@@ -334,13 +319,10 @@ class OptimiserCfg:
     * ``line_search_fn``: ``"strong_wolfe"`` | ``null`` (no line search).
     * ``lbfgs_lr``: L-BFGS learning rate.
     * ``tolerance_grad`` / ``tolerance_change``: L-BFGS stopping tolerances.
-    * ``model_preconditioner``: ``"none"`` | ``"pde_diagonal"``. ``pde_diagonal``
-      rescales the model latent per cell so its PDE-term curvature at the band's
-      warm start matches the wavefield block's median curvature (needs
-      ``loss.weights.pde > 0``).
-    * ``wavefield_preconditioner``: ``"none"`` | ``"initial_model"``.
-      ``initial_model`` optimises ``v`` with ``u_tilde = A(c0)^-1 v``, ``c0`` the
-      band's initial model, reusing the warm start's ``splu`` factors.
+    * ``model_preconditioner``: ``"none"`` | ``"pde_diagonal"`` (needs
+      ``loss.weights.pde > 0``); see :mod:`odil_wave.optimisation.preconditioners`.
+    * ``wavefield_preconditioner``: ``"none"`` | ``"initial_model"``; see
+      :mod:`odil_wave.optimisation.preconditioners`.
     """
 
     n_iter: int = 20
@@ -469,12 +451,8 @@ _WEIGHT_KEYS = ("pde", "data", "reg")
 
 
 def _build(cls: type, data: Dict[str, Any]) -> Any:
-    """Recursively construct dataclass ``cls`` from the plain dict ``data``.
-
-    Recurses into nested dataclass fields and lists of dataclasses; fields
-    absent from ``data`` keep their dataclass default. Raises :class:`ConfigError`
-    on a non-mapping input or unknown keys.
-    """
+    """Dataclass ``cls`` from the plain dict ``data``, absent fields at their
+    defaults; :class:`ConfigError` on unknown keys."""
     if data is None:
         return None
     if not isinstance(data, dict):
@@ -492,7 +470,7 @@ def _build(cls: type, data: Dict[str, Any]) -> Any:
     kwargs: Dict[str, Any] = {}
     for f in fields(cls):
         if f.name not in data:
-            continue  # keep the dataclass default
+            continue
         val = data[f.name]
         tp = hints[f.name]
         nested = _dataclass_of(tp)

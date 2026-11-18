@@ -1,8 +1,7 @@
 """Spatial-smoothness / TV regularisers on the velocity field c(x, y).
 
-Each regulariser returns the *unweighted* penalty value; the scalar weight
-comes from ``loss.weights.reg`` and is
-applied by the optimiser objective.
+Each regulariser returns the *unweighted* penalty value; the optimiser objective
+applies the weight.
 
 The value is dimensionless and resolution-independent: with the grid's
 scales ``c' = c / c0`` and ``grad' = L0 * grad``, it is the interior mean
@@ -24,13 +23,9 @@ RegKind = Literal["tikhonov", "tv_aniso", "tv_iso"]
 
 
 def _edge_mean(f: torch.Tensor, dim: int) -> torch.Tensor:
-    """Area-weighted mean of ``f`` over one family of interior edges.
-
-    ``dim`` is the axis across the edges (``1`` for x-edges). Edges on the
-    interior boundary along ``dim`` carry half weight, since half of their
-    dual cell lies outside the interior (trapezoid rule); the weights then sum
-    to the ``(nx-1)(ny-1)`` interior cells.
-    """
+    """Area-weighted mean of ``f`` over one family of interior edges, ``dim``
+    the axis across them. Boundary edges carry half weight, since half their
+    dual cell lies outside the interior (trapezoid rule)."""
     ends = f.select(dim, 0) + f.select(dim, f.shape[dim] - 1)
     return (f.sum() - 0.5 * ends.sum()) / (f.numel() - ends.numel())
 
@@ -41,27 +36,11 @@ class Regulariser:
     def __init__(
         self, *, grid: Grid, kind: RegKind = "tv_iso", eps: float = 1e-4
     ) -> None:
-        """Configure the regulariser kind.
-
-        ``grid`` is required; the library owns the ``kind`` and ``eps``
-        defaults (ADR 0001).
-
-        Parameters
-        ----------
-        kind : {"tikhonov", "tv_aniso", "tv_iso"}
-            Measure of the spatial gradient of ``c``: mean of
-            ``|grad' c'|^2``, of ``|d'_x c'| + |d'_y c'|``, or of
-            ``sqrt(|grad' c'|^2 + eps) - sqrt(eps)``.
-        eps : float
-            > 0 smoothing floor inside the isotropic-TV square root, a squared
-            dimensionless gradient: ``sqrt(eps)`` is a contrast of
-            ``sqrt(eps) * c0`` across ``L0``.
-        grid : Grid
-            Supplies the interior spacing and the scales ``L0`` and ``c0``.
-
-        Notes
-        -----
-        Raises ``ValueError`` for an unknown ``kind`` or ``eps <= 0``.
+        """Defaults follow ADR 0001. ``kind`` is the mean of ``|grad' c'|^2``
+        (``"tikhonov"``), of ``|d'_x c'| + |d'_y c'|`` (``"tv_aniso"``) or of
+        ``sqrt(|grad' c'|^2 + eps) - sqrt(eps)`` (``"tv_iso"``). ``eps`` > 0 is a
+        squared dimensionless gradient: ``sqrt(eps)`` is a contrast of
+        ``sqrt(eps) * c0`` across ``L0``.
         """
         if kind not in ("tikhonov", "tv_aniso", "tv_iso"):
             raise ValueError(f"Unknown regulariser kind: {kind!r}")
@@ -74,20 +53,8 @@ class Regulariser:
         self.c0 = grid.c0
 
     def __call__(self, c: torch.Tensor) -> torch.Tensor:
-        """Evaluate the unweighted penalty on the interior velocity field.
-
-        Parameters
-        ----------
-        c : torch.Tensor
-            Interior velocity field ``c(x, y)`` in m/s, shape
-            ``(interior_nx, interior_ny)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Scalar value for the configured ``kind``; ``0`` on a constant
-            field.
-        """
+        """The unweighted penalty of interior ``c`` ``(interior_nx,
+        interior_ny)``, m/s."""
         c = c / self.c0
         gx = (c[1:, :] - c[:-1, :]) / self.dx_nd  # x-edges, (nx-1, ny)
         gy = (c[:, 1:] - c[:, :-1]) / self.dy_nd  # y-edges, (nx, ny-1)

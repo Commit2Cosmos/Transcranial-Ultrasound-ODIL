@@ -46,14 +46,9 @@ def _ignored(key: str) -> bool:
 
 
 def compare_run_dirs(a: Path, b: Path) -> List[str]:
-    """Every difference between the results of run directories ``a`` and ``b``.
-
-    Returns
-    -------
-    list of str
-        One line per difference, ``"<path relative to the run>: <what>"``;
-        empty when the results are identical.
-    """
+    """Every difference between the results of run directories ``a`` and ``b``,
+    one ``"<path relative to the run>: <what>"`` line each; empty when the
+    results are identical."""
     a, b = Path(a), Path(b)
     diffs: List[str] = []
     for rel in sorted(_result_files(a) | _result_files(b)):

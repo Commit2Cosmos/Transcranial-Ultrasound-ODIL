@@ -76,24 +76,12 @@ def load_spec(
     repo_root: Optional[Union[str, Path]] = None,
     device: Optional[str] = None,
 ) -> ExperimentSpec:
-    """Parse and validate the experiment spec at ``path``, resolving every run.
+    """Parse and validate the experiment spec at ``path``, resolving every run;
+    :class:`ConfigError` if the spec or a run's config is invalid.
 
-    Parameters
-    ----------
-    path : str or Path
-        The spec, ``configs/experiments/NNNN-slug.yaml``.
-    repo_root : str or Path, optional
-        The repository whose ``configs/experiments/`` specs and
-        ``docs/experiments/`` records must not use the spec's id number.
-        Without it the id number isn't checked.
-    device : str, optional
-        ``runtime.device`` for the baseline and every run, in place of the
-        spec's (see :func:`device_override`).
-
-    Raises
-    ------
-    ConfigError
-        The spec, or the config of one of its runs, is invalid.
+    ``repo_root``, if given, is the repository whose other specs and records
+    must not use the spec's id number. ``device`` replaces ``runtime.device``
+    in the baseline and every run (see :func:`device_override`).
     """
     path = Path(path)
     data = load_config_file(path)
@@ -169,12 +157,8 @@ def load_spec(
 
 def device_override(overrides: Sequence[str]) -> Optional[str]:
     """The device named by ``-o runtime.device=<device>`` among ``overrides``,
-    or ``None`` when there are none.
-
-    Raises
-    ------
-    ConfigError
-        An override of another key, or a device other than cpu, cuda[:N], mps.
+    or ``None`` when there are none; :class:`ConfigError` for an override of
+    another key, or a device other than cpu, cuda[:N], mps.
     """
     device = None
     for override in overrides:

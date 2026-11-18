@@ -104,30 +104,15 @@ def new_run_directory(
     out: Optional[Union[str, Path]] = None,
     repo_root: Optional[Union[str, Path]] = None,
 ) -> RunDirectory:
-    """Create a standalone run's directory after checking the code's git tree.
+    """Create a standalone run's empty directory after checking the code's git
+    tree.
 
-    Parameters
-    ----------
-    scratch : bool
-        Allow a dirty tree (or no repository): ``_scratch`` is appended to the
-        directory name and its ``git.diff`` (:func:`scratch_diff`: tracked
-        changes and untracked, non-ignored files) is saved in it.
-    out : str or Path, optional
-        The run directory itself, instead of
-        ``<repo_root>/outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]``.
-    repo_root : str or Path, optional
-        The code's repository; defaults to the one holding this package.
-
-    Returns
-    -------
-    RunDirectory
-        The created, empty directory (``git.diff`` aside) and its provenance.
-
-    Raises
-    ------
-    RunStartError
-        A dirty tree or no repository without ``scratch``, or a directory that
-        already holds files.
+    ``scratch`` allows a dirty tree (or no repository), suffixes the name
+    ``_scratch`` and saves :func:`scratch_diff` in it as ``git.diff``. ``out``
+    is the directory itself, in place of
+    ``<repo_root>/outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]``. Raises
+    :class:`RunStartError` on a dirty tree or no repository without
+    ``scratch``, or a directory that already holds files.
     """
     root = Path(repo_root) if repo_root is not None else REPO_ROOT
     if scratch:
@@ -154,12 +139,8 @@ def clean_git_state(repo_root: Path, *, needs: str, remedy: str = "") -> GitStat
     """The state of ``repo_root``, which must be a clean tree at a commit.
 
     ``needs`` names what needs it (``"the run"``) and ``remedy`` ends both
-    error messages.
-
-    Raises
-    ------
-    RunStartError
-        ``repo_root`` is no git repository, or its tree is dirty.
+    error messages. Raises :class:`RunStartError` when ``repo_root`` is no
+    git repository, or its tree is dirty.
     """
     state = GitState.of(repo_root)
     if state.sha is None:
@@ -185,12 +166,8 @@ def experiment_path(repo_root: Path, exp_id: str, device_type: str) -> Path:
 
 def load_versioned_json(path: Path) -> Dict[str, Any]:
     """Read ``metadata.json`` or ``experiment.json`` at ``path``, whose
-    ``schema_version`` must be one this code reads: 1 to :data:`SCHEMA_VERSION`.
-
-    Raises
-    ------
-    SchemaVersionError
-        The file's ``schema_version`` is missing or out of that range.
+    ``schema_version`` must be one this code reads: 1 to :data:`SCHEMA_VERSION`,
+    else :class:`SchemaVersionError`.
     """
     data = json.loads(Path(path).read_text())
     version = data.get("schema_version")
@@ -209,11 +186,6 @@ def load_versioned_json(path: Path) -> Dict[str, Any]:
 def load_experiment_record(path: Path) -> Dict[str, Any]:
     """``experiment.json`` at ``path`` in the current format, a version 1
     record's ``sweep_key`` and per-run ``value`` read as a single axis.
-
-    Raises
-    ------
-    SchemaVersionError
-        The file is of a format this code can't read.
     """
     record = load_versioned_json(path)
     if record["schema_version"] == 1:

@@ -23,7 +23,6 @@ def test_pml_extends_shape_and_interior_slice(grid):
     sx, sy = grid.interior_slice
     assert sx == slice(p, p + grid.interior_nx)
     assert sy == slice(p, p + grid.interior_ny)
-    # A full-grid tensor sliced by interior_slice has the interior shape.
     full = torch.zeros(grid.shape)
     assert full[grid.interior_slice].shape == grid.interior_shape
 
@@ -51,7 +50,6 @@ def test_cfl_derived_nt_when_init_nt_none():
     g = make_grid(init_nt=None)
     assert g.nt >= 2
     assert g.dt == pytest.approx(g.t_max / (g.nt - 1))
-    # CFL at c_max respects the configured safety factor.
     assert g.cfl(g.c_max) <= g.cfl_safety + 1e-9
 
 
@@ -63,7 +61,6 @@ def test_nondimensionalisation_defaults():
     assert g.t0 == pytest.approx(g.L0 / g.c0)
     assert g.dx_nd == pytest.approx(g.dx / g.L0)
     assert g.dt_nd == pytest.approx(g.dt / g.t0)
-    # sigma_nd is sigma * t0 (sigma has units 1/s).
     assert torch.allclose(g.sigma_x_nd, g.sigma_x * g.t0)
 
 
@@ -128,7 +125,6 @@ def test_from_frequencies_maps_to_positive_bin(grid):
     """Requested frequencies map to matching bins/omega; near-0 avoids bin 0."""
     fs = FrequencySelection.from_frequencies(grid, [F0])
     assert fs.n_frequencies == 1
-    # angular frequency is 2*pi*f, and omega_nd = omega * t0.
     f_sel = float(fs.frequencies[0])
     assert float(fs.omega[0]) == pytest.approx(2 * math.pi * f_sel)
     assert float(fs.omega_nd[0]) == pytest.approx(float(fs.omega[0]) * grid.t0)

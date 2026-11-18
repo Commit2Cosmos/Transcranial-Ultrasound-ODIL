@@ -27,34 +27,17 @@ class SourceSignal:
         t_centre: Optional[float] = None,
         offset: int = 0,
     ):
-        """Build a source pulse on `grid`.
+        """Build a source pulse on `grid`; defaults follow ADR 0001.
 
-        ``kind`` and ``f0`` are required; the library owns the other defaults
-        (ADR 0001).
-
-        Parameters
-        ----------
-        kind
-            ``"tone_burst"`` | ``"ricker"``.
-        f0
-            Centre frequency in Hz.
-        amplitude
-            Peak of the waveform `s(t)` (before the ``dimensionless`` scaling).
-        n_cycles, envelope
-            tone_burst only: cycle count and ``"gaussian"`` | ``"rectangular"``
-            envelope.
-        dimensionless
-            If true the physical amplitude is ``amplitude * 2 * f0**2``.
-        t_centre
-            Ricker time centre in s; ``None`` -> ``1 / f0``.
-        offset
-            tone_burst sample offset delaying the wavelet; the burst must start
-            and end on the grid's time axis.
+        ``f0`` is in Hz, ``amplitude`` the peak of `s(t)` before the
+        ``dimensionless`` scaling by ``grid.natural_source_amplitude(f0)``.
+        ``n_cycles``, ``envelope`` and ``offset`` (samples) are tone_burst
+        only; the burst must start and end on the grid's time axis.
+        ``t_centre`` is the Ricker centre in s, ``None`` -> ``1 / f0``.
         """
         self.grid = grid
         self.kind = kind
         self.f0 = f0
-        # causal delay default for ricker
         self.t_centre = 1.0 / f0 if t_centre is None else t_centre
         self.dimensionless = dimensionless
         # User-facing amplitude (kept as-is so plot titles read naturally),
@@ -78,7 +61,6 @@ class SourceSignal:
                 f"Unknown source kind '{kind}'. Use 'ricker' or 'tone_burst'."
             )
 
-    # Ricker
     def _ricker(self, t: torch.Tensor) -> torch.Tensor:
         arg = (math.pi * self.f0 * (t - self.t_centre)) ** 2
         return self._amplitude_phys * (1.0 - 2.0 * arg) * torch.exp(-arg)

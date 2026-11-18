@@ -20,12 +20,10 @@ Wavefield block (``WAVEFIELD_PRECONDITIONERS``), mapping ``v <-> u_tilde``
   ``|lambda_tt|`` (``pde_scale / u_ref``) puts ``v`` in the PDE term's own
   scale (ADR-0002); without it the curvature in ``v`` is ``1 / lambda_tt^2``
   smaller and float32 can't resolve L-BFGS's first step on the default
-  problem. For a Helmholtz warm start ``v0 = f / pde_scale``. The solve reuses
-  the warm start's ``splu`` factors (nothing is factorised here) with all
-  shots batched per frequency, on the CPU, and its backward is the adjoint
-  solve. At ``c = c_init`` the wavefield block's PDE term is then the identity
-  up to one scalar; with the model frozen at the true model its iteration
-  count stayed flat across resolutions (#96).
+  problem. The solve reuses the warm start's ``splu`` factors (nothing is
+  factorised here). At ``c = c_init`` the wavefield block's PDE term is then
+  the identity up to one scalar; with the model frozen at the true model its
+  iteration count stayed flat across resolutions (#96).
 
 Both give ``pde_curvature()``, the diagonal of the weighted PDE term in their
 optimised variable: the column norms of ``A`` at the initial model (through
@@ -86,8 +84,7 @@ class FactorSolve:
     """Differentiable ``u = A^-1 v`` from fixed per-frequency ``splu`` factors.
 
     ``v`` is ``(n_shots, nf, Nx, Ny)`` complex; frequency ``k`` uses
-    ``factors[k]`` with all shots batched as right-hand sides. The solves run
-    on the CPU in SciPy (copied from ``v``'s device and back), so every device
+    ``factors[k]``. The solves run on the CPU in SciPy, so every device
     works. ``seconds`` accumulates the wall time of all forward and adjoint
     triangular solves.
     """
@@ -152,12 +149,9 @@ class NoWavefieldPreconditioner:
     def pde_curvature(self) -> torch.Tensor:
         """Diagonal of the weighted PDE term w.r.t. ``v_re`` (equal for ``v_im``).
 
-        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at ``c_init``. ``r`` is
+        Shape ``(n_shots, nf, Nx, Ny)``, PML included, at ``c_init``: ``r`` is
         affine in ``u``, so this is ``term_weight * sum_i |A_ij|^2 /
-        pde_scale_per_u^2`` with the column norms of ``A`` taken exactly from
-        the solver's own operator: combs of unit impulses spaced past the
-        stencil's footprint (half-width ``space_order // 2`` per axis, reflect
-        boundaries included), each summed over its own box.
+        pde_scale_per_u^2``, the column norms of the solver's own ``A``.
         """
         nf, nx, ny = self.pde_scale_per_u.shape[1], *self.c_init.shape
         dtype, device = self.pde_scale_per_u.dtype, self.pde_scale_per_u.device

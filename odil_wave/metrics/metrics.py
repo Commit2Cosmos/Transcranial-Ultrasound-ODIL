@@ -16,19 +16,8 @@ def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
 
 
 def _interior(arr: np.ndarray, grid: Grid) -> np.ndarray:
-    """Crop a full-grid array to the interior, excluding the absorbing boundary.
-
-    Accepts either an already interior-shaped array (returned unchanged) or a
-    full-grid array (cropped via ``grid.interior_slice``); when
-    ``grid.pml_width == 0`` the two shapes coincide, so nothing is cropped
-    either way.
-
-    Raises
-    ------
-    ValueError
-        If ``arr``'s shape matches neither the grid's full shape nor its
-        interior shape.
-    """
+    """``arr``, full-grid or already interior-shaped, over the interior;
+    ``ValueError`` for any other shape."""
     interior_shape = tuple(grid.interior_shape)
     if arr.shape == interior_shape:
         return arr
@@ -41,13 +30,8 @@ def _interior(arr: np.ndarray, grid: Grid) -> np.ndarray:
 
 
 def _interior_mask(mask: Union[np.ndarray, torch.Tensor], grid: Grid) -> np.ndarray:
-    """Coerce a region mask to an interior-shaped boolean array.
-
-    Accepts either an already interior-shaped mask or a full-grid mask (which
-    is cropped down to the interior), as a torch tensor or numpy array; see
-    :func:`_interior` for the shape rules and the ``ValueError`` it raises on
-    a mismatch.
-    """
+    """A region mask, full-grid or interior-shaped, as an interior-shaped bool
+    array."""
     if isinstance(mask, torch.Tensor):
         m = mask.detach().cpu().numpy().astype(bool)
     else:
@@ -60,10 +44,7 @@ def mse(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean squared error over the interior of (predicted - true).
-
-    Evaluated on the interior region only, the absorbing boundary region is excluded.
-    """
+    """Mean squared error of (predicted - true) over the interior."""
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
     return float(np.mean((p - t) ** 2))
@@ -74,10 +55,7 @@ def mae(
     true: Union[np.ndarray, torch.Tensor],
     grid: Grid,
 ) -> float:
-    """Mean absolute error over the interior of (predicted - true).
-
-    Evaluated on the interior region only, the absorbing boundary region is excluded.
-    """
+    """Mean absolute error of (predicted - true) over the interior."""
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
     return float(np.mean(np.abs(p - t)))
@@ -90,32 +68,10 @@ def ssim(
     mask: Union[np.ndarray, torch.Tensor, None] = None,
     **kwargs,
 ) -> float:
-    """Structural Similarity Index between predicted and true.
-
-    Evaluated on the interior region only, the absorbing boundary region is
-    excluded.
-
-    Parameters
-    ----------
-    pred, true :
-        Fields to compare, full-grid or already interior-shaped.
-    grid :
-        Grid providing the interior region.
-    mask :
-        Optional region (full-grid or interior-shaped) to restrict scoring
-        to, e.g. the area inside the skull. When given, the per-pixel SSIM
-        map is computed over the interior and averaged only over the mask.
-    **kwargs :
-        Forwarded to ``skimage.metrics.structural_similarity``, e.g.
-        ``gaussian_weights=True``, ``sigma=1.5``, ``win_size=<int>``.
-        ``data_range`` is inferred from the true field over the scored
-        region when not provided explicitly.
-
-    Returns
-    -------
-    float
-        Structural similarity index, in [-1, 1] (1 = perfect match).
-    """
+    """SSIM of ``pred`` against ``true`` (full-grid or interior-shaped) over
+    the interior, its map averaged over ``mask`` when given. ``kwargs`` go to
+    ``skimage.metrics.structural_similarity``; ``data_range`` defaults to
+    ``true``'s over the scored region."""
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
     if mask is None:
@@ -135,33 +91,8 @@ def ssim_map(
     mask: Union[np.ndarray, torch.Tensor, None] = None,
     **kwargs,
 ) -> np.ndarray:
-    """Per-pixel SSIM map between predicted and true. Plots and returns the map.
-
-    Green = well recovered (near 1), red = poorly recovered (near -1).
-
-    Parameters
-    ----------
-    pred, true :
-        Fields to compare, full-grid or already interior-shaped.
-    grid :
-        Grid providing the interior region.
-    title :
-        Plot title.
-    mask :
-        Optional region (full-grid or interior-shaped) to restrict scoring
-        to. When given, cells outside it are blanked (NaN) in the returned
-        map.
-    **kwargs :
-        Forwarded to ``skimage.metrics.structural_similarity``.
-        ``data_range`` is inferred from the true field over the scored
-        region when not provided explicitly.
-
-    Returns
-    -------
-    numpy.ndarray
-        Per-pixel SSIM map over the interior region; ``NaN`` outside the
-        mask when one is given.
-    """
+    """Plot and return the interior SSIM map of ``pred`` against ``true``,
+    ``NaN`` outside ``mask``; arguments as for :func:`ssim`."""
     p = _interior(_to_numpy(pred), grid)
     t = _interior(_to_numpy(true), grid)
     m = _interior_mask(mask, grid) if mask is not None else None

@@ -80,14 +80,8 @@ def platform_info() -> Dict[str, Any]:
 
 
 def _package_versions() -> Dict[str, Any]:
-    """Best-effort torch / numpy / odil_wave versions and device flags.
-
-    Returns
-    -------
-    dict
-        Available package versions plus torch device availability; import
-        failures are recorded as ``*_error`` keys rather than raised.
-    """
+    """Best-effort torch / numpy / odil_wave versions and device flags; an
+    import failure is recorded as a ``*_error`` key rather than raised."""
     versions: Dict[str, Any] = {}
     try:
         import torch

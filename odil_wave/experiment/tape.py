@@ -211,16 +211,8 @@ class ModelError:
         *,
         sigma: float,
     ) -> None:
-        """
-        Parameters
-        ----------
-        truth : numpy.ndarray
-            Interior truth velocity ``c*``.
-        brain, skull : numpy.ndarray
-            Interior-shaped boolean brain and skull regions.
-        sigma : float
-            Gaussian SSIM window std in cells (``metrics.ssim.sigma``).
-        """
+        """``truth`` is the interior ``c*`` (m/s), ``brain`` and ``skull``
+        interior-shaped bool, ``sigma`` the SSIM window std in cells."""
         self.truth = np.asarray(truth, dtype=np.float64)
         self.brain = np.asarray(brain, dtype=bool)
         self.skull = np.asarray(skull, dtype=bool)
@@ -296,23 +288,8 @@ class MetricTape:
         problem,
         t0: Optional[float] = None,
     ) -> None:
-        """
-        Parameters
-        ----------
-        path : Path
-            The ``tape.csv`` to write (created with its header).
-        run_id : str
-            Stamped on every row.
-        problem : Problem
-            The run's problem; supplies the grid and truth.
-        t0 : float, optional
-            ``time.perf_counter()`` at run start, the zero of ``wall_s``.
-
-        Raises
-        ------
-        ConfigError
-            When the truth gives nothing to score (see :class:`ModelError`).
-        """
+        """``t0`` is ``time.perf_counter()`` at run start, the zero of ``wall_s``.
+        Raises :class:`ConfigError` as :class:`ModelError` does."""
         self.path = Path(path)
         self.run_id = run_id
         self.problem = problem
@@ -324,25 +301,13 @@ class MetricTape:
             csv.writer(f).writerow(TAPE_COLUMNS)
 
     def start_band(self, band_index: int, band) -> "BandTape":
-        """A tape for one band, continuing the run's counters.
-
-        Parameters
-        ----------
-        band_index : int
-            The band's continuation stage.
-        band : Band
-            The band, built with its true wavefields.
-        """
+        """A tape for one band (built with its true wavefields), continuing the
+        run's counters."""
         return BandTape(self, band_index, band)
 
     def append(self, row: Dict[str, Any]) -> None:
-        """Append one row (``None`` -> empty cell) and flush it to disk.
-
-        Raises
-        ------
-        ValueError
-            If the row's keys are not exactly :data:`TAPE_COLUMNS`.
-        """
+        """Append one row (``None`` -> empty cell) and flush it to disk;
+        :class:`ValueError` unless its keys are exactly :data:`TAPE_COLUMNS`."""
         _check_keys(row)
         with open(self.path, "a", newline="") as f:
             csv.writer(f).writerow(
@@ -371,14 +336,8 @@ class BandTape:
         self.final_row: Optional[Dict[str, Any]] = None
 
     def record(self, it: Iterate) -> Dict[str, Any]:
-        """Write the row for iterate ``it`` and return it.
-
-        Raises
-        ------
-        NonFiniteError
-            After writing the row, if a loss, gradient or velocity column in it
-            is non-finite (a :class:`Column` with ``finite``).
-        """
+        """Write the row for iterate ``it`` and return it; then
+        :class:`NonFiniteError` if a :class:`Column` with ``finite`` is not."""
         sl = self._interior
         c = _np(it.c_full[sl])
         u = it.u[:, :, sl[0], sl[1]]
@@ -432,12 +391,8 @@ class BandTape:
 
 def load_tape(run_dir: Union[str, Path]) -> List[Dict[str, Any]]:
     """Read a run's ``tape.csv``: one dict per row, each cell read as its
-    :class:`Column` type (an empty cell is ``None``).
-
-    Raises
-    ------
-    ValueError
-        If the header names a column that is not in :data:`COLUMNS`.
+    :class:`Column` type (an empty cell is ``None``); :class:`ValueError` if
+    the header names a column not in :data:`COLUMNS`.
     """
     path = Path(run_dir) / "tape.csv"
     if not path.exists():

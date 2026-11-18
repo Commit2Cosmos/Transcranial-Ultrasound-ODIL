@@ -20,7 +20,6 @@ def test_homogeneous(grid):
     assert vm.c.shape == grid.shape
     assert torch.all(vm.c == 1500.0)
     assert vm.c_min == 1500.0 and vm.c_max == 1500.0
-    # no skull masks on a homogeneous profile.
     assert vm.head_mask is None
 
 
@@ -31,7 +30,6 @@ def test_overdensity_anomaly(grid):
     )
     assert vm.c_max == pytest.approx(1700.0)
     assert vm.c_min == pytest.approx(1500.0)
-    # the anomaly occupies some, but not all, of the grid.
     n_hot = int((vm.c > 1500.0).sum())
     assert 0 < n_hot < grid.nx * grid.ny
 
@@ -43,7 +41,6 @@ def test_overdensity_default_center_is_interior_center(grid):
     cx = float(grid.X[hot].mean())
     cy = float(grid.Y[hot].mean())
     assert (cx, cy) == pytest.approx(grid.interior_center, abs=grid.dx)
-    # the whole anomaly lies inside the interior.
     assert int(hot.sum()) == int(hot[grid.interior_slice].sum())
 
 
@@ -54,12 +51,9 @@ def test_shepp_logan_masks_and_skull(grid):
     assert head.shape == grid.shape
     assert int(rim.sum()) > 0
     assert int(interior.sum()) > 0
-    # rim is inside the head, disjoint from the eroded interior.
     assert torch.all(head[rim])
     assert not torch.any(interior & rim)
-    # the skull rim reaches the constant skull speed.
     assert vm.c_max == pytest.approx(3000.0, rel=1e-3)
-    # head_mask is interior-shaped.
     assert vm.head_mask.shape == grid.interior_shape
 
 

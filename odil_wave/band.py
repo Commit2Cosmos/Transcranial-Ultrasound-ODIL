@@ -25,8 +25,7 @@ class Band:
 
     Constructing it runs the warm start on ``initial_model``. ``factors`` are
     the warm start's per-frequency ``splu`` factors when ``keep_factors``,
-    else ``None``. ``space_order`` is required; ``damping_scale`` and
-    ``verbose`` take their consumers' defaults (ADR 0001).
+    else ``None``. Which parameters have defaults follows ADR 0001.
     """
 
     def __init__(
@@ -41,15 +40,9 @@ class Band:
         true_wavefields: Optional[List[Wavefield]] = None,
         verbose: bool = library_default(HelmholtzSolver.solve, "verbose"),
     ) -> None:
-        """
-        Parameters
-        ----------
-        observed_traces : torch.Tensor
-            Complex observed data ``(n_shots, nf, n_transducers - 1)``.
-        true_wavefields : list of Wavefield, optional
-            The true wavefield per shot, on the grid that generated the
-            observed data (not necessarily ``geometry.grid``).
-        """
+        """``observed_traces`` is complex ``(n_shots, nf, n_transducers - 1)``;
+        ``true_wavefields`` holds one per shot, on the grid that generated the
+        observed data (not necessarily ``geometry.grid``)."""
         if initial_model.grid is not geometry.grid:
             raise ValueError("initial_model and geometry must share one grid")
         self.geometry = geometry

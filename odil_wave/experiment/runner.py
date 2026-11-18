@@ -89,16 +89,15 @@ class LoggedRow:
 
 
 # --------------------------------------------------------------------------- #
-# Optimiser dispatch (matches the notebook helpers exactly)
+# Optimiser dispatch
 # --------------------------------------------------------------------------- #
 def build_optimiser(problem: Problem, band: Band, n_iter: int):
     """The joint optimiser for ``band``, configured from ``problem.cfg``."""
     cfg = problem.cfg
     opt = cfg.optimiser
 
-    # Pure joint full-space ODIL: one L-BFGS over (u, z_m); no alternation,
-    # closed-form, WRI or multigrid. The objective weights come only from
-    # loss.weights and are fixed for the run (never adapted).
+    # The objective weights come only from loss.weights and are fixed for the
+    # run (never adapted).
     from odil_wave.optimisation import JointFreqODIL
 
     w = cfg.loss.weights
@@ -239,16 +238,8 @@ def run_frequency_band(
 
 
 def _build_regulariser(cfg: RunConfig, grid: Grid):
-    """Build the configured :class:`~odil_wave.loss.Regulariser`, or ``None``.
-
-    The regulariser is active iff ``loss.weights['reg'] > 0``; then
-    ``loss.regulariser.name`` selects the penalty kind (``tv_iso`` /
-    ``tikhonov`` / ``tv_aniso``) and ``eps`` the ``tv_iso`` smoothing floor;
-    ``grid`` supplies the spacing and the scales ``L0`` and ``c0``.
-    Returns ``None`` otherwise, so the objective has no reg term. The scalar
-    weight itself is applied by :class:`~odil_wave.optimisation.JointFreqODIL`
-    in its objective.
-    """
+    """The configured :class:`~odil_wave.loss.Regulariser`, or ``None`` when
+    ``loss.weights['reg']`` is 0."""
     if float(cfg.loss.weights["reg"]) <= 0.0:
         return None
     reg = cfg.loss.regulariser
@@ -276,28 +267,11 @@ def run_inverse(
     Every returned run ends with post-processing
     (:func:`~odil_wave.experiment.postprocess.postprocess_run`) of what it saved.
 
-    Parameters
-    ----------
-    config : RunConfig
-        The run's Resolved config.
-    run_directory : RunDirectory
-        Where the run is written, from
-        :func:`~odil_wave.experiment.rundir.new_run_directory`.
-    on_band_end : callable, optional
-        ``on_band_end(band_result, run_result)``, called after every completed
-        band with the recovered model already in ``run_result.band_results``.
-        An exception from it is reported, never aborting the run; a
-        ``KeyboardInterrupt`` ends the run as ``interrupted``.
-    on_log : callable, optional
-        ``on_log(logged_row)``, called with a :class:`LoggedRow` after every
-        tape row (e.g. :class:`odil_wave.experiment.LiveVelocityView`). Its
-        first exception is reported and it is not called again, never aborting
-        the run; a ``KeyboardInterrupt`` ends the run as ``interrupted``.
-
-    Returns
-    -------
-    RunResult
-        The run's status, band results and metrics summary.
+    ``on_band_end(band_result, run_result)`` is called after every completed
+    band, ``on_log(logged_row)`` with a :class:`LoggedRow` after every tape
+    row (e.g. :class:`odil_wave.experiment.LiveVelocityView`). An exception
+    from either is reported, never aborting the run; a ``KeyboardInterrupt``
+    ends it as ``interrupted``.
     """
     warnings = validate_config(config)
     for w in warnings:
@@ -310,9 +284,7 @@ def run_inverse(
     bands_dir = run_dir / BANDS_DIR
     bands_dir.mkdir(parents=True, exist_ok=True)
 
-    # Config first, so a crash still leaves the run reproducible. The fully
-    # resolved config records every effective value, so it is the single source
-    # of truth for how the run was produced.
+    # Config first, so a crash still leaves the run reproducible.
     config.to_yaml(run_dir / CONFIG_FILE)
 
     seed_record = envinfo.seed_everything(

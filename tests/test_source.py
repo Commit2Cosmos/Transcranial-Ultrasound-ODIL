@@ -33,9 +33,7 @@ def test_tone_burst_length_and_offset(grid):
     tb = make_source(grid, offset=offset)
     w = tb.waveform()
     assert w.shape == (grid.nt,)
-    # The leading offset samples are exactly zero.
     assert torch.all(w[:offset] == 0)
-    # ...and the burst itself is non-trivial.
     assert float(w.abs().max()) > 0
 
 

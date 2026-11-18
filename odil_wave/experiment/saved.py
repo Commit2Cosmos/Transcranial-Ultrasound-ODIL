@@ -163,7 +163,7 @@ class ProblemArrays:
 
     @property
     def head_mask(self) -> np.ndarray:
-        """The head region: brain plus skull."""
+        """The head region, interior-shaped."""
         return self.brain_mask | self.skull_mask
 
 
@@ -210,15 +210,8 @@ class BandArraysCollector:
     """
 
     def __init__(self, band: Band, pde_scale: torch.Tensor) -> None:
-        """
-        Parameters
-        ----------
-        band : Band
-            The band, built with its true wavefields.
-        pde_scale : torch.Tensor
-            The band's fixed PDE scale ``|lambda_tt| * u_ref``, one value per
-            (shot, frequency).
-        """
+        """``band`` must be built with its true wavefields; ``pde_scale`` is its
+        fixed ``|lambda_tt| * u_ref``, ``(n_shots, n_freq)``."""
         self.geom = band.geometry
         self.pde_scale = pde_scale.detach().reshape(pde_scale.shape[0], -1)
         self.freqs = band.frequency_selection.frequencies
@@ -357,14 +350,8 @@ def load_final_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def load_run_config(run_dir: PathLike) -> Dict[str, Any]:
-    """Read ``config_resolved.yaml``, the run's Resolved config, as a dict.
-
-    Raises
-    ------
-    FileNotFoundError
-        ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
-        directory.
-    """
+    """Read ``config_resolved.yaml``, the run's Resolved config, as a dict;
+    :class:`FileNotFoundError` if ``run_dir`` is no run directory."""
     path = Path(run_dir) / CONFIG_FILE
     if not path.exists():
         raise FileNotFoundError(
@@ -389,16 +376,9 @@ class SavedRun:
 
     @classmethod
     def load(cls, run_dir: PathLike) -> "SavedRun":
-        """Read the run directory ``run_dir``.
-
-        Raises
-        ------
-        FileNotFoundError
-            ``run_dir`` holds no ``config_resolved.yaml``, so it is no run
-            directory.
-        SchemaVersionError
-            Its ``metadata.json`` is of a format this code can't read.
-        """
+        """Read the run directory ``run_dir``; :class:`FileNotFoundError` if it
+        is none, :class:`SchemaVersionError` if its ``metadata.json`` is of a
+        format this code can't read."""
         path = Path(run_dir)
         config = load_run_config(path)
         if (path / METADATA_FILE).exists():  # a run may stop before writing it

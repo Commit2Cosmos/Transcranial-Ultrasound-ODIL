@@ -48,27 +48,8 @@ class LossTape:
 
     @classmethod
     def from_records(cls, records, name: str = "loaded run") -> "LossTape":
-        """Rebuild a tape's *scalar* history from saved metric records.
-
-        Parameters
-        ----------
-        records : sequence of dict
-            Per-iteration metric dicts (``tape.csv`` rows) written by
-            :class:`odil_wave.experiment.MetricTape`.
-        name : str
-            Name for the reconstructed tape.
-
-        Returns
-        -------
-        LossTape
-            Tape carrying the scalar series present in ``records``.
-
-        Notes
-        -----
-        Lets ``show`` / ``show_velocity_recovery`` run against a finished run
-        without re-solving. Full-grid ``c_history`` is not stored per record,
-        so it stays empty.
-        """
+        """A tape's scalar history from ``tape.csv`` rows; ``c_history`` stays
+        empty."""
         # (history key, record key) — records use ``loss_total`` for the loss.
         key_map = [
             ("loss", "loss_total"),
@@ -83,7 +64,6 @@ class LossTape:
                 (float(r[rec_key]) if r.get(rec_key) is not None else float("nan"))
                 for r in records
             ]
-            # Keep a scalar series only if at least one record carried it.
             if any(np.isfinite(v) for v in series):
                 tape.history[hist_key] = series
         return tape
@@ -128,41 +108,9 @@ class LossTape:
         frame_labels=None,
         profile: Optional[str] = None,
     ) -> str:
-        """Render the ``c(x, y)`` snapshots in ``c_history`` to an animated GIF.
-
-        Parameters
-        ----------
-        grid : Grid
-            Grid providing the physical extent for the axes.
-        filename : str
-            Output GIF path.
-        fps : int
-            Frames per second.
-        cmap : str
-            Matplotlib colormap name.
-        title : str
-            Base plot title.
-        norm : matplotlib.colors.Normalize, optional
-            Colour normalisation; derived from ``profile`` and the data range
-            if omitted.
-        frame_labels : sequence of str, optional
-            Per-frame labels; the frame index is shown when omitted.
-        profile : str, optional
-            The truth's profile. Given, the scale follows
-            :func:`profile_velocity_norm` (two-slope for Shepp-Logan, else
-            linear over every frame); without it, a two-slope scale centred
-            at a quarter of the data range.
-
-        Returns
-        -------
-        str
-            The written ``filename``.
-
-        Notes
-        -----
-        Raises ``RuntimeError`` if ``c_history`` is empty and ``ValueError``
-        if ``frame_labels`` length does not match the number of frames.
-        """
+        """Render the ``c(x, y)`` snapshots in ``c_history`` to a GIF at
+        ``filename`` and return it. Without ``norm``, the scale is
+        :func:`profile_velocity_norm` of the truth's ``profile``."""
         history = self.history["c_history"]
         if not history:
             raise RuntimeError("No c_history to animate. Run an inverse solve first.")
@@ -244,30 +192,8 @@ class LossTape:
         vmax: Optional[float] = None,
     ):
         """Plot truth, recovered, difference and c-recovery-error panels.
-
-        Parameters
-        ----------
-        truth : VelocityModel
-            Ground-truth velocity model.
-        recovered : VelocityModel
-            Recovered velocity model.
-        geom : AcquisitionGeometry
-            Geometry providing the transducer positions to overlay.
-        title : str
-            Figure suptitle.
-        norm : matplotlib.colors.Normalize, optional
-            Colour normalisation for the velocity panels.
-        vmin, vcenter, vmax : float, optional
-            Velocity colour bounds in m/s used when ``norm`` is None.
-
-        Notes
-        -----
-        The velocity scale follows :func:`profile_velocity_norm` for
-        ``truth.profile``: for a Shepp-Logan truth ``[vmin, vcenter]`` and
-        ``[vcenter, vmax]`` each fill half the bar; otherwise it is linear
-        over both fields. The error panel prefers the recorded ``rel_c_error``
-        series and falls back to ``c_history``.
-        """
+        Without ``norm``, the velocity scale is :func:`profile_velocity_norm`
+        of ``truth.profile`` (bounds in m/s)."""
         grid = truth.grid
         c_true_np = truth.c.detach().cpu().numpy()
         c_final_np = recovered.c.detach().cpu().numpy()
@@ -313,8 +239,6 @@ class LossTape:
             plt.colorbar(im, ax=ax, shrink=0.85)
 
         ax_err = axes[1, 1]
-        # Prefer the recorded per-iteration relative-error series; otherwise
-        # recompute it from any in-memory c_history.
         rel_hist = [
             e
             for e in self.history.get("rel_c_error", [])

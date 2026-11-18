@@ -7,9 +7,6 @@ from odil_wave import FrequencySelection
 from conftest import F0, make_geometry, make_grid, make_model, make_source
 
 
-# --------------------------------------------------------------------------- #
-# AcquisitionGeometry
-# --------------------------------------------------------------------------- #
 def test_ring_on_grid_and_counts(grid, source, freq_selection):
     """Transducers land on valid grid nodes; one shot per transducer."""
     geom = make_geometry(grid, source, freq_selection, source_spatial="gaussian")

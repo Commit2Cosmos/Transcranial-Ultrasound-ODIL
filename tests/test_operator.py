@@ -1,13 +1,4 @@
-"""Tests for the ``odil_wave.operator`` package.
-
-Covers ``conditions.py``, ``spatial.py``, ``utils.py``
-(``WaveEquation``) and ``helmholtz.py``.
-
-Most tests use hand-built tensors or a tiny synthetic :class:`Grid`/
-:class:`Wavefield` (no solver) so they run in well under a second; the
-Helmholtz integration tests use one small shared fixture (12x12 total grid)
-so the handful of real linear solves stay fast too.
-"""
+"""Tests for the ``odil_wave.operator`` package."""
 
 from __future__ import annotations
 

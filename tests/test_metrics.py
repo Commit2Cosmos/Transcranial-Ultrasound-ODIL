@@ -1,8 +1,5 @@
 """Tests for the ``odil_wave.metrics`` package.
 
-Covers ``mse``, ``mae``, ``ssim``, ``ssim_map`` and their shared helpers.
-Tests use small synthetic grids to keep execution fast.
-
 ``matplotlib`` uses the non-interactive ``Agg`` backend so ``ssim_map`` tests
 do not block on ``plt.show()``.
 """
@@ -78,9 +75,6 @@ def _full_field(grid, interior_values, pml_value=0.0):
     return full
 
 
-# --------------------------------------------------------------------------- #
-# _to_numpy
-# --------------------------------------------------------------------------- #
 def test_to_numpy_converts_torch_tensor_to_float64():
     t = torch.tensor([1.0, 2.5], dtype=torch.float32)
     out = _to_numpy(t)
@@ -108,9 +102,6 @@ def test_to_numpy_accepts_plain_list():
     assert np.array_equal(out, [1.0, 2.0, 3.0])
 
 
-# --------------------------------------------------------------------------- #
-# _interior
-# --------------------------------------------------------------------------- #
 def test_interior_slices_out_the_pml_region(small_grid):
     interior_vals = np.arange(36, dtype=np.float64).reshape(6, 6)
     full = _full_field(small_grid, interior_vals, pml_value=-999.0)
@@ -148,9 +139,6 @@ def test_interior_raises_on_shape_matching_neither_full_nor_interior(small_grid)
         _interior(np.zeros((7, 5)), small_grid)
 
 
-# --------------------------------------------------------------------------- #
-# _interior_mask
-# --------------------------------------------------------------------------- #
 def test_interior_mask_slices_a_full_grid_mask(small_grid):
     full_mask = np.zeros(small_grid.shape, dtype=bool)
     full_mask[small_grid.interior_slice] = True
@@ -200,7 +188,7 @@ def test_mse_matches_manual_value_and_ignores_pml(small_grid):
     interior_vals = np.random.RandomState(1).rand(6, 6)
     true_full = _full_field(small_grid, interior_vals, pml_value=0.0)
     pred_full = _full_field(small_grid, interior_vals + 3.0, pml_value=1e6)
-    assert mse(pred_full, true_full, small_grid) == pytest.approx(9.0)  # 3.0**2
+    assert mse(pred_full, true_full, small_grid) == pytest.approx(9.0)
 
 
 def test_mae_matches_manual_value_and_ignores_pml(small_grid):
@@ -240,12 +228,9 @@ def test_mse_accepts_already_interior_shaped_inputs(small_grid):
 
     interior_result = mse(interior_vals + 2.0, interior_vals, small_grid)
     assert interior_result == pytest.approx(full_grid_result)
-    assert interior_result == pytest.approx(4.0)  # 2.0**2
+    assert interior_result == pytest.approx(4.0)
 
 
-# --------------------------------------------------------------------------- #
-# ssim
-# --------------------------------------------------------------------------- #
 def test_ssim_is_one_for_identical_fields(ssim_grid):
     interior_vals = np.random.RandomState(4).rand(9, 9)
     full = _full_field(ssim_grid, interior_vals)
@@ -356,9 +341,6 @@ def test_ssim_raises_on_pred_shape_matching_neither_full_nor_interior(ssim_grid)
         ssim(np.zeros((3, 3)), true_full, ssim_grid)
 
 
-# --------------------------------------------------------------------------- #
-# ssim_map
-# --------------------------------------------------------------------------- #
 def test_ssim_map_shape_and_perfect_recovery(ssim_grid):
     interior_vals = np.random.RandomState(13).rand(9, 9)
     full = _full_field(ssim_grid, interior_vals)

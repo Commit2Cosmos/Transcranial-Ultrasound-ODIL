@@ -32,12 +32,7 @@ class HealthCheck:
     """
 
     def __init__(self, *, c_min: float, c_max: float) -> None:
-        """
-        Parameters
-        ----------
-        c_min, c_max : float
-            The grid's speed bounds (``grid.c_min`` / ``grid.c_max``), m/s.
-        """
+        """``c_min``, ``c_max``: the grid's speed bounds, m/s."""
         self.c_min = float(c_min)
         self.c_max = float(c_max)
         self.warnings: List[str] = []
