@@ -1,3 +1,7 @@
+"""Notebook loaders of a saved run: its resolved config, the rebuilt problem,
+its velocities and its loss history as a :class:`~odil_wave.loss.LossTape`.
+Figures live in :mod:`.postprocess` (the fixed set) and :mod:`.on_demand`."""
+
 from __future__ import annotations
 
 from pathlib import Path

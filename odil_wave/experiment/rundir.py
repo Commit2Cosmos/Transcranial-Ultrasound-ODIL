@@ -6,8 +6,8 @@ lands in ``outputs/runs/<YYMMDD-HHMMSS>_<sha7>[_scratch]/`` under the code's
 repository (``out`` overrides the location) and needs a clean git tree unless
 it is a **scratch run**, which saves its ``git.diff``. :func:`new_run_directory`
 applies that policy; :meth:`RunDirectory.provenance` is what ``metadata.json``
-records about it. The run-layer README's "Where runs and experiments are
-written" and "Standalone and scratch runs" are the contract.
+records about it. It also owns ``schema_version``: readers accept every version
+from 1 to :data:`SCHEMA_VERSION` and refuse a newer one or none.
 """
 
 from __future__ import annotations

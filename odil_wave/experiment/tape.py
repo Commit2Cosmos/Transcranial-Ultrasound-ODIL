@@ -1,16 +1,22 @@
 """The metric tape: one ``tape.csv`` row per logged iterate of a run.
 
-Columns and their meaning are the run-layer README's "Iteration-level log
-record"; :data:`COLUMNS` holds each one's name, type and finiteness, and
+:data:`COLUMNS` is the column set, each with its type, finiteness and meaning;
 :func:`load_tape` reads the file back by them. :class:`MetricTape` owns the
-file for a run; each band gets a
-:class:`BandTape` whose :meth:`BandTape.record` is the joint optimiser's
-``on_log`` hook, so rows are the band's start row (``iter = 0``), every
-``log_every``-th outer iteration and its final iterate.
+file for a run; each band gets a :class:`BandTape` whose
+:meth:`BandTape.record` is the joint optimiser's ``on_log`` hook.
+
+Rows per band: a start row (``iter = 0``, after the warm start and before any
+update, so its data residual is the forward-model misfit), one every
+``optimiser.log_every`` outer iterations, and one at the band's final iterate.
+The objective columns come from one evaluation at the logged point, so they
+sum to ``loss_total``. Band and run summaries report these same columns.
 
 The optimiser supplies the objective terms, residual ratios, gradient norms and
 ``sat_frac`` (:class:`~odil_wave.optimisation.Iterate`); this module adds the
-run-wide counters and everything measured against the truth.
+run-wide counters and everything measured against the truth (regions as in
+``GLOSSARY.md``). A truth that gives nothing to score is a config error
+(:class:`ModelError` raises it) before the first band, never an empty cell; a
+non-finite value is written as ``nan`` / ``inf``.
 """
 
 from __future__ import annotations
@@ -33,45 +39,150 @@ from .config import ConfigError, ssim_window_size
 
 @dataclass(frozen=True)
 class Column:
-    """One ``tape.csv`` column: its name, the type its cells read as, and
-    whether a non-finite value in it fails the run."""
+    """One ``tape.csv`` column: its name, the type its cells read as, what it
+    measures, and whether a non-finite value in it fails the run."""
 
     name: str
     type: type
+    doc: str
     finite: bool = False
 
 
 # ``tape.csv`` columns, in order. An empty cell is ``None`` whatever the type.
 COLUMNS: Tuple[Column, ...] = (
     # identity and cost
-    Column("run_id", str),
-    Column("band_index", int),
-    Column("iter", int),
-    Column("iter_total", int),
-    Column("wall_s", float),
-    Column("n_evaluations", int),
+    Column(
+        "run_id",
+        str,
+        "Run identity, so rows of several runs can be concatenated.",
+    ),
+    Column(
+        "band_index",
+        int,
+        "Continuation stage; join to ``band_summary.json`` for its frequencies.",
+    ),
+    Column(
+        "iter",
+        int,
+        "Outer iteration within the band (``0`` = start row).",
+    ),
+    Column(
+        "iter_total",
+        int,
+        "Cumulative outer iterations over all bands up to this row.",
+    ),
+    Column(
+        "wall_s",
+        float,
+        "Wall-clock seconds since the run started.",
+    ),
+    Column(
+        "n_evaluations",
+        int,
+        "Cumulative L-BFGS closure calls over the whole run, diagnostic evaluations excluded; the line search makes several per outer iteration. The cost axis for equal-cost comparisons.",
+    ),
     # objective
-    Column("loss_total", float, finite=True),
-    Column("pde_term", float, finite=True),
-    Column("data_term", float, finite=True),
-    Column("reg_term", float, finite=True),
+    Column(
+        "loss_total",
+        float,
+        "Total objective as the solver reports it.",
+        finite=True,
+    ),
+    Column(
+        "pde_term",
+        float,
+        "Weighted PDE term (ADR-0002).",
+        finite=True,
+    ),
+    Column(
+        "data_term",
+        float,
+        "Weighted data term: a mean over traces, so independent of ``n_transducers``.",
+        finite=True,
+    ),
+    Column(
+        "reg_term",
+        float,
+        "``w_reg · R(c)`` on the interior; ``0.0`` without a regulariser.",
+        finite=True,
+    ),
     # normalised residuals
-    Column("rel_data_residual", float),
-    Column("pde_rel_residual", float),
-    Column("rel_wavefield_error", float),
-    Column("rel_model_update", float),
+    Column(
+        "rel_data_residual",
+        float,
+        "``‖d_syn − d_obs‖ / ‖d_obs‖`` over the band's shots × frequencies × receivers.",
+    ),
+    Column(
+        "pde_rel_residual",
+        float,
+        "``sqrt(2 · pde_term / w_pde)``: the PDE residual in the PDE term's scale, independent of grid spacing, PML width and source normalisation.",
+    ),
+    Column(
+        "rel_wavefield_error",
+        float,
+        "``‖u − u*‖ / ‖u*‖`` over the interior, all shots × band frequencies.",
+    ),
+    Column(
+        "rel_model_update",
+        float,
+        "``‖c − c_prev‖ / ‖c_prev‖`` over the interior against the band's previous row; empty on a start row. Truth-free plateau signal.",
+    ),
     # model error (m/s, against c*)
-    Column("rmse_brain", float),
-    Column("bias_brain", float),
-    Column("rmse_skull", float),
-    Column("bias_skull", float),
-    Column("ssim_brain", float),
+    Column(
+        "rmse_brain",
+        float,
+        "RMS of ``c − c*`` over the brain region, m/s.",
+    ),
+    Column(
+        "bias_brain",
+        float,
+        "Mean of ``c − c*`` over the brain region, m/s; its sign shows too slow or too fast.",
+    ),
+    Column(
+        "rmse_skull",
+        float,
+        "RMS of ``c − c*`` over the skull region, m/s.",
+    ),
+    Column(
+        "bias_skull",
+        float,
+        "Mean of ``c − c*`` over the skull region, m/s; catches a skull left at the initial model.",
+    ),
+    Column(
+        "ssim_brain",
+        float,
+        "SSIM of ``c`` against ``c*`` over the brain region, eroded by the window radius (:class:`ModelError`).",
+    ),
     # optimiser health
-    Column("c_min", float, finite=True),
-    Column("c_max", float, finite=True),
-    Column("sat_frac", float),
-    Column("grad_u_norm", float, finite=True),
-    Column("grad_z_norm", float, finite=True),
+    Column(
+        "c_min",
+        float,
+        "Minimum of ``c`` over the interior, m/s.",
+        finite=True,
+    ),
+    Column(
+        "c_max",
+        float,
+        "Maximum of ``c`` over the interior, m/s.",
+        finite=True,
+    ),
+    Column(
+        "sat_frac",
+        float,
+        "Fraction of cells pinned at a speed bound by the bounded-``c`` sigmoid.",
+    ),
+    Column(
+        "grad_u_norm",
+        float,
+        "Gradient norm with respect to the scaled wavefield ``u_tilde``.",
+        finite=True,
+    ),
+    Column(
+        "grad_z_norm",
+        float,
+        "Gradient norm with respect to the unconstrained model variable.",
+        finite=True,
+    ),
 )
 
 TAPE_COLUMNS: List[str] = [c.name for c in COLUMNS]

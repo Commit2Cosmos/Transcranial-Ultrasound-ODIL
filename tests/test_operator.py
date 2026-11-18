@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import odil_wave  # noqa: F401  (import before torch avoids an OpenMP abort; see test_optimisation.py)
+import odil_wave  # noqa: F401  (import before torch avoids an OpenMP abort)
 import numpy as np
 import pytest
 import torch

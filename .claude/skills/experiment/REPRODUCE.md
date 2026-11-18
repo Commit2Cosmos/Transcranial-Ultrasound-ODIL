@@ -1,6 +1,6 @@
 # Reproduce
 
-Hand the user the command that regenerates an experiment's runs. The command and its rules are in `odil_wave/experiment/README.md`, "`--reproduce <experiment-id>`".
+Hand the user the command that regenerates an experiment's runs. The command is in `odil_wave/experiment/README.md`, "Experiments"; its rules are in `odil_wave/experiment/reproduce.py`.
 
 1. Read `docs/experiments/<id>.md`'s frontmatter for `commit` and `device`. Run `git fetch origin --tags` so the launch commit is local.
 2. Ask which device the user will run on. Hand over `uv run python main.py --reproduce <id>`, adding `-o runtime.device=<device>` when it differs from the record's `device`.

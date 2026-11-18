@@ -4,8 +4,7 @@
 the spec's order, each into ``runs/<idx>_<label>/`` of the experiment directory
 ``outputs/experiments/NNNN-slug[_cuda|_mps]/``, which also holds a verbatim
 ``spec.yaml``, ``experiment.json`` (provenance and per-run status) and
-``summary.csv`` (one row per run). The run-layer README's "Experiments" section
-is the contract.
+``summary.csv`` (one row per run).
 """
 
 from __future__ import annotations

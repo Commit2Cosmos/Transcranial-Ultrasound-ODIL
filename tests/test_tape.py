@@ -1,11 +1,10 @@
-"""The metric tape a run writes (``tape.csv``), checked against the run-layer
-README's column table and against values recomputed independently of the run."""
+"""The metric tape a run writes (``tape.csv``), checked against its declared
+columns and against values recomputed independently of the run."""
 
 from __future__ import annotations
 
 import csv
 import json
-import re
 from pathlib import Path
 
 import numpy as np
@@ -38,22 +37,6 @@ from odil_wave.experiment.tape import (
 import main
 from conftest import TINY_RUN_CONFIG
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-README = REPO_ROOT / "odil_wave" / "experiment" / "README.md"
-
-
-def readme_tape_columns() -> list:
-    """Column names, in order, from the README's "Iteration-level log record"
-    tables (the first cell of each table row)."""
-    text = README.read_text()
-    section = text.split("## Iteration-level log record", 1)[1].split("\n## ", 1)[0]
-    columns = []
-    for line in section.splitlines():
-        if line.startswith("| `"):
-            first_cell = line.split("|")[1]
-            columns += re.findall(r"`([a-z_0-9]+)`", first_cell)
-    return columns
-
 
 def read_tape(run_dir: Path) -> tuple:
     """``(header, rows)``; a row maps column -> float, or None for an empty cell."""
@@ -76,11 +59,15 @@ def band_rows(rows: list, band_index: int) -> list:
 # --------------------------------------------------------------------------- #
 # Columns and rows
 # --------------------------------------------------------------------------- #
-def test_tape_has_exactly_the_readme_columns(tiny_two_band_run):
+def test_tape_has_exactly_the_declared_columns(tiny_two_band_run):
     header, _ = read_tape(tiny_two_band_run.run_dir)
-    expected = readme_tape_columns()
-    assert len(expected) == 24
-    assert header == expected
+    assert len(TAPE_COLUMNS) == 24
+    assert header == TAPE_COLUMNS
+
+
+def test_every_column_says_what_it_measures():
+    """The column docs are the tape's only reference; none may be blank."""
+    assert all(c.doc.strip() for c in COLUMNS)
 
 
 def test_only_a_start_rows_model_update_is_empty(tiny_two_band_run):
