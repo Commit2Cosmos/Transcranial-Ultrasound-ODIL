@@ -19,8 +19,7 @@ class WaveEquation:
           + w_sponge [ σ_sum_nd D_t[u] + σ_prod_nd u ]
 
     with ``w_sponge = damping_scale`` (``1`` = designed PML absorption, ``0``
-    disables it). ``space_order`` (2 | 4 | 6 | 8 | 10) is required; the library
-    owns the ``damping_scale`` default (ADR 0001).
+    disables it). Defaults follow ADR 0001.
 
     Frequency form (2nd-order centered symbols from FrequencySelection)::
 
@@ -63,27 +62,13 @@ class WaveEquation:
     def residual(
         self, amp: torch.Tensor, wsp: torch.Tensor, source: torch.Tensor
     ) -> torch.Tensor:
-        """Complex dimensionless PDE residual on shot-batched frequency fields.
-
-        Parameters
-        ----------
-        amp : torch.Tensor
-            Complex amplitudes ``(n_shots, n_frequencies, nx, ny)``.
-        wsp : torch.Tensor
-            Physical wavespeed field (m/s).
-        source : torch.Tensor
-            Source term pre-scaled by ``t0**2``.
-
-        Returns
-        -------
-        torch.Tensor
-            Complex residual, same shape as ``amp``.
-        """
+        """Complex dimensionless PDE residual, shaped as ``amp`` ``(n_shots,
+        n_frequencies, nx, ny)``; ``wsp`` in m/s, ``source`` scaled by
+        ``t0**2``."""
         c0 = self.wavefield.grid.c0
         wsp_nd = wsp / c0
         freq = self.wavefield.frequency_selection
         lambda_t, lambda_tt = freq.symbols_broadcast()
-        # Ensure symbol dtype matches amp
         lambda_t = lambda_t.to(dtype=amp.dtype, device=amp.device)
         lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
 

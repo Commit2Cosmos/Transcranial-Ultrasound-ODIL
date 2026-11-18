@@ -51,8 +51,7 @@ class ColourScales:
     """Colour scales fixed by the truth model alone.
 
     Velocity follows :func:`~odil_wave.models.profile_velocity_norm` for the
-    truth's ``profile``: two-slope at 1400 / 1600 / 3000 m/s for Shepp-Logan,
-    else linear over ``[min, max]`` of ``c*`` on the interior; the difference
+    truth's ``profile``, a linear scale spanning ``c*`` on the interior; the difference
     ``c - c*`` is symmetric at :data:`DIFF_FRACTION` of ``c*``'s
     peak-to-peak in the brain region. Runs of one experiment share a truth, so
     they share these scales.
@@ -244,7 +243,7 @@ def per_band_error(run: SavedRun, scales: Optional[ColourScales]) -> Optional[Pl
 
 
 def head_centre(problem: ProblemArrays) -> Tuple[int, int]:
-    """Interior index of the head region's centroid (brain plus skull)."""
+    """Interior index of the head region's centroid."""
     i, j = np.nonzero(problem.head_mask)
     return int(round(i.mean())), int(round(j.mean()))
 

@@ -147,8 +147,8 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
             "arrays.npz",
             "band_summary.json",
         ]
-        # n_iter_run / termination_reason were hard-coded (the outer loop
-        # always runs the full budget), so the summary no longer carries them.
+        # The outer loop always runs the full budget, so the summary carries
+        # no n_iter_run / termination_reason.
         summary = json.loads((band_dir / "band_summary.json").read_text())
         assert summary["frequencies_hz"] == freqs
         assert summary["n_iter_requested"] == 3

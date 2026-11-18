@@ -45,12 +45,7 @@ class LiveVelocityView:
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
-        """
-        Parameters
-        ----------
-        clock : callable, optional
-            Seconds now, read once per logged row; for the redraw interval.
-        """
+        """``clock`` returns seconds now; it times the redraw interval."""
         self.clock = clock
         self.figure = None
         self.enabled = has_display()
@@ -64,14 +59,8 @@ class LiveVelocityView:
         self._last_draw: float = -np.inf
 
     def __call__(self, logged) -> None:
-        """Take one logged row and redraw if it is due.
-
-        Parameters
-        ----------
-        logged : LoggedRow
-            The row just written to the tape, with the interior ``c`` and
-            ``c_star`` (:class:`~odil_wave.experiment.runner.LoggedRow`).
-        """
+        """Take the :class:`~odil_wave.experiment.runner.LoggedRow` just written
+        and redraw if it is due."""
         if not self.enabled:
             return
         now = self.clock()
@@ -80,7 +69,6 @@ class LiveVelocityView:
             self._last_draw = now
             self._draw(logged)
 
-    # ------------------------------------------------------------------ #
     def _draw(self, logged) -> None:
         """Redraw every panel from the rows so far and show the window."""
         from matplotlib.figure import Figure

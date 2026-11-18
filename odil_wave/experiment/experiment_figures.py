@@ -68,13 +68,8 @@ class SavedExperiment:
 
     @classmethod
     def load(cls, exp_dir: PathLike) -> "SavedExperiment":
-        """Read the experiment directory ``exp_dir``.
-
-        Raises
-        ------
-        SchemaVersionError
-            Its ``experiment.json`` is of a format this code can't read.
-        """
+        """Read the experiment directory ``exp_dir``; :class:`SchemaVersionError`
+        if its ``experiment.json`` is of a format this code can't read."""
         path = Path(exp_dir)
         record = load_experiment_record(path / "experiment.json")
         runs = [

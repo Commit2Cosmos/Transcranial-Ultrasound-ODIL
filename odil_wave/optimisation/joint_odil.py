@@ -1,9 +1,9 @@
 """Pure joint full-space frequency-domain ODIL.
 
 A single joint optimiser over **both** the complex wavefield block ``u`` (all
-sources and frequencies) and a squared-slowness model latent ``z_m`` — no
-alternating updates, no closed-form / reduced-FWI / WRI / augmented-Lagrangian
-c-block, no multigrid, no adaptive loss balancing.
+sources and frequencies) and a squared-slowness model latent ``z_m``: no
+alternating updates, no reduced c-block (ADR 0003), no multigrid, no adaptive
+loss balancing.
 
 Formulation
 -----------
@@ -12,16 +12,12 @@ Formulation
       m(z_m) = m_min + (m_max - m_min) * sigmoid(z_scale * z_m),
       m_min = 1 / c_max**2 ,   m_max = 1 / c_min**2 ,   c = 1 / sqrt(m),
 
-  with ``c_min`` / ``c_max`` the grid's velocity bounds.
-
-  ``c_full = velocity_model.build_full_c(c)`` freezes PML cells at ``pml_c`` so
-  only interior cells are optimised. Bounds are enforced *structurally* by the
-  sigmoid — every L-BFGS line-search trial stays in-bounds (no post-step
-  projection).
+  with ``c_min`` / ``c_max`` the grid's velocity bounds. PML cells stay at
+  ``pml_c``. The sigmoid keeps every L-BFGS line-search trial in bounds (no
+  post-step projection).
 
 * Scaled wavefield ``u = u_ref * u_tilde`` with a fixed per-(shot, frequency)
-  scalar ``u_ref[s, w] = max(RMS_active|u_init[s, w]|, eps_u)``. ``u_tilde`` is
-  two real tensors (Re, Im).
+  scalar ``u_ref[s, w] = max(RMS_active|u_init[s, w]|, eps_u)``.
 
 * Residuals use the repository's exact operator (inverse-crime consistent):
 
@@ -29,12 +25,9 @@ Formulation
       r_data[s, w] = P_s u[s, w] - d_obs[s, w]                     (receivers)
 
   where ``P_s`` samples the ``n_transducers - 1`` transducers recording shot
-  ``s`` (never its own), so ``data_scale`` below excludes the self-trace too.
-
-  fixed scales ``pde_scale[s, w] = max(|lambda_tt[w]| * u_ref[s, w], eps_p)``
-  (the wave term's magnitude, ADR-0002: independent of the source
-  normalisation, grid spacing and PML width; NOT the near-zero warm-start PDE
-  residual) and ``data_scale[s, w] = max(RMS|d_obs[s, w]|, eps_d)``.
+  ``s``, with fixed scales ``pde_scale[s, w] = max(|lambda_tt[w]| * u_ref[s,
+  w], eps_p)`` (the wave term's magnitude, ADR-0002) and ``data_scale[s, w] =
+  max(RMS|d_obs[s, w]|, eps_d)``.
 
 * Objective:
 
@@ -45,53 +38,34 @@ Formulation
   The PDE sum runs over interior **and** PML nodes but is normalised by the
   interior node count ``N_int``, so a thicker PML does not dilute it; the data
   term is a mean over the count of **real** scalar entries (``2x`` complex).
+  The weights are fixed for the run (never adapted).
 
-  with ``pde_weight``, ``data_weight`` and ``w_reg = reg_weight`` fixed run-level
-  hyperparameters (never adapted). The run layer fills all three from
-  ``loss.weights.{pde,data,reg}`` (defaults 1 / 1 / 0); the regulariser is
-  applied only when ``reg_weight != 0``. Each term is the per-(shot, freq)
-  scaled relative residual above, not a raw mean of squared residuals.
+* One persistent ``torch.optim.LBFGS`` over the full space, advanced by
+  ``n_iter`` outer ``.step`` calls of up to ``inner_max_iter`` iterations each
+  on the shared history, so the trajectory is logged while the solve stays
+  continuous.
 
-* One persistent ``torch.optim.LBFGS([v_re, v_im, z_m])`` (strong-Wolfe) — a
-  single joint optimiser over the full space, no alternation. It is advanced by
-  ``n_iter`` outer ``.step`` calls, each running up to ``inner_max_iter`` L-BFGS
-  iterations on the shared history (at most ``n_iter * inner_max_iter`` in
-  total), so the per-step trajectory is logged while the solve stays
-  continuous. (A single iteration per step, ``inner_max_iter=1``, stalls the
-  strong-Wolfe line search and is *not* representative of L-BFGS on this
-  problem.) The objective is matrix-free (one conv2d Laplacian per evaluation);
-  ``A(c)`` is never factorised inside optimisation.
+* Block preconditioners (:mod:`odil_wave.optimisation.preconditioners`): each
+  block's optimised variable maps to its own unknown through one object,
+  ``wavefield_precond`` (``v <-> u_tilde``) and ``model_precond``
+  (``y <-> z_m``); without a preconditioner it is the identity.
 
-* Block preconditioners (:mod:`odil_wave.optimisation.preconditioners`). Each
-  block's optimised variable is mapped to its own unknown by one object, held
-  as ``wavefield_precond`` (``v <-> u_tilde``; ``u = u_ref * u_tilde`` stays
-  here) and ``model_precond`` (``y <-> z_m``); without a preconditioner the
-  object is the identity map. ``wavefield_preconditioner="initial_model"``
-  (default ``"none"``) optimises ``v`` with ``u_tilde = A(c_init)^-1
-  (|lambda_tt| v)`` from the warm start's ``splu`` factors
-  (``Band.factors``); see that module for the map and its curvature.
-
-* Optional model-block preconditioner (``model_preconditioner="pde_diagonal"``;
-  default ``"none"``). L-BFGS models the Hessian outside its history as one
-  ``gamma * I`` over both blocks, so the model block is rescaled per cell to the
-  wavefield block's curvature: L-BFGS optimises ``y`` with ``z_m = s * y``,
+  ``model_preconditioner="pde_diagonal"``: L-BFGS models the Hessian outside
+  its history as one ``gamma * I`` over both blocks, so the model block is
+  rescaled per cell to the wavefield block's curvature, ``z_m = s * y``:
 
       H_kk[i] = pde_weight * sum_{s,f} |lap(u)[s,f,i] / pde_scale[s,f]|^2
                 / (N_int n_s n_f)                         (r is linear in k)
       H_zz[i] = (dk/dz_m[i])^2 * H_kk[i]                  (exact where r = 0)
-      T       = median of the weighted PDE term's diagonal over v_re (all
-                shots, frequencies and nodes, PML included)
+      T       = median of the weighted PDE term's diagonal in v
       s[i]    = sqrt(T / max(H_zz[i], eps_precond * median(H_zz)))
 
   with ``k = (c / c0)^2``, evaluated once per band at the warm start (never
   refreshed, which would invalidate the L-BFGS history). The data term and the
   regulariser are left out of both curvatures. ``z_scale`` cancels from
-  ``z_scale * s``. ``H_zz`` comes from :meth:`JointFreqODIL.model_curvature`;
-  ``T`` is the median of ``wavefield_precond.pde_curvature()``, the curvature
-  in the variable L-BFGS optimises: the column norms of ``A`` over
-  ``|lambda_tt|`` without the wavefield preconditioner, the uniform
-  ``pde_weight / (N_int n_s n_f)`` with it. ``T``, and so ``s``, then
-  differs by about the size of ``A``'s column norms over ``|lambda_tt|``.
+  ``z_scale * s``. ``H_zz`` comes from
+  :meth:`JointFreqODIL.model_curvature`, ``T`` from
+  ``wavefield_precond.pde_curvature()``.
 
 The class is pure library code (no file IO). ``minimise`` reports through
 ``on_log`` (an :class:`Iterate` per logged point) and returns a
@@ -131,11 +105,8 @@ def real_scalar_count(x: torch.Tensor) -> int:
 
 
 def mean_real_sq(x: torch.Tensor) -> torch.Tensor:
-    """Mean of ``|x|^2`` over the count of **real** scalar entries.
-
-    For complex ``x`` this divides ``sum(re^2 + im^2)`` by ``2 * numel``, the
-    real degrees of freedom (real + imaginary): ``0.5 * mean(|x|^2)``.
-    """
+    """Mean of ``|x|^2`` over the count of **real** scalar entries (``2 *
+    numel`` for complex ``x``)."""
     if x.is_complex():
         ssq = x.real.square().sum() + x.imag.square().sum()
     else:
@@ -158,8 +129,7 @@ class SlownessLatent:
 
     ``m(z) = m_min + (m_max - m_min) * sigmoid(z_scale * z)`` with velocity
     bounds converted as ``m_min = 1/c_max**2``, ``m_max = 1/c_min**2``.
-    ``z_scale`` is a fixed model-coordinate scale (default 1). The inverse
-    (logit) is used once for initialisation, clipped away from 0/1.
+    ``z_scale`` is a fixed model-coordinate scale.
     """
 
     m_min: float
@@ -244,13 +214,11 @@ class BandSolve:
 # Solver
 # --------------------------------------------------------------------------- #
 class JointFreqODIL:
-    """Pure joint full-space frequency-domain ODIL solver.
-
-    ``n_iter``, the objective weights and ``regulariser`` are required; the
-    library owns every other default (ADR 0001). See the module docstring for
-    the formulation. The operator, sources, observed data, initial model and
-    warm start all come from ``band``; ``wavefield_preconditioner="initial_model"``
-    needs a band built with ``keep_factors``.
+    """Pure joint full-space frequency-domain ODIL solver; defaults follow
+    ADR 0001. See the module docstring for the formulation. The operator,
+    sources, observed data, initial model and warm start all come from
+    ``band``; ``wavefield_preconditioner="initial_model"`` needs a band built
+    with ``keep_factors``.
 
     ``init_params``, ``objective``, ``objective_terms``, ``residuals`` and
     ``physical_u`` take the optimised wavefield variable ``(v_re, v_im)``, as
@@ -277,7 +245,6 @@ class JointFreqODIL:
         verbose: bool = False,
         model_preconditioner: str = "none",
         wavefield_preconditioner: str = "none",
-        # Fixed-scale controls.
         eps_u: float = 1e-30,
         eps_data: float = 1e-30,
         eps_pde: float = 1e-30,
@@ -324,8 +291,6 @@ class JointFreqODIL:
         self.tolerance_change = float(tolerance_change)
         self.lbfgs_lr = float(lbfgs_lr)
         self.data_weight = float(data_weight)
-        # Run-level PDE-penalty weight; never adapted from the instantaneous
-        # losses. lambda_data (== data_weight) stays fixed.
         self.pde_weight = float(pde_weight)
         self.reg_weight = float(reg_weight)
         self.log_every = max(1, int(log_every))
@@ -359,7 +324,6 @@ class JointFreqODIL:
         # Active (non-PML interior) mask over the full grid, for RMS_active.
         self._interior_slice = grid.interior_slice
 
-        # u_init warm-start wavefields -> u_ref.
         u_seed = band.u_init.to(dtype=self.cdtype, device=self.device).contiguous()
         self.u_seed = u_seed
         u_int = u_seed[:, :, self._interior_slice[0], self._interior_slice[1]]

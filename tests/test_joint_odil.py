@@ -68,9 +68,6 @@ def _make_optimiser(
     )
 
 
-# --------------------------------------------------------------------------- #
-# SlownessLatent
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("z_scale", [1.0, 10.0])
 def test_latent_round_trip(z_scale):
     """z_of_c inverts c_of_z away from the logit clip."""

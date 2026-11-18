@@ -25,25 +25,9 @@ FD2_COEFFS: dict[int, tuple[float, tuple[float, ...]]] = {
 def laplacian_stencil(
     space_order: int, dx_nd: float, dy_nd: float
 ) -> tuple[np.ndarray, int]:
-    """Cross-stencil Laplacian ``kernel[hx, hy]`` and its half-width.
-
-    Parameters
-    ----------
-    space_order : int
-        FD order, a key of :data:`FD2_COEFFS` (2 | 4 | 6 | 8 | 10).
-    dx_nd, dy_nd : float
-        Non-dimensional grid spacings.
-
-    Returns
-    -------
-    tuple
-        ``(kernel, pad)``: float64 kernel of shape ``(2*pad + 1, 2*pad + 1)``
-        with ``u_xx`` on the centre column and ``u_yy`` on the centre row.
-
-    Notes
-    -----
-    Raises ``ValueError`` for an unsupported ``space_order``.
-    """
+    """``(kernel, pad)``: the float64 cross-stencil Laplacian ``(2*pad + 1,
+    2*pad + 1)`` for ``space_order`` (a key of :data:`FD2_COEFFS`) and
+    non-dimensional spacings."""
     if space_order not in FD2_COEFFS:
         raise ValueError(f"Unsupported space order: {space_order}")
     center, coeffs = FD2_COEFFS[space_order]
@@ -61,26 +45,8 @@ def laplacian_stencil(
 def _apply_conv_laplacian(
     utm: torch.Tensor, kernel: torch.Tensor, pad: int
 ) -> torch.Tensor:
-    """Apply a fixed Laplacian kernel with reflect padding (Neumann mirror).
-
-    Parameters
-    ----------
-    utm : torch.Tensor
-        Field with spatial dims last; may be complex.
-    kernel : torch.Tensor
-        Laplacian convolution kernel of shape ``(1, 1, N, N)``.
-    pad : int
-        Reflect-padding width (stencil half-width).
-
-    Returns
-    -------
-    torch.Tensor
-        Laplacian of ``utm``, same shape and dtype.
-
-    Notes
-    -----
-    Complex inputs are processed as real/imag separately (``F.conv2d`` is real).
-    """
+    """Laplacian of ``utm`` (spatial dims last, may be complex) with reflect
+    padding (Neumann mirror)."""
     if utm.is_complex():
         return torch.complex(
             _apply_conv_laplacian(utm.real, kernel, pad),
@@ -95,18 +61,11 @@ def _apply_conv_laplacian(
 
 
 class Laplacian:
-    """Discrete Laplacian ``u_xx + u_yy`` of FD order ``space_order`` (2 | 4 |
-    6 | 8 | 10) via ``F.conv2d`` with reflect padding, on the wavefield's grid.
-    ``space_order`` is set by the run config and is a required keyword
-    (ADR 0001)."""
+    """Discrete Laplacian ``u_xx + u_yy`` of FD order ``space_order`` with
+    reflect padding, on the wavefield's grid."""
 
     def __init__(self, wavefield: Wavefield, *, space_order: int) -> None:
-        """Build the cross-stencil kernel from the grid spacing.
 
-        Notes
-        -----
-        Raises ``ValueError`` for an unsupported ``space_order``.
-        """
         g = wavefield.grid
         K, self._pad = laplacian_stencil(space_order, g.dx_nd, g.dy_nd)
         self._kernel = torch.as_tensor(K, dtype=g.dtype, device=g.device)[None, None]

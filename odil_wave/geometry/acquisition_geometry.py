@@ -13,13 +13,8 @@ from odil_wave.source import SourceSignal
 
 
 def _normalize_traces(traces: np.ndarray, mode: str | None) -> np.ndarray:
-    """Rescale a (NT, n_traces) trace gather for plotting.
-
-    mode:
-      - None / "none":    pass-through
-      - "per_receiver":   divide each column (one receiver's trace) by its
-                          own max-abs, the standard seismic balancing.
-    """
+    """Rescale a (NT, n_traces) trace gather for plotting: ``"per_receiver"``
+    is per-column max-abs balancing, ``None`` / ``"none"`` none."""
     if mode is None or mode == "none":
         return traces
     if mode == "per_receiver":
@@ -37,9 +32,8 @@ class AcquisitionGeometry:
     Transducers are evenly spaced on an ellipse inscribed in the grid's
     interior region. Shot ``s`` transmits from transducer ``s`` and is recorded
     by the other ``n_transducers - 1`` (`receivers`); a transducer never
-    records its own shot. Provides the source injection fields (time- and
-    frequency-domain), trace extraction, and plotting helpers used by the
-    forward solvers and loss functions.
+    records its own shot. Provides the source injection fields, trace
+    extraction and plotting helpers.
     """
 
     def __init__(
@@ -55,38 +49,14 @@ class AcquisitionGeometry:
         ring_center: Optional[Tuple[float, float]] = None,
         source_spatial: str = "gaussian",
     ):
-        """Build the transducer ring for a given grid.
+        """Build the transducer ring on ``grid``; defaults follow ADR 0001.
 
-        ``n_transducers`` is required; the library owns the other defaults
-        (ADR 0001).
-
-        Parameters
-        ----------
-        grid : Grid
-            Spatial/temporal grid the geometry is placed on; also supplies
-            the device and dtype used for the geometry's tensors.
-        source : SourceSignal
-            Temporal source wavelet, used for its waveform/spectrum.
-        frequency_selection : FrequencySelection
-            Frequency bins used by `source_field` for the frequency-domain
-            source, and by the complex dtype it produces.
-        n_transducers : int
-            Number of transducers placed on the ellipse (>= 2); also the
-            number of shots.
-        sigma_s : float
-            Width in metres of the Gaussian source density
-            ``exp(-r**2 / sigma_s**2) / (pi * sigma_s**2)`` (standard deviation
-            ``sigma_s / sqrt(2)``; ignored when `source_spatial="point"`).
-        a_frac, b_frac : float
-            Semi-axes of the transducer ellipse as a fraction of the half-width
-            / half-height of the grid's interior region.
-        ring_center : (float, float) or None
-            Physical-coordinate centre of the transducer ellipse; ``None`` ->
-            the centre of the grid's interior region.
-        source_spatial : {"gaussian", "point"}
-            Spatial injection profile, a density per m² that integrates to 1
-            on any grid: ``"gaussian"`` is a Gaussian blob of width `sigma_s`;
-            ``"point"`` is ``1 / (dx * dy)`` at the source grid node.
+        ``n_transducers`` >= 2. ``sigma_s`` is the width in metres of the
+        Gaussian source density ``exp(-r**2 / sigma_s**2) / (pi * sigma_s**2)``
+        (``source_spatial="gaussian"``; ``"point"`` is ``1 / (dx * dy)`` at one
+        node). ``a_frac`` / ``b_frac`` are the ellipse semi-axes as fractions of
+        the interior half-width / half-height; ``ring_center`` is in metres,
+        ``None`` the interior centre.
         """
         self.grid = grid
         self.source = source
@@ -122,8 +92,7 @@ class AcquisitionGeometry:
         return self.n_transducers
 
     def _place_ellipse(self, n: int) -> torch.Tensor:
-        """Return (n, 2) integer full-grid indices for n points evenly spaced
-        on an ellipse inside the grid's interior region."""
+        """(n, 2) full-grid indices of n points evenly spaced on the ellipse."""
         (ix_min, ix_max), (iy_min, iy_max) = self.grid.interior_extent
         cx, cy = self.ring_center
         a = self.a_frac * (ix_max - ix_min) / 2.0
@@ -145,11 +114,10 @@ class AcquisitionGeometry:
         return float(self.grid.x[i]), float(self.grid.y[j])
 
     def _spatial_profile(self, src_idx: int) -> torch.Tensor:
-        """Spatial injection density (per m²) for source `src_idx`, as a
-        full-grid tensor of shape `grid.shape`: a Gaussian blob or a point
-        source per `self.source_spatial`. Its sum times ``dx * dy`` is 1 (the
-        Gaussian's up to ``4 exp(-pi² sigma_s² / h²)``), so the injected
-        amplitude does not depend on the grid spacing."""
+        """Spatial injection density (per m²) of source `src_idx`, full-grid.
+        Its sum times ``dx * dy`` is 1 (the Gaussian's up to
+        ``4 exp(-pi² sigma_s² / h²)``), so the injected amplitude does not
+        depend on the grid spacing."""
         if self.source_spatial == "point":
             i = int(self.transducer_ij[src_idx, 0])
             j = int(self.transducer_ij[src_idx, 1])
@@ -161,39 +129,14 @@ class AcquisitionGeometry:
         return torch.exp(-r2 / self.sigma_s**2) / (math.pi * self.sigma_s**2)
 
     def source_field_time(self, src_idx: int) -> torch.Tensor:
-        """Time-domain source field for `src_idx`, used by `plot_source_field`.
-
-        Parameters
-        ----------
-        src_idx : int
-            Shot index (0 .. `self.n_shots` - 1).
-
-        Returns
-        -------
-        torch.Tensor
-            Real tensor of shape ``(nt, nx, ny)``: the source's temporal
-            waveform times its spatial profile.
-        """
+        """Time-domain source field of shot `src_idx`, real ``(nt, nx, ny)``."""
         spatial = self._spatial_profile(src_idx)
         temporal = self.source.waveform()
         return temporal.view(-1, 1, 1) * spatial.view(1, *self.grid.shape)
 
     def source_field(self, src_idx: int) -> torch.Tensor:
-        """Frequency-domain source field for `src_idx`, used by the Helmholtz
-        solver and loss functions.
-
-        Parameters
-        ----------
-        src_idx : int
-            Shot index (0 .. `self.n_shots` - 1).
-
-        Returns
-        -------
-        torch.Tensor
-            Complex tensor of shape ``(n_frequencies, nx, ny)``, on the bins
-            of `self.frequency_selection`: the source's spectrum times its
-            spatial profile.
-        """
+        """Frequency-domain source field of shot `src_idx`, complex
+        ``(n_frequencies, nx, ny)`` on `self.frequency_selection`'s bins."""
         spatial = self._spatial_profile(src_idx)
         spectrum = self.source.spectrum(self.frequency_selection)
         cdtype = self.frequency_selection.cdtype
@@ -202,21 +145,8 @@ class AcquisitionGeometry:
         )
 
     def extract_observations(self, U: torch.Tensor) -> torch.Tensor:
-        """Pull each shot's recorded traces out of its full-grid wavefield.
-
-        Parameters
-        ----------
-        U : torch.Tensor
-            Per-shot fields ``(n_shots, ..., nx, ny)`` — e.g. frequency-domain
-            ``(n_shots, nf, nx, ny)`` or time-domain ``(n_shots, nt, nx, ny)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Shot ``s`` sampled at its `receivers[s]` nodes, shape
-            ``(n_shots, ..., n_transducers - 1)``; the transmitting
-            transducer's own node is never sampled.
-        """
+        """Each shot's traces: ``U`` ``(n_shots, ..., nx, ny)`` sampled at
+        `receivers[s]`, ``(n_shots, ..., n_transducers - 1)``."""
         ij = self.receiver_ij
         shot = torch.arange(self.n_shots, device=self.device).view(-1, 1)
         # Advanced indices split by `...` put their broadcast dims first.
@@ -234,25 +164,9 @@ class AcquisitionGeometry:
         """Plot recorded traces: transducer id (y) vs time (x), amplitude as colour.
 
         The transmitting transducer records nothing, so its row is left blank.
-
-        Parameters
-        ----------
-        wavefield :
-            A `Wavefield` or `(NT, NX, NY)` amplitude tensor/array for shot
-            `shot`, or a list of either with one entry per shot (index = shot),
-            producing a subplot grid. `ax` is ignored when a list is given.
-        ax : matplotlib.axes.Axes, optional
-            Axes to draw into for a single wavefield. Defaults to a new
-            figure/axes.
-        normalize : {"per_receiver", "none", None}, default "per_receiver"
-            Per-receiver max-abs balancing, or no rescaling.
-        shot : int, default 0
-            Shot a single (non-list) `wavefield` belongs to.
-
-        Returns
-        -------
-        matplotlib.axes.Axes or numpy.ndarray of Axes
-            Single Axes for one wavefield, array of Axes for a list.
+        ``wavefield`` is a `Wavefield` or `(NT, NX, NY)` array of shot `shot`,
+        or a list of either indexed by shot, drawn as a subplot grid (`ax`
+        ignored).
         """
         is_list = isinstance(wavefield, (list, tuple))
         items = list(wavefield) if is_list else [wavefield]
@@ -329,23 +243,8 @@ class AcquisitionGeometry:
         return axes
 
     def plot_source_field(self, src_idx: int = 0, t_idx: Optional[int] = None, ax=None):
-        """Plot a spatial snapshot of the source field s(x, y, t_idx).
-
-        Parameters
-        ----------
-        src_idx : int, default 0
-            Shot index (0 .. `self.n_shots` - 1).
-        t_idx : int, optional
-            Time index to plot. Defaults to the peak time of the source's
-            temporal waveform.
-        ax : matplotlib.axes.Axes, optional
-            Axes to draw into. Defaults to a new figure/axes.
-
-        Returns
-        -------
-        matplotlib.axes.Axes
-            The Axes drawn into.
-        """
+        """Plot the source field s(x, y, t_idx); ``t_idx`` defaults to the
+        waveform's peak."""
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         src = self.source_field_time(src_idx).cpu().numpy()
@@ -384,28 +283,9 @@ class AcquisitionGeometry:
         vcenter: Optional[float] = None,
         vmax: Optional[float] = None,
     ):
-        """Overlay the transducer ring on the velocity model.
-
-        The velocity colour scale follows
-        :func:`~odil_wave.models.profile_velocity_norm` for the model's
-        profile: two-slope for Shepp-Logan, so that ``[vmin, vcenter]`` and
-        ``[vcenter, vmax]`` each fill half the bar (defaults 1400 / 1600 /
-        3000 m/s), linear otherwise. Pass an explicit ``norm`` to override;
-        `vmin`/`vcenter`/`vmax` are then ignored.
-
-        Parameters
-        ----------
-        velocity_model : VelocityModel
-            Background image; also sets the axis unit scaling that the
-            transducer markers are plotted in.
-        ax : matplotlib.axes.Axes, optional
-            Axes to draw into. Defaults to a new figure/axes.
-
-        Returns
-        -------
-        matplotlib.axes.Axes
-            The Axes drawn into.
-        """
+        """Overlay the transducer ring on the velocity model, its colour scale
+        :func:`~odil_wave.models.profile_velocity_norm` unless ``norm`` is
+        given."""
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 5))
         velocity_model.show(

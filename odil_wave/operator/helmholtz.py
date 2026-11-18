@@ -67,11 +67,7 @@ def laplacian_csr(
 
 
 class HelmholtzSolver:
-    """Solve H(c, omega) u = f_hat for complex frequency-domain wavefields.
-
-    For fixed ``c``, assembles a sparse Helmholtz matrix once per frequency,
-    factorises with ``splu``, then solves all shot RHS in one batched call.
-    """
+    """Solve H(c, omega) u = f_hat for complex frequency-domain wavefields."""
 
     def __init__(
         self,
@@ -100,21 +96,8 @@ class HelmholtzSolver:
         )
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
-        """Assemble the sparse Helmholtz matrix H for one frequency.
-
-        Parameters
-        ----------
-        c :
-            Full-grid velocity field to assemble H at.
-        freq_idx :
-            Index into the wavefield's frequency selection.
-
-        Returns
-        -------
-        scipy.sparse.csr_matrix
-            Sparse Helmholtz matrix H at that frequency (matches the
-            matrix-free residual).
-        """
+        """Sparse H at full-grid ``c`` and frequency index ``freq_idx``: the
+        matrix of the matrix-free residual."""
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
@@ -156,29 +139,9 @@ class HelmholtzSolver:
     def solve(
         self, verbose: bool = False, return_factors: bool = False
     ) -> Union[List[Wavefield], Tuple[List[Wavefield], List[SuperLU]]]:
-        """Solve H(c) u = f for every shot and frequency; one Wavefield per shot.
-
-        Assembles and factorises H once per frequency, then solves all shots'
-        sources in one batched call at that frequency.
-
-        Parameters
-        ----------
-        verbose :
-            When True, print per-frequency assemble/factor/solve timings plus
-            a final residual/timing summary; also computes that summary
-            (an extra residual evaluation), which is skipped when False.
-        return_factors :
-            When True, also return the per-frequency ``splu`` factors of H
-            (the wavefield preconditioner reuses them for the band).
-
-        Returns
-        -------
-        List[Wavefield]
-            One solved Wavefield per shot, each holding the amplitude at
-            every selected frequency; with ``return_factors``, the tuple
-            ``(wavefields, factors)``, ``factors[k]`` the factor at frequency
-            ``k``.
-        """
+        """Solve H(c) u = f for every shot and frequency; one Wavefield per shot,
+        and with ``return_factors`` also H's ``splu`` factor per frequency.
+        ``verbose`` prints timings and the residual (an extra evaluation)."""
         wf = self.wavefield
         grid = wf.grid
         freq = wf.frequency_selection

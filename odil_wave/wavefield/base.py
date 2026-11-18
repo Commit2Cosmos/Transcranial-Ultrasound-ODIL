@@ -47,11 +47,8 @@ class Wavefield:
     cdtype: torch.dtype = field(init=False)
 
     def __post_init__(self) -> None:
-        """Validate grid/frequency_selection compatibility and allocate tensors.
-
-        Copies ``device``/``dtype`` from ``grid``, then initialises the
-        complex amplitude tensor from ``init_amplitude`` (or zeros).
-        """
+        """Check the grid against ``frequency_selection``'s and allocate the
+        amplitude from ``init_amplitude`` (or zeros)."""
         if self.frequency_selection.grid is not self.grid:
             # Allow equal grids constructed separately if metadata matches
             if (
@@ -125,14 +122,8 @@ class Wavefield:
 
     @amplitude.setter
     def amplitude(self, value: np.ndarray | torch.Tensor) -> None:
-        """Set the amplitude tensor, casting to ``cdtype``/``device`` and
-        reshaping to ``(n_frequencies, nx, ny)``.
-
-        Args:
-            value: New amplitude data, as a numpy array or torch tensor,
-                with a number of elements matching
-                ``n_frequencies * nx * ny``.
-        """
+        """Set the amplitude from ``n_frequencies * nx * ny`` values, cast and
+        reshaped to ``(n_frequencies, nx, ny)``."""
         nf = self.n_frequencies
         Nx, Ny = self.grid.shape
         amp = (
@@ -152,26 +143,13 @@ class Wavefield:
     ):
         """Show frequency slice ``idx`` as a 2x2 panel of the complex field.
 
-        Panels are ``|u|`` (magnitude), ``Re(u)``, ``Im(u)`` and the phase
-        ``arg(u)``.
-
-        Args:
-            idx: Frequency index to plot, in ``[0, n_frequencies)``.
-            title: Figure suptitle prefix; the plotted frequency is appended.
-            normalize: ``None``/``"none"`` to plot the raw field, or
-                ``"global"``/``"per_frame"`` to rescale the complex field by
-                its peak magnitude before the magnitude/real/imaginary panels
-                are drawn (both modes are equivalent for a single slice); the
-                phase panel is unaffected.
-
-        Raises:
-            ValueError: If ``idx`` is out of range or ``normalize`` is not
-                one of ``None``, ``"none"``, ``"global"``, ``"per_frame"``.
+        Panels are ``|u|``, ``Re(u)``, ``Im(u)`` and ``arg(u)``. ``normalize``
+        is ``None`` / ``"none"``, or ``"global"`` / ``"per_frame"`` (both
+        rescale by the slice's peak).
         """
         if not (0 <= idx < self.n_frequencies):
             raise ValueError(f"idx should be in [0, {self.n_frequencies}), got {idx}.")
         amp = self.amplitude[idx].detach().cpu().numpy()
-        # Normalise by this slice's peak magnitude.
         if normalize in ("global", "per_frame"):
             scale = float(np.max(np.abs(amp)))
             if scale > 0:
@@ -222,18 +200,9 @@ class Wavefield:
         title: str = "Wavefield |u|(f)",
         normalize: str | None = None,
     ) -> str:
-        """Animate ``|u|`` over frequency index and save as a GIF.
-
-        Args:
-            filename: Output path for the saved GIF.
-            fps: Frames per second.
-            cmap: Colormap for the ``|u|`` panel.
-            title: Title prefix; the frame's frequency is appended.
-            normalize: See :func:`_normalize_amplitude`.
-
-        Returns:
-            ``filename``.
-        """
+        """Animate ``|u|`` over frequency index into a GIF at ``filename`` and
+        return it; ``normalize`` is ``None`` / ``"none"``, ``"global"`` or
+        ``"per_frame"``."""
         amp = np.abs(self.amplitude.detach().cpu().numpy())
         amp = _normalize_amplitude(amp, normalize)
         nf = self.n_frequencies

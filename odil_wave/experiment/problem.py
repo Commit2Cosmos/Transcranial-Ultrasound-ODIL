@@ -11,9 +11,6 @@ inversion grid with the inversion operator: the inverse crime. When
 ``pml.observation_width`` differs from ``pml.width``, observations are instead
 synthesised on a separate forward grid with that PML width and reduced to
 receiver traces for the inverse solve (a deliberate modelling error).
-
-Numerical behaviour mirrors the notebook helpers ``build_setup`` /
-``helmholtz_solve`` exactly.
 """
 
 from __future__ import annotations
@@ -148,11 +145,7 @@ class Problem:
 def _build_velocity(
     grid: Grid, spec: ModelCfg, center: Tuple[float, float]
 ) -> VelocityModel:
-    """Build a :class:`VelocityModel` from a :class:`ModelCfg`.
-
-    The profile fields ``scale``, ``skull_alpha`` and ``skull_sigma`` are
-    forwarded as profile kwargs alongside ``spec.extra``.
-    """
+    """Build a :class:`VelocityModel` from a :class:`ModelCfg`."""
     kwargs = dict(spec.extra)
     if spec.profile == "overdensity" and "center" not in kwargs:
         kwargs["center"] = center
@@ -170,20 +163,8 @@ def _build_velocity(
 
 
 def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
-    """Resolve the acquisition ring centre to physical ``(x, y)`` coordinates.
-
-    Parameters
-    ----------
-    cfg : RunConfig
-        Config carrying ``acquisition.ring_center``.
-    grid : Grid
-        Grid whose interior centre a null ``ring_center`` means.
-
-    Returns
-    -------
-    tuple of float
-        The ring centre in metres.
-    """
+    """The acquisition ring centre ``(x, y)`` in metres; a null
+    ``ring_center`` means ``grid``'s interior centre."""
     rc = cfg.acquisition.ring_center
     if rc is None:
         return grid.interior_center
@@ -191,20 +172,8 @@ def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
 
 
 def _make_grid(cfg: RunConfig, pml_width: int) -> Grid:
-    """Build a :class:`Grid` from the config with an explicit PML width.
-
-    Parameters
-    ----------
-    cfg : RunConfig
-        Config carrying the ``grid``, ``pml``, ``time`` and ``runtime`` blocks.
-    pml_width : int
-        PML thickness in cells (inverse or forward grid).
-
-    Returns
-    -------
-    Grid
-        The constructed grid.
-    """
+    """The config's :class:`Grid` with ``pml_width`` cells of PML (inverse or
+    forward grid)."""
     g, pml, tm = cfg.grid, cfg.pml, cfg.time
     return Grid(
         interior_shape=tuple(g.interior_shape),
@@ -223,20 +192,7 @@ def _make_grid(cfg: RunConfig, pml_width: int) -> Grid:
 
 
 def _make_source(cfg: RunConfig, grid: Grid) -> SourceSignal:
-    """Build a :class:`SourceSignal` from the config on a given grid.
-
-    Parameters
-    ----------
-    cfg : RunConfig
-        Config carrying the ``source`` block.
-    grid : Grid
-        Grid the source is defined on.
-
-    Returns
-    -------
-    SourceSignal
-        The constructed source wavelet.
-    """
+    """The config's :class:`SourceSignal` on ``grid``."""
     s = cfg.source
     return SourceSignal(
         grid,

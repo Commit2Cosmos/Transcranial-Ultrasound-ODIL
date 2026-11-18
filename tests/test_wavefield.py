@@ -1,13 +1,7 @@
 """Tests for the ``odil_wave.wavefield`` package (``Wavefield`` and its helpers).
 
-Covers construction/validation, shapes/dtypes, the ``amplitude`` property
-(getter/setter), the private ``_normalize_amplitude``
-helper, and the ``show``/``animate`` plotting methods' validation and (lightweight,
-Agg-backend) success paths.
-
-Uses only small synthetic grids (no velocity solve) so every test is fast.
 ``matplotlib`` uses the non-interactive ``Agg`` backend so ``show``/``animate``
-don't block or pop up a window; see test_metrics.py's docstring for why.
+don't block or pop up a window.
 """
 
 from __future__ import annotations
@@ -59,9 +53,6 @@ def _make_freq(grid, freqs=(8e4,)):
     return FrequencySelection.from_frequencies(grid, list(freqs))
 
 
-# --------------------------------------------------------------------------- #
-# _normalize_amplitude
-# --------------------------------------------------------------------------- #
 def test_normalize_amplitude_none_and_literal_none_string_are_passthrough():
     amp = np.array([[1.0, 2.0], [3.0, 4.0]])
     assert np.array_equal(_normalize_amplitude(amp, None), amp)
@@ -174,9 +165,6 @@ def test_wavefield_rejects_incompatible_frequency_selection():
         Wavefield(grid=grid_a, frequency_selection=freq_from_b)
 
 
-# --------------------------------------------------------------------------- #
-# amplitude property (getter/setter)
-# --------------------------------------------------------------------------- #
 def test_amplitude_setter_casts_and_reshapes_numpy_array():
     grid = _make_grid()
     freq = _make_freq(grid, [8e4, 9e4])
@@ -210,9 +198,6 @@ def test_amplitude_setter_rejects_wrong_element_count():
         wf.amplitude = torch.zeros(3)  # nf*nx*ny != 3 for this grid
 
 
-# --------------------------------------------------------------------------- #
-# show()
-# --------------------------------------------------------------------------- #
 def test_show_raises_for_out_of_range_idx():
     grid = _make_grid()
     wf = Wavefield(grid=grid, frequency_selection=_make_freq(grid, [8e4]))
@@ -238,9 +223,6 @@ def test_show_runs_for_valid_idx_and_normalize_modes():
         wf.show(idx=1, normalize=normalize)  # must not raise / hang
 
 
-# --------------------------------------------------------------------------- #
-# animate()
-# --------------------------------------------------------------------------- #
 def test_animate_writes_a_nonempty_gif(tmp_path):
     grid = _make_grid()
     freq = _make_freq(grid, [8e4, 9e4])

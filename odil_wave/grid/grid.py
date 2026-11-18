@@ -35,7 +35,7 @@ class Grid:
     for plotting and indexing. The wave-equation operators consume the
     matching non-dimensional companions (`dx_nd`, `dy_nd`, `dt_nd`,
     `sigma_x_nd`, `sigma_y_nd`) so the discrete residual is dimensionless.
-    Defaults: ``c0 = c_max`` and ``L0 = max(interior extents)``.
+    ``None`` scales default to ``c0 = c_max`` and ``L0 = max(interior extents)``.
     """
 
     # Required: they define the problem (ADR 0001).
@@ -81,15 +81,8 @@ class Grid:
     sigma_y_nd: torch.Tensor = field(init=False, repr=False)
 
     def __post_init__(self):
-        """Compute derived grid quantities after dataclass initialisation.
-
-        Notes
-        -----
-        Resolves the compute device (falling back to CPU when MPS/CUDA is
-        unavailable), builds the PML-extended grid and coordinate tensors,
-        and computes the non-dimensional companions of the spacings and
-        PML profiles.
-        """
+        """Derive the full grid; an unavailable MPS/CUDA device falls back to
+        the CPU."""
         self.interior_nx, self.interior_ny = self.interior_shape
         self.device = torch.device(self.device)
         if isinstance(self.dtype, str):
@@ -153,8 +146,6 @@ class Grid:
 
         self.sigma_x, self.sigma_y = self._build_pml_profiles()
 
-        # Characteristic scales for non-dimensionalisation.
-        # Default L0 to the larger interior side, c0 to c_max.
         if self.L0 is None:
             self.L0 = float(max(ix_max - ix_min, iy_max - iy_min))
         else:
@@ -176,78 +167,31 @@ class Grid:
 
     @property
     def shape(self) -> Tuple[int, int]:
-        """Total grid shape including the PML layer.
-
-        Returns
-        -------
-        tuple of int
-            ``(nx, ny)`` of the full extended grid.
-        """
+        """``(nx, ny)`` of the full grid, PML included."""
         return (self.nx, self.ny)
 
     def natural_source_amplitude(self, f0: float) -> float:
-        """Physical source amplitude that lands the wavefield near O(1).
-
-        Parameters
-        ----------
-        f0 : float
-            Source centre frequency in Hz.
-
-        Returns
-        -------
-        float
-            Amplitude ``2 * f0**2``.
-
-        Notes
-        -----
-        Raises ``ValueError`` if ``f0`` is not positive.
-        """
+        """Physical source amplitude at centre frequency ``f0`` (Hz) that lands
+        the wavefield near O(1)."""
         if f0 <= 0:
             raise ValueError("f0 must be positive.")
         return 2.0 * f0**2
 
     @property
     def interior_slice(self) -> Tuple[slice, slice]:
-        """Slice into a full-grid tensor that selects the interior.
-
-        Returns
-        -------
-        tuple of slice
-            ``(slice_x, slice_y)`` excluding the PML layer.
-        """
+        """``(slice_x, slice_y)`` selecting the interior of a full-grid tensor."""
         p = self.pml_width
         return (slice(p, p + self.interior_nx), slice(p, p + self.interior_ny))
 
     @property
     def interior_center(self) -> Tuple[float, float]:
-        """Physical ``(x, y)`` centre of the interior (non-PML) region.
-
-        Returns
-        -------
-        tuple of float
-            Midpoint of ``interior_extent`` along each axis.
-        """
+        """Physical ``(x, y)`` centre of the interior, metres."""
         (x0, x1), (y0, y1) = self.interior_extent
         return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
 
     def _sigma_max(self, L_pml_phys: float) -> float:
-        """Peak PML conductivity for a target reflection coefficient.
-
-        Parameters
-        ----------
-        L_pml_phys : float
-            Physical thickness of the PML layer.
-
-        Returns
-        -------
-        float
-            ``sigma_max`` for the polynomial absorption profile.
-
-        Notes
-        -----
-        Raises ``ValueError`` if ``L_pml_phys`` or ``c_max`` is non-positive,
-        or if ``pml_R0`` is not strictly between 0 and 1.
-        """
+        """Peak PML conductivity (1/s) for ``pml_R0`` over thickness
+        ``L_pml_phys`` (m)."""
         if L_pml_phys <= 0:
             raise ValueError("L_pml_phys must be positive.")
         if self.c_max <= 0:
@@ -260,13 +204,7 @@ class Grid:
         )
 
     def _build_pml_profiles(self):
-        """Build the ``sigma_x`` and ``sigma_y`` PML conductivity profiles.
-
-        Returns
-        -------
-        tuple of torch.Tensor
-            ``(sigma_x, sigma_y)`` on the full grid, zero in the interior.
-        """
+        """``(sigma_x, sigma_y)`` PML conductivity on the full grid (1/s)."""
         p = self.pml_width
         if p == 0:
             zeros = torch.zeros(self.nx, self.ny, dtype=self.dtype, device=self.device)
@@ -294,33 +232,11 @@ class Grid:
         return sigma_x, sigma_y
 
     def cfl(self, c_max: float) -> float:
-        """Courant number at a given maximum velocity.
-
-        Parameters
-        ----------
-        c_max : float
-            Maximum velocity in m/s.
-
-        Returns
-        -------
-        float
-            CFL number for the current spacings and timestep.
-        """
+        """Courant number at maximum velocity ``c_max`` (m/s)."""
         return c_max * self.dt * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
 
     def plot_absorption_profile(self, ax=None):
-        """Plot the 2D PML absorption ``sigma_x + sigma_y`` over the full grid.
-
-        Parameters
-        ----------
-        ax : matplotlib.axes.Axes, optional
-            Axes to draw on; a new figure is created when omitted.
-
-        Returns
-        -------
-        matplotlib.axes.Axes
-            The axes containing the plot.
-        """
+        """Plot the PML absorption ``sigma_x + sigma_y`` over the full grid."""
         if ax is None:
             _, ax = plt.subplots(figsize=(5.5, 4.5))
         (xmin, xmax), (ymin, ymax) = self.extent
@@ -353,14 +269,7 @@ class Grid:
 
     @property
     def summary(self) -> str:
-        """Human-readable multi-line summary of the grid configuration.
-
-        Returns
-        -------
-        str
-            Interior/total shapes, spacings, CFL number, extents and
-            non-dimensional scales.
-        """
+        """Human-readable multi-line summary of the grid."""
         (ix0, ix1), (iy0, iy1) = self.interior_extent
         (xmin, xmax), (ymin, ymax) = self.extent
         x_mult, x_unit = length_scale(max(abs(xmax), abs(ymax)))
