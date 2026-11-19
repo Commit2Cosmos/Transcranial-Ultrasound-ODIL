@@ -110,7 +110,7 @@ def test_joint_optimiser_requires_problem_params(name, band):
 
 
 def test_library_default_reads_the_signature():
-    assert library_default(Grid, "pml_width") == 40
+    assert library_default(Grid, "pml_width") == 15
     assert library_default(HelmholtzSolver.solve, "verbose") is False
 
 

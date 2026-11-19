@@ -1,4 +1,5 @@
-"""Spatial finite-difference operators (Laplacian)."""
+"""Spatial finite-difference operators: the order-P second differences along
+each axis. The PML's stretch of them lives in :mod:`.conditions`."""
 
 import numpy as np
 import torch
@@ -22,55 +23,54 @@ FD2_COEFFS: dict[int, tuple[float, tuple[float, ...]]] = {
 }
 
 
-def laplacian_stencil(
-    space_order: int, dx_nd: float, dy_nd: float
-) -> tuple[np.ndarray, int]:
-    """``(kernel, pad)``: the float64 cross-stencil Laplacian ``(2*pad + 1,
-    2*pad + 1)`` for ``space_order`` (a key of :data:`FD2_COEFFS`) and
-    non-dimensional spacings."""
+def second_difference_stencil(space_order: int, h_nd: float) -> np.ndarray:
+    """The float64 1D stencil ``(2*pad + 1,)`` of ``d²/dx²`` for
+    ``space_order`` (a key of :data:`FD2_COEFFS`) at non-dimensional spacing
+    ``h_nd``."""
     if space_order not in FD2_COEFFS:
         raise ValueError(f"Unsupported space order: {space_order}")
     center, coeffs = FD2_COEFFS[space_order]
-    cx = 1.0 / dx_nd**2
-    cy = 1.0 / dy_nd**2
     pad = len(coeffs)
-    K = np.zeros((2 * pad + 1, 2 * pad + 1), dtype=np.float64)
+    k = np.zeros(2 * pad + 1, dtype=np.float64)
     for offset, ck in enumerate(coeffs, start=1):
-        K[pad - offset, pad] = K[pad + offset, pad] = ck * cx
-        K[pad, pad - offset] = K[pad, pad + offset] = ck * cy
-    K[pad, pad] = center * (cx + cy)
-    return K, pad
+        k[pad - offset] = k[pad + offset] = ck
+    k[pad] = center
+    return k / h_nd**2
 
 
-def _apply_conv_laplacian(
-    utm: torch.Tensor, kernel: torch.Tensor, pad: int
-) -> torch.Tensor:
-    """Laplacian of ``utm`` (spatial dims last, may be complex) with reflect
-    padding (Neumann mirror)."""
+def _apply_conv(utm: torch.Tensor, kernel: torch.Tensor, pad: tuple) -> torch.Tensor:
+    """``kernel`` convolved over ``utm``'s last two dims (may be complex), with
+    reflect padding ``pad`` (Neumann mirror)."""
     if utm.is_complex():
         return torch.complex(
-            _apply_conv_laplacian(utm.real, kernel, pad),
-            _apply_conv_laplacian(utm.imag, kernel, pad),
+            _apply_conv(utm.real, kernel, pad), _apply_conv(utm.imag, kernel, pad)
         )
     spatial = utm.shape[-2:]
     leading = utm.shape[:-2]
     x = utm.reshape(-1, 1, *spatial)
-    x = F.pad(x, (pad, pad, pad, pad), mode="reflect")
+    x = F.pad(x, pad, mode="reflect")
     out = F.conv2d(x, kernel)
     return out.reshape(*leading, *spatial)
 
 
 class Laplacian:
-    """Discrete Laplacian ``u_xx + u_yy`` of FD order ``space_order`` with
-    reflect padding, on the wavefield's grid."""
+    """Discrete ``u_xx`` and ``u_yy`` of FD order ``space_order`` with reflect
+    padding, on the wavefield's grid."""
 
     def __init__(self, wavefield: Wavefield, *, space_order: int) -> None:
-
         g = wavefield.grid
-        K, self._pad = laplacian_stencil(space_order, g.dx_nd, g.dy_nd)
-        self._kernel = torch.as_tensor(K, dtype=g.dtype, device=g.device)[None, None]
+        kx = second_difference_stencil(space_order, g.dx_nd)
+        ky = second_difference_stencil(space_order, g.dy_nd)
+        p = len(kx) // 2
+        self._kx = torch.as_tensor(kx, dtype=g.dtype, device=g.device).view(1, 1, -1, 1)
+        self._ky = torch.as_tensor(ky, dtype=g.dtype, device=g.device).view(1, 1, 1, -1)
+        self._pad_x = (0, 0, p, p)
+        self._pad_y = (p, p, 0, 0)
 
-    def apply(self, utm: torch.Tensor) -> torch.Tensor:
-        """Discrete Laplacian of ``utm`` (spatial dims last; may be complex),
-        same shape and dtype."""
-        return _apply_conv_laplacian(utm, self._kernel, self._pad)
+    def axes(self, utm: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(u_xx, u_yy)`` of ``utm`` (spatial dims last; may be complex),
+        each shaped and typed as ``utm``."""
+        return (
+            _apply_conv(utm, self._kx, self._pad_x),
+            _apply_conv(utm, self._ky, self._pad_y),
+        )

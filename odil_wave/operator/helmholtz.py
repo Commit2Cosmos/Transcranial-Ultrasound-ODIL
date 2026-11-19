@@ -11,7 +11,7 @@ from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.defaults import library_default
 from odil_wave.wavefield import Wavefield
-from .spatial import laplacian_stencil
+from .spatial import second_difference_stencil
 from .utils import WaveEquation
 
 
@@ -37,33 +37,61 @@ def _reflect_index(idx: np.ndarray, n: int) -> np.ndarray:
     return np.where(m >= n, period - m, m)
 
 
-@functools.lru_cache(maxsize=8)
-def laplacian_csr(
-    nx: int, ny: int, space_order: int, dx_nd: float, dy_nd: float
-) -> sp.csr_matrix:
-    """Sparse Laplacian with Neumann-mirror (reflect) boundaries, cached per grid.
-
-    Row-major ``(nx, ny)`` flattening, as ``tensor.reshape(-1)``. The matrix is
-    shared between callers: don't modify it in place.
-    """
-    kernel, pad = laplacian_stencil(space_order, dx_nd, dy_nd)
-    i, j = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
-    i, j = i.reshape(-1), j.reshape(-1)
+@functools.lru_cache(maxsize=16)
+def second_difference_1d(n: int, space_order: int, h_nd: float) -> sp.csr_matrix:
+    """Sparse ``(n, n)`` order-P ``d²/dx²`` with Neumann-mirror (reflect)
+    boundaries, cached. Shared between callers: don't modify it in place."""
+    kernel = second_difference_stencil(space_order, h_nd)
+    pad = len(kernel) // 2
+    i = np.arange(n)
     rows, cols, data = [], [], []
     # Within a row, COO -> CSR sums entries that reflect onto the same column
     # in the order given, so the stencil order fixes the rounding.
-    for di in range(-pad, pad + 1):
-        for dj in range(-pad, pad + 1):
-            coeff = kernel[di + pad, dj + pad]
-            if coeff == 0.0:
-                continue
-            rows.append(i * ny + j)
-            cols.append(_reflect_index(i + di, nx) * ny + _reflect_index(j + dj, ny))
-            data.append(np.full(nx * ny, coeff))
+    for d in range(-pad, pad + 1):
+        rows.append(i)
+        cols.append(_reflect_index(i + d, n))
+        data.append(np.full(n, kernel[d + pad]))
     return sp.csr_matrix(
         (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
-        shape=(nx * ny, nx * ny),
+        shape=(n, n),
     )
+
+
+@functools.lru_cache(maxsize=16)
+def _one_sided_differences_1d(n: int) -> Tuple[sp.csr_matrix, sp.csr_matrix]:
+    """``(D⁺, D⁻)``: nodes to the ``n + 1`` faces (ghosts included, reflect)
+    and back, unit spacing."""
+    k = np.arange(n + 1)
+    d_plus = sp.csr_matrix(
+        (
+            np.concatenate([np.ones(n + 1), -np.ones(n + 1)]),
+            (
+                np.concatenate([k, k]),
+                np.concatenate([_reflect_index(k, n), _reflect_index(k - 1, n)]),
+            ),
+        ),
+        shape=(n + 1, n),
+    )
+    i = np.arange(n)
+    d_minus = sp.csr_matrix(
+        (
+            np.concatenate([np.ones(n), -np.ones(n)]),
+            (np.concatenate([i, i]), np.concatenate([i + 1, i])),
+        ),
+        shape=(n, n + 1),
+    )
+    return d_plus, d_minus
+
+
+def stretched_second_difference_1d(
+    n: int, space_order: int, h_nd: float, a_faces: np.ndarray
+) -> sp.csr_matrix:
+    """Sparse ``Λ̃ = Λ + D⁻ diag(a) D⁺ / h²`` along one axis, ``a_faces`` the
+    PML's ``1/s - 1`` on the ``n + 1`` faces (see
+    :class:`~odil_wave.operator.conditions.Pml`)."""
+    d_plus, d_minus = _one_sided_differences_1d(n)
+    corr = d_minus @ sp.diags(a_faces) @ d_plus / h_nd**2
+    return (second_difference_1d(n, space_order, h_nd) + corr).tocsr()
 
 
 class HelmholtzSolver:
@@ -89,12 +117,6 @@ class HelmholtzSolver:
             wavefield, space_order=space_order, damping_scale=damping_scale
         )
 
-    def _laplacian_csr(self) -> sp.csr_matrix:
-        grid = self.wavefield.grid
-        return laplacian_csr(
-            grid.nx, grid.ny, self.space_order, float(grid.dx_nd), float(grid.dy_nd)
-        )
-
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
         """Sparse H at full-grid ``c`` and frequency index ``freq_idx``: the
         matrix of the matrix-free residual."""
@@ -105,34 +127,33 @@ class HelmholtzSolver:
         c0 = float(grid.c0)
         c_nd2 = (c.detach().cpu().numpy().astype(np.float64) / c0) ** 2
         c_nd2 = c_nd2.reshape(-1)
-
-        lam_t = complex(freq.lambda_t[freq_idx].detach().cpu().numpy())
         lam_tt = float(freq.lambda_tt[freq_idx].detach().cpu().numpy())
 
-        sig_sum = (
-            (grid.sigma_x_nd + grid.sigma_y_nd)
-            .detach()
-            .cpu()
-            .numpy()
-            .astype(np.float64)
-        ).reshape(-1)
-        sig_prod = (
-            (grid.sigma_x_nd * grid.sigma_y_nd)
-            .detach()
-            .cpu()
-            .numpy()
-            .astype(np.float64)
-        ).reshape(-1)
+        pml = self.wave_eq.pml
+        s_x = pml.s_x[freq_idx, :, 0].detach().cpu().numpy().astype(np.complex128)
+        s_y = pml.s_y[freq_idx, 0, :].detach().cpu().numpy().astype(np.complex128)
+        a_x = pml.a_x[freq_idx, :, 0].detach().cpu().numpy().astype(np.complex128)
+        a_y = pml.a_y[freq_idx, 0, :].detach().cpu().numpy().astype(np.complex128)
+        Lx = sp.kron(
+            stretched_second_difference_1d(
+                nx, self.space_order, float(grid.dx_nd), a_x
+            ),
+            sp.identity(ny),
+        )
+        Ly = sp.kron(
+            sp.identity(nx),
+            stretched_second_difference_1d(
+                ny, self.space_order, float(grid.dy_nd), a_y
+            ),
+        )
+        # Row-major (nx, ny) flattening: x is the slow index.
+        sx_nodes = np.repeat(s_x, ny)
+        sy_nodes = np.tile(s_y, nx)
+        lap = sp.diags(sy_nodes) @ Lx + sp.diags(sx_nodes) @ Ly
 
         cd = np_complex_dtype(self.wavefield.cdtype)
-        # Diagonal: lambda_tt + w * (sigma_sum * lambda_t + sigma_prod)
-        diag = (lam_tt + self.damping_scale * (sig_sum * lam_t + sig_prod)).astype(cd)
-
-        L = self._laplacian_csr()
-        # H = diag(a) - diag(c_nd^2) @ L
-        H = sp.diags(diag, format="csr", dtype=cd) - sp.diags(c_nd2, format="csr").dot(
-            L
-        ).astype(cd)
+        mass = lam_tt * sx_nodes * sy_nodes
+        H = (sp.diags(mass) - sp.diags(c_nd2) @ lap).astype(cd)
         assert H.shape == (n, n)
         return H.tocsr()
 
@@ -161,10 +182,6 @@ class HelmholtzSolver:
         solve_times: list[float] = []
         factors: List[SuperLU] = []
         t_all0 = time.perf_counter()
-
-        t_lap0 = time.perf_counter()
-        _ = self._laplacian_csr()
-        t_lap = time.perf_counter() - t_lap0
 
         for k in range(nf):
             t0 = time.perf_counter()
@@ -227,7 +244,7 @@ class HelmholtzSolver:
                 f"|r|/|src| = {d['ratio']:.3e}, |u|_max = {d['u_absmax']:.3e}"
             )
             print(
-                f"  timings: lap_csr={t_lap:.3f}s  "
+                "  timings: "
                 f"assemble={d['assemble_total_s']:.3f}s  "
                 f"factor={d['factor_total_s']:.3f}s  "
                 f"solve={d['solve_total_s']:.3f}s  "

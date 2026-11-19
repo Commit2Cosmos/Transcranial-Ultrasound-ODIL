@@ -1,11 +1,11 @@
-from .conditions import Sponge
+from .conditions import Pml
 from .spatial import Laplacian
 from .utils import WaveEquation
 from .helmholtz import HelmholtzSolver
 
 __all__ = [
     "Laplacian",
-    "Sponge",
+    "Pml",
     "WaveEquation",
     "HelmholtzSolver",
 ]

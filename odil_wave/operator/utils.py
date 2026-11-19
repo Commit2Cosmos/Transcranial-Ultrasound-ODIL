@@ -6,28 +6,21 @@ import torch
 
 from odil_wave.wavefield import Wavefield
 from .spatial import Laplacian
-from .conditions import Sponge
+from .conditions import Pml
 
 
 @dataclass
 class WaveEquation:
-    """Discrete frequency-domain acoustic residual matching the time ODIL form.
+    """Discrete frequency-domain acoustic residual with a stretched-coordinate
+    PML (:class:`~odil_wave.operator.conditions.Pml`)::
 
-    Time residual (normalized)::
+        r(ω) = λ_tt s_x s_y u - c'^2 (s_y Λ̃_x u + s_x Λ̃_y u) - f̂'
 
-        r = D_tt[u] - c'^2 ∇'^2 u - f'
-          + w_sponge [ σ_sum_nd D_t[u] + σ_prod_nd u ]
-
-    with ``w_sponge = damping_scale`` (``1`` = designed PML absorption, ``0``
-    disables it). Defaults follow ADR 0001.
-
-    Frequency form (2nd-order centered symbols from FrequencySelection)::
-
-        r(ω) = λ_tt u - c'^2 ∇'^2 u - f̂'
-             + w_sponge [ σ_sum_nd λ_t u + σ_prod_nd u ]
-
-    with ``λ_t = i sin(ω_nd Δt') / Δt'`` and
-    ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)``.
+    with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed PML
+    absorption, ``0`` disables it) and the 2nd-order centred symbol
+    ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)`` from FrequencySelection. In the
+    interior ``s = 1`` and ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow
+    ADR 0001.
 
     Amplitudes / sources are complex ``(n_shots, n_frequencies, nx, ny)``.
     """
@@ -36,13 +29,13 @@ class WaveEquation:
     space_order: int = field(kw_only=True)
     damping_scale: float = field(default=1.0, kw_only=True)
 
+    pml: Pml = field(init=False)
     _lap: Laplacian = field(init=False)
-    _sponge: Sponge = field(init=False)
 
     def __post_init__(self):
-        """Build the Laplacian for ``space_order`` and the sponge."""
+        """Build the second differences for ``space_order`` and the PML."""
         self._lap = Laplacian(self.wavefield, space_order=self.space_order)
-        self._sponge = Sponge(self.wavefield, self.damping_scale)
+        self.pml = Pml(self.wavefield, self.damping_scale)
 
     def sources(self, geometry) -> torch.Tensor:
         """Every shot's source term, scaled by ``t0**2`` as :meth:`residual`
@@ -67,11 +60,8 @@ class WaveEquation:
         ``t0**2``."""
         c0 = self.wavefield.grid.c0
         wsp_nd = wsp / c0
-        freq = self.wavefield.frequency_selection
-        lambda_t, lambda_tt = freq.symbols_broadcast()
-        lambda_t = lambda_t.to(dtype=amp.dtype, device=amp.device)
+        _, lambda_tt = self.wavefield.frequency_selection.symbols_broadcast()
         lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
-
-        lap = self._lap.apply(amp)
-        r = lambda_tt * amp - wsp_nd**2 * lap - source
-        return self._sponge.apply_residual(r, amp, lambda_t)
+        u_xx, u_yy = self._lap.axes(amp)
+        lap = self.pml.stretched_laplacian(amp, u_xx, u_yy)
+        return self.pml.mass(lambda_tt) * amp - wsp_nd**2 * lap - source

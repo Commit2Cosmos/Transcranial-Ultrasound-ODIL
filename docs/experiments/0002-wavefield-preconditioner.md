@@ -131,3 +131,5 @@ Current.
 2026-11-15 · note · #146 · L-BFGS closures no longer compute the full-grid diagnostic norms, so `wall_s` drops in both arms by a different share; the equal-wall-time reading (0.54× against the 0.5× threshold) may move. Results at equal outer budget are unchanged.
 
 2026-11-19 · note · #162 · The source spectrum is now DFT × dt, scaling every wavefield by dt; the scale-normalised objective is unchanged, but round-off differs, so L-BFGS trajectories and exact numbers will not reproduce bit-for-bit. Conclusions should hold.
+
+2026-11-19 · note · #166 · The PML is now a 15-cell stretched-coordinate PML, not a 40-cell sponge: a 155² grid instead of 205², with different PML rows. The `none` arm's per-iteration convergence and both arms' wall time change (30 iterations of the default config: `rel_wavefield_error` 0.613 against 0.597, 23% less wall time), so the equal-budget ratio and the equal-wall-time reading may move. The preconditioner's PML is exact in `A(c₀)⁻¹`, so its arm should be less affected.

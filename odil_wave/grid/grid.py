@@ -15,7 +15,7 @@ _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
 @dataclass(kw_only=True)
 class Grid:
-    """2D space + time discretization with a PML sponge layer wrapping the interior.
+    """2D space + time discretization with a PML wrapping the interior.
 
     The user specifies the *interior* (non-PML) shape and physical extent.
     The PML adds `pml_width` extra cells per side, extending the total grid
@@ -45,7 +45,7 @@ class Grid:
     c_max: float
     t_max: float  # time window [s]; sets dt and the FFT bins
     # The library owns these defaults; the run config reads them (ADR 0001).
-    pml_width: int = 40  # extra cells per side wrapping the interior
+    pml_width: int = 15  # extra cells per side wrapping the interior (#37)
     pml_power: int = 3  # sigma(d) = sigma_max * (d / L_pml)^pml_power
     pml_R0: float = 1e-6  # target theoretical reflection coefficient
     init_nt: Optional[int] = 1300  # None -> CFL-derived from c_max
@@ -79,6 +79,10 @@ class Grid:
     sigma_y: torch.Tensor = field(init=False, repr=False)
     sigma_x_nd: torch.Tensor = field(init=False, repr=False)
     sigma_y_nd: torch.Tensor = field(init=False, repr=False)
+    # (nx - 1,) and (ny - 1,): at the faces between nodes, for the stretched
+    # Laplacian.
+    sigma_x_faces_nd: torch.Tensor = field(init=False, repr=False)
+    sigma_y_faces_nd: torch.Tensor = field(init=False, repr=False)
 
     def __post_init__(self):
         """Derive the full grid; an unavailable MPS/CUDA device falls back to
@@ -164,6 +168,8 @@ class Grid:
         # sigma has units of 1/s; sigma * t0 is dimensionless.
         self.sigma_x_nd = self.sigma_x * self.t0
         self.sigma_y_nd = self.sigma_y * self.t0
+        self.sigma_x_faces_nd = self._sigma_1d(self.nx, self.dx, faces=True) * self.t0
+        self.sigma_y_faces_nd = self._sigma_1d(self.ny, self.dy, faces=True) * self.t0
 
     @property
     def shape(self) -> Tuple[int, int]:
@@ -203,30 +209,24 @@ class Grid:
             2.0 * L_pml_phys
         )
 
-    def _build_pml_profiles(self):
-        """``(sigma_x, sigma_y)`` PML conductivity on the full grid (1/s)."""
+    def _sigma_1d(self, n: int, h: float, faces: bool) -> torch.Tensor:
+        """PML conductivity (1/s) along one axis of ``n`` nodes, at the nodes or
+        at the ``n - 1`` faces between them. The profile starts at the first
+        PML face, so interior nodes and the faces around them stay at 0."""
         p = self.pml_width
+        pos = torch.arange(n - 1 if faces else n, dtype=self.dtype, device=self.device)
+        if faces:
+            pos = pos + 0.5
         if p == 0:
-            zeros = torch.zeros(self.nx, self.ny, dtype=self.dtype, device=self.device)
-            return zeros, zeros
-        L_pml_x = p * self.dx
-        L_pml_y = p * self.dy
-        sigma_max_x = self._sigma_max(L_pml_x)
-        sigma_max_y = self._sigma_max(L_pml_y)
+            return torch.zeros_like(pos)
+        depth = torch.clamp(torch.maximum(p - pos, pos - (n - 1 - p)) - 0.5, min=0.0)
+        L_pml = p * h
+        return self._sigma_max(L_pml) * (depth * h / L_pml) ** self.pml_power
 
-        i = torch.arange(self.nx, dtype=self.dtype, device=self.device)
-        j = torch.arange(self.ny, dtype=self.dtype, device=self.device)
-
-        d_x = (
-            torch.clamp(p - i, min=0.0) + torch.clamp(i - (self.nx - 1 - p), min=0.0)
-        ) * self.dx
-        d_y = (
-            torch.clamp(p - j, min=0.0) + torch.clamp(j - (self.ny - 1 - p), min=0.0)
-        ) * self.dy
-
-        sigma_x_1d = sigma_max_x * (d_x / L_pml_x) ** self.pml_power
-        sigma_y_1d = sigma_max_y * (d_y / L_pml_y) ** self.pml_power
-
+    def _build_pml_profiles(self):
+        """``(sigma_x, sigma_y)`` PML conductivity at the full grid's nodes (1/s)."""
+        sigma_x_1d = self._sigma_1d(self.nx, self.dx, faces=False)
+        sigma_y_1d = self._sigma_1d(self.ny, self.dy, faces=False)
         sigma_x = sigma_x_1d.view(-1, 1).expand(self.nx, self.ny).contiguous()
         sigma_y = sigma_y_1d.view(1, -1).expand(self.nx, self.ny).contiguous()
         return sigma_x, sigma_y
