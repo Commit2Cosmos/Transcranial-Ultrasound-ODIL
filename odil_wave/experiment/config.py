@@ -142,8 +142,8 @@ class TimeCfg:
     """Time axis; it fixes the FFT bins the band frequencies snap to.
 
     Params:
-    * ``t_max``: s; time window (with ``init_nt`` sets ``dt`` and the FFT
-      frequency resolution ``1 / t_max``).
+    * ``t_max``: s; time window (with ``init_nt`` sets ``dt = t_max / (nt -
+      1)`` and the FFT bin spacing ``1 / (nt dt)``).
     * ``init_nt``: ``None`` -> CFL-derived from ``grid.c_max``, else int >= 2
       time samples.
     * ``cfl_safety``: (0, 1]; CFL fraction used to pick ``dt`` when

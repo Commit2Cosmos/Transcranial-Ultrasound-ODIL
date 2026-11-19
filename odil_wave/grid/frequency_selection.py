@@ -42,7 +42,7 @@ class FrequencySelection:
     """FFT bins and matching physical / normalised frequencies.
 
     All frequency-domain sources and observations must use the same instance
-    (same bins and FFT normalization).
+    (same bins).
     """
 
     grid: Grid
@@ -53,7 +53,6 @@ class FrequencySelection:
     n_time: int
     dt: float
     dt_nd: float
-    fft_norm: Optional[str] = None  # torch.fft norm flag; None = unnormalized
     requested_frequencies: Optional[torch.Tensor] = None
     lambda_t: torch.Tensor = field(init=False, repr=False)
     lambda_tt: torch.Tensor = field(init=False, repr=False)
@@ -121,7 +120,6 @@ class FrequencySelection:
         grid: Grid,
         fft_bins: Union[Sequence[int], torch.Tensor],
         *,
-        fft_norm: Optional[str] = None,
         requested_frequencies: Optional[Union[Sequence[float], torch.Tensor]] = None,
     ) -> "FrequencySelection":
         """Build from integer rFFT / FFT bin indices on ``grid.t``."""
@@ -150,7 +148,6 @@ class FrequencySelection:
             n_time=n_time,
             dt=dt,
             dt_nd=float(grid.dt_nd),
-            fft_norm=fft_norm,
             requested_frequencies=requested_frequencies,
         )
 
@@ -159,8 +156,6 @@ class FrequencySelection:
         cls,
         grid: Grid,
         frequencies_hz: Union[Sequence[float], torch.Tensor],
-        *,
-        fft_norm: Optional[str] = None,
     ) -> "FrequencySelection":
         """Map physical frequencies (Hz) to nearest positive FFT bins on ``grid.t``."""
         f_req = torch.as_tensor(
@@ -179,15 +174,17 @@ class FrequencySelection:
         return cls.from_bins(
             grid,
             bins,
-            fft_norm=fft_norm,
             requested_frequencies=f_req,
         )
 
     def fft_time_series(self, signal: torch.Tensor, dim: int = -3) -> torch.Tensor:
-        """FFT ``signal`` along ``dim`` and gather selected bins.
+        """Continuous Fourier transform of ``signal`` along ``dim`` on the
+        selected bins, approximated as DFT x ``dt``, so it does not depend on
+        ``nt`` at a fixed bin frequency.
 
         ``signal`` is real-valued in time. Returns complex spectrum with the
-        selected frequency axis replacing the time axis at ``dim``.
+        selected frequency axis replacing the time axis at ``dim``; units of
+        ``signal`` x s.
         """
-        spec = torch.fft.fft(signal, dim=dim, norm=self.fft_norm)
+        spec = torch.fft.fft(signal, dim=dim) * self.dt
         return torch.index_select(spec, dim, self.fft_bins)

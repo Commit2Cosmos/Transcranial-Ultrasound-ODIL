@@ -113,10 +113,8 @@ class SourceSignal:
         return self._signal
 
     def spectrum(self, frequency_selection) -> torch.Tensor:
-        """Complex spectrum of ``s(t)`` on ``FrequencySelection`` bins.
-
-        FFT of the waveform on ``grid.t`` with the same norm/bins as observations.
-        """
+        """Complex spectrum of ``s(t)`` on ``FrequencySelection`` bins, as
+        :meth:`FrequencySelection.fft_time_series` of the waveform on ``grid.t``."""
         s_t = self.waveform()
         return frequency_selection.fft_time_series(s_t, dim=0)
 

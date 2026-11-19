@@ -69,13 +69,14 @@ def _single(x) -> np.ndarray:
     return x.astype(np.complex64 if np.iscomplexobj(x) else np.float32)
 
 
-def band_label(frequencies_hz: List[float]) -> str:
-    """A band's kHz label in its directory name: ``"60khz"`` for a single
-    frequency, else ``"40-70khz"`` (min-max)."""
+def band_label(frequencies_hz: List[float], decimals: int = 0) -> str:
+    """A band's kHz label: ``"60khz"`` for a single frequency, else
+    ``"40-70khz"`` (min-max). Directory names take the requested frequencies
+    at ``decimals=0``; logs and plots the snapped ones at ``decimals=2``."""
     khz = [f / 1e3 for f in frequencies_hz]
     if len(khz) == 1:
-        return f"{int(round(khz[0]))}khz"
-    return f"{int(round(min(khz)))}-{int(round(max(khz)))}khz"
+        return f"{khz[0]:.{decimals}f}khz"
+    return f"{min(khz):.{decimals}f}-{max(khz):.{decimals}f}khz"
 
 
 # Matches every :func:`band_dir_name`.

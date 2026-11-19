@@ -166,12 +166,12 @@ def test_cdtype_matches_grid_dtype(grid):
 
 
 def test_fft_time_series_selects_bins(grid):
-    """FFT of a time signal returns only the selected bins along the FFT axis."""
+    """The transform of a time signal is its DFT x dt on the selected bins only."""
     fs = FrequencySelection.from_bins(grid, [2, 5])
     signal = torch.randn(grid.nt, dtype=grid.dtype)
     spec = fs.fft_time_series(signal, dim=0)
     assert spec.shape == (2,)
-    full = torch.fft.fft(signal, dim=0)
+    full = torch.fft.fft(signal, dim=0) * grid.dt
     assert torch.allclose(spec, full[torch.tensor([2, 5])])
 
 

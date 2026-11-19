@@ -113,6 +113,30 @@ def test_run_inverse_tiny_problem_recovers(tiny_run_config, new_run):
     assert losses[-1] <= losses[0]
 
 
+def test_band_log_shows_the_snapped_frequencies_and_its_dir_the_requested(
+    tiny_run_config, new_run, capsys
+):
+    """The band's log line shows the FFT-bin frequencies it solved at; its
+    directory keeps the requested ones, so paths do not move with ``nt``."""
+    requested = [30e3, 40e3]
+    user_cfg = deep_merge(
+        tiny_run_config,
+        {
+            "continuation": {"bands": [{"frequencies_hz": requested}]},
+            "optimiser": {"n_iter": 1},
+        },
+    )
+    cfg = resolve_config(user_cfg)
+    grid = build_problem(cfg).grid
+    lo, hi = FrequencySelection.from_frequencies(grid, requested).frequencies / 1e3
+    assert (f"{lo:.2f}", f"{hi:.2f}") != ("30.00", "40.00")
+
+    result = run_inverse(cfg, new_run())
+
+    assert result.band_results[0].band_dir.name == "band_00_30-40khz"
+    assert f"[band 0 {lo:.2f}-{hi:.2f}khz]" in capsys.readouterr().out
+
+
 def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_run):
     """Each band writes its artifacts and band 2 starts from band 1's model."""
     user_cfg = deep_merge(

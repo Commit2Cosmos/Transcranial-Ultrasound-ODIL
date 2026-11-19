@@ -185,6 +185,7 @@ def run_frequency_band(
     final_metrics = band_tape.final_row
 
     arrays = collector.arrays()
+    snapped = band.frequency_selection.frequencies.abs().cpu().tolist()
     wall_s = time.perf_counter() - t0
     band_dir = save_band(
         bands_dir,
@@ -216,7 +217,7 @@ def run_frequency_band(
     )
 
     print(
-        f"  [band {band_index} {label}] iters {n_iter} "
+        f"  [band {band_index} {band_label(snapped, decimals=2)}] iters {n_iter} "
         f"loss={final_metrics['loss_total']:.6e}  "
         f"rmse_brain={final_metrics['rmse_brain']:.2f} m/s  "
         f"ssim_brain={final_metrics['ssim_brain']:.4f}  "
