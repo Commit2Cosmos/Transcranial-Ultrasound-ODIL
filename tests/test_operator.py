@@ -13,18 +13,18 @@ import torch.nn.functional as F
 from odil_wave.grid import FrequencySelection
 from odil_wave.wavefield import Wavefield
 
-from odil_wave.operator.conditions import Sponge
+from odil_wave.operator.conditions import Pml
 from odil_wave.operator.spatial import (
     Laplacian,
-    _apply_conv_laplacian,
-    laplacian_stencil,
+    _apply_conv,
+    second_difference_stencil,
 )
 from odil_wave.operator.utils import WaveEquation
 from odil_wave.operator.helmholtz import (
     HelmholtzSolver,
     _reflect_index,
-    laplacian_csr,
     np_complex_dtype,
+    second_difference_1d,
 )
 
 from conftest import make_geometry, make_grid, make_model, make_source
@@ -72,101 +72,72 @@ def tiny_setup():
 # --------------------------------------------------------------------------- #
 # conditions.py
 # --------------------------------------------------------------------------- #
-def test_sponge_apply_residual_matches_manual_formula():
+def test_pml_zero_weight_leaves_the_operator_unstretched():
     grid = _make_grid(pml_width=2)
     wf = _make_wavefield(grid)
-    sponge = Sponge(wf, weight=2.0)
-
-    fu = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
+    pml = Pml(wf, weight=0.0)
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
-    lambda_t = torch.tensor(0.5 + 0.25j, dtype=torch.complex64).view(1, 1, 1, 1)
-
-    out = sponge.apply_residual(fu, u, lambda_t)
-
-    sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
-    sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
-    expected = fu + 2.0 * (sigma_sum * lambda_t * u + sigma_prod * u)
-    assert torch.allclose(out, expected)
+    u_xx = torch.randn_like(u)
+    u_yy = torch.randn_like(u)
+    lambda_tt = torch.tensor(-3.0 + 0j, dtype=torch.complex64).view(1, 1, 1, 1)
+    assert torch.equal(pml.stretched_laplacian(u, u_xx, u_yy), u_xx + u_yy)
+    assert torch.equal(pml.mass(lambda_tt), lambda_tt.expand(1, 1, grid.nx, grid.ny))
 
 
-def test_sponge_zero_weight_is_a_no_op():
-    grid = _make_grid()
-    wf = _make_wavefield(grid)
-    sponge = Sponge(wf, weight=0.0)
-    fu = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
-    u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
-    lambda_t = torch.tensor(0.1j, dtype=torch.complex64).view(1, 1, 1, 1)
-    assert torch.equal(sponge.apply_residual(fu, u, lambda_t), fu)
+def test_pml_is_inactive_in_the_interior():
+    """``s = 1`` at interior nodes and ``1/s - 1 = 0`` on the faces around
+    them, so interior rows see the unstretched operator."""
+    grid = _make_grid(pml_width=3)
+    pml = Pml(_make_wavefield(grid), weight=1.0)
+    sx, sy = grid.interior_slice
+    assert torch.equal(pml.s_x[:, sx], torch.ones_like(pml.s_x[:, sx]))
+    assert torch.equal(pml.s_y[:, :, sy], torch.ones_like(pml.s_y[:, :, sy]))
+    # Faces (ghosts included) k - 1/2 for k = p .. p + n_int: around the
+    # interior nodes.
+    p = grid.pml_width
+    assert (pml.a_x[:, p : p + grid.interior_nx + 1] == 0).all()
+    assert (pml.a_x[:, :p] != 0).all() and (pml.a_x[:, -p:] != 0).all()
+
+
+def test_pml_at_zero_hertz_raises():
+    grid = _make_grid(pml_width=2)
+    freq = FrequencySelection.from_bins(grid, [0, 3])
+    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=make_model(grid))
+    with pytest.raises(ValueError, match="0 Hz"):
+        Pml(wf, weight=1.0)
+    Pml(wf, weight=0.0)
 
 
 # --------------------------------------------------------------------------- #
 # spatial.py
 # --------------------------------------------------------------------------- #
-def test_apply_conv_laplacian_zero_on_constant_field():
-    kernel = torch.zeros(1, 1, 3, 3)
-    kernel[0, 0, 0, 1] = 1.0
-    kernel[0, 0, 2, 1] = 1.0
-    kernel[0, 0, 1, 0] = 1.0
-    kernel[0, 0, 1, 2] = 1.0
-    kernel[0, 0, 1, 1] = -4.0
-    u = torch.full((6, 6), 3.0)
-    out = _apply_conv_laplacian(u, kernel, pad=1)
-    assert torch.allclose(out, torch.zeros_like(out), atol=1e-6)
-
-
-def test_apply_conv_laplacian_exact_on_quadratic_interior():
-    # standard 2nd-order 5-point kernel with unit spacing (cx=cy=1)
-    kernel = torch.zeros(1, 1, 3, 3, dtype=torch.float64)
-    kernel[0, 0, 0, 1] = 1.0
-    kernel[0, 0, 2, 1] = 1.0
-    kernel[0, 0, 1, 0] = 1.0
-    kernel[0, 0, 1, 2] = 1.0
-    kernel[0, 0, 1, 1] = -4.0
-    n = 9
-    idx = torch.arange(n, dtype=torch.float64)
-    X, Y = torch.meshgrid(idx, idx, indexing="ij")
-    u = X**2 + Y**2  # analytic Laplacian = 2 + 2 = 4 everywhere
-    out = _apply_conv_laplacian(u, kernel, pad=1)
-    center = out[3:6, 3:6]  # away from the reflect-padded edges
-    assert torch.allclose(center, torch.full_like(center, 4.0), atol=1e-8)
-
-
-def test_apply_conv_laplacian_complex_matches_real_imag_split():
-    kernel = torch.randn(1, 1, 3, 3, dtype=torch.float64)
+def test_apply_conv_complex_matches_real_imag_split():
+    kernel = torch.randn(1, 1, 3, 1, dtype=torch.float64)
     a = torch.randn(5, 5, dtype=torch.float64)
     b = torch.randn(5, 5, dtype=torch.float64)
-    u = torch.complex(a, b)
-    out = _apply_conv_laplacian(u, kernel, pad=1)
+    out = _apply_conv(torch.complex(a, b), kernel, (0, 0, 1, 1))
     expected = torch.complex(
-        _apply_conv_laplacian(a, kernel, pad=1), _apply_conv_laplacian(b, kernel, pad=1)
+        _apply_conv(a, kernel, (0, 0, 1, 1)), _apply_conv(b, kernel, (0, 0, 1, 1))
     )
     assert torch.allclose(out, expected)
 
 
-def test_laplacian_stencil_6th_order_matches_known_coefficients():
-    """The 6th-order cross stencil carries the textbook 1D coefficients,
-    scaled by 1/dx**2 on the x arm and 1/dy**2 on the y arm."""
-    K, pad = laplacian_stencil(6, dx_nd=1.0, dy_nd=0.5)
-    assert pad == 3 and K.shape == (7, 7)
-    # 1D coefficients (Fornberg): offsets 1..3, then the centre; cy = 1/0.5**2.
-    for k, ck in enumerate([3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0], start=1):
-        assert K[pad - k, pad] == pytest.approx(ck)
-        assert K[pad + k, pad] == pytest.approx(ck)
-        assert K[pad, pad - k] == pytest.approx(4.0 * ck)
-        assert K[pad, pad + k] == pytest.approx(4.0 * ck)
-    assert K[pad, pad] == pytest.approx(-49.0 / 18.0 * 5.0)
-    # everything off the cross is zero
-    off = K.copy()
-    off[pad, :] = 0.0
-    off[:, pad] = 0.0
-    assert (off == 0.0).all()
+def test_second_difference_stencil_6th_order_matches_known_coefficients():
+    """The 6th-order stencil carries the textbook coefficients over h**2."""
+    k = second_difference_stencil(6, h_nd=0.5)
+    assert k.shape == (7,)
+    # Fornberg: offsets 1..3, then the centre.
+    for off, ck in enumerate([3.0 / 2.0, -3.0 / 20.0, 1.0 / 90.0], start=1):
+        assert k[3 - off] == pytest.approx(4.0 * ck)
+        assert k[3 + off] == pytest.approx(4.0 * ck)
+    assert k[3] == pytest.approx(-49.0 / 18.0 * 4.0)
 
 
 @pytest.mark.parametrize("space_order", [3, 12])
-def test_laplacian_stencil_unsupported_order_raises(space_order):
+def test_second_difference_stencil_unsupported_order_raises(space_order):
     """Orders without a coefficient table are rejected."""
     with pytest.raises(ValueError):
-        laplacian_stencil(space_order, 1.0, 1.0)
+        second_difference_stencil(space_order, 1.0)
 
 
 @pytest.mark.parametrize("space_order,pad", [(2, 1), (4, 2), (6, 3), (8, 4), (10, 5)])
@@ -184,8 +155,8 @@ def test_laplacian_orders_are_exact_on_a_quadratic_interior(space_order, pad):
     idx = torch.arange(n, dtype=torch.float64) * grid.dx_nd
     X, Y = torch.meshgrid(idx, idx, indexing="ij")
     u = X**2 + Y**2  # analytic Laplacian in non-dimensional coords = 4
-    out = Laplacian(wf, space_order=space_order).apply(u)
-    center = out[pad : n - pad, pad : n - pad]
+    u_xx, u_yy = Laplacian(wf, space_order=space_order).axes(u)
+    center = (u_xx + u_yy)[pad : n - pad, pad : n - pad]
     assert torch.allclose(center, torch.full_like(center, 4.0), atol=1e-6)
 
 
@@ -218,29 +189,67 @@ def test_wave_equation_residual_is_zero_for_zero_amplitude_and_source():
     assert torch.allclose(r, torch.zeros_like(r))
 
 
-def test_wave_equation_residual_matches_manual_assembly():
-    grid = _make_grid(pml_width=2)
+def _conservative_pml_residual(grid, wf, amp, c, source, weight):
+    """Order-2 ``λ_tt s_x s_y u - c'^2 [s_y D⁻(D⁺u / s_x) + s_x D⁻(D⁺u / s_y)] - f``
+    by explicit loops, ``1/s`` on the faces, mirrored at the outer wall."""
+    freq = wf.frequency_selection
+    iw = 1j * float(freq.omega_nd[0])
+    ltt = float(freq.lambda_tt[0])
+    sx = 1 + weight * grid.sigma_x_nd[:, 0].numpy() / iw
+    sy = 1 + weight * grid.sigma_y_nd[0, :].numpy() / iw
+    # 1/s on faces -1/2 .. n - 1/2, the ghosts mirroring their neighbours.
+    fx = 1 / (1 + weight * grid.sigma_x_faces_nd.numpy() / iw)
+    fy = 1 / (1 + weight * grid.sigma_y_faces_nd.numpy() / iw)
+    fx = np.concatenate([fx[:1], fx, fx[-1:]])
+    fy = np.concatenate([fy[:1], fy, fy[-1:]])
+    u = np.pad(amp[0, 0].numpy(), 1, mode="reflect")  # u[i + 1, j + 1] is node (i, j)
+    nx, ny = grid.shape
+    r = np.zeros((nx, ny), dtype=complex)
+    for i in range(nx):
+        for j in range(ny):
+            I, J = i + 1, j + 1  # noqa: E741
+            dxx = fx[i + 1] * (u[I + 1, J] - u[I, J]) - fx[i] * (u[I, J] - u[I - 1, J])
+            dyy = fy[j + 1] * (u[I, J + 1] - u[I, J]) - fy[j] * (u[I, J] - u[I, J - 1])
+            k2 = (float(c[i, j]) / grid.c0) ** 2
+            r[i, j] = (
+                ltt * sx[i] * sy[j] * u[I, J]
+                - k2 * (sy[j] * dxx / grid.dx_nd**2 + sx[i] * dyy / grid.dy_nd**2)
+                - source[0, 0, i, j].item()
+            )
+    return r
+
+
+def test_wave_equation_residual_is_the_conservative_stretched_form():
+    grid = _make_grid(pml_width=3, dtype=torch.float64)
     wf = _make_wavefield(grid)
     we = WaveEquation(wf, space_order=2, damping_scale=1.7)
-
     torch.manual_seed(0)
-    amp = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.float64).to(wf.cdtype)
-    source = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.float64).to(wf.cdtype)
+    amp = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
+    source = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
     c = wf.velocity_model.c
-
     r = we.residual(amp, c, source)
+    expected = _conservative_pml_residual(grid, wf, amp, c, source, 1.7)
+    assert np.allclose(r[0, 0].numpy(), expected, rtol=1e-10, atol=1e-8)
 
-    lambda_t, lambda_tt = wf.frequency_selection.symbols_broadcast()
-    lambda_t = lambda_t.to(dtype=amp.dtype)
-    lambda_tt = lambda_tt.to(dtype=amp.dtype)
-    wsp_nd = (c / grid.c0).to(amp.dtype)
-    lap = Laplacian(wf, space_order=2).apply(amp)
-    core = lambda_tt * amp - wsp_nd**2 * lap - source
-    sigma_sum = grid.sigma_x_nd + grid.sigma_y_nd
-    sigma_prod = grid.sigma_x_nd * grid.sigma_y_nd
-    expected = core + 1.7 * (sigma_sum * lambda_t * amp + sigma_prod * amp)
 
-    assert torch.allclose(r, expected, atol=1e-5)
+@pytest.mark.parametrize("space_order", [2, 4])
+def test_pml_leaves_interior_rows_unchanged(space_order):
+    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on."""
+    grid = _make_grid(pml_width=4, dtype=torch.float64)
+    wf = _make_wavefield(grid)
+    torch.manual_seed(1)
+    amp = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
+    source = torch.randn_like(amp)
+    c = wf.velocity_model.c
+    r = WaveEquation(wf, space_order=space_order, damping_scale=1.0).residual(
+        amp, c, source
+    )
+    u_xx, u_yy = Laplacian(wf, space_order=space_order).axes(amp)
+    _, lambda_tt = wf.frequency_selection.symbols_broadcast()
+    plain = lambda_tt * amp - (c / grid.c0) ** 2 * (u_xx + u_yy) - source
+    sx, sy = grid.interior_slice
+    assert torch.equal(r[..., sx, sy], plain[..., sx, sy])
+    assert not torch.allclose(r, plain)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,56 +288,46 @@ def test_reflect_index_raises_for_nonpositive_n():
 
 
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
-def test_sparse_laplacian_matches_dense_conv_laplacian(space_order):
-    """The sparse Laplacian the Helmholtz assembly uses equals the torch conv
-    Laplacian (reflect boundaries) on a random field -- the key correctness
-    invariant the sparse Helmholtz assembly depends on."""
+def test_sparse_second_differences_match_the_conv_ones(space_order):
+    """The sparse second differences the Helmholtz assembly uses equal the
+    torch conv ones (reflect boundaries) on a random field."""
     grid = _make_grid(pml_width=0, interior_shape=(11, 9), dtype=torch.float64)
     wf = _make_wavefield(grid)
     torch.manual_seed(space_order)
     u = torch.randn(grid.nx, grid.ny, dtype=torch.float64)
-    dense_out = Laplacian(wf, space_order=space_order).apply(u)
-
-    L = laplacian_csr(
-        grid.nx, grid.ny, space_order, float(grid.dx_nd), float(grid.dy_nd)
-    )
-    sparse_out = (L @ u.numpy().reshape(-1)).reshape(grid.nx, grid.ny)
-
-    assert torch.allclose(dense_out, torch.as_tensor(sparse_out), atol=1e-8)
+    u_xx, u_yy = Laplacian(wf, space_order=space_order).axes(u)
+    Dx = second_difference_1d(grid.nx, space_order, float(grid.dx_nd))
+    Dy = second_difference_1d(grid.ny, space_order, float(grid.dy_nd))
+    assert np.allclose(u_xx.numpy(), Dx @ u.numpy(), atol=1e-8)
+    assert np.allclose(u_yy.numpy(), (Dy @ u.numpy().T).T, atol=1e-8)
 
 
-def test_laplacian_csr_is_cached_per_grid():
-    grid = _make_grid(pml_width=0, interior_shape=(5, 6))
-    args = (grid.nx, grid.ny, 2, float(grid.dx_nd), float(grid.dy_nd))
-    L = laplacian_csr(*args)
-    assert L.shape == (grid.nx * grid.ny,) * 2
-    assert laplacian_csr(*args) is L
+def test_second_difference_1d_is_cached():
+    D = second_difference_1d(7, 2, 0.1)
+    assert D.shape == (7, 7)
+    assert second_difference_1d(7, 2, 0.1) is D
 
 
-def test_laplacian_csr_unsupported_order_raises():
+def test_second_difference_1d_unsupported_order_raises():
     with pytest.raises(ValueError):
-        laplacian_csr(5, 6, 3, 1.0, 1.0)
+        second_difference_1d(5, 3, 1.0)
 
 
-def test_assemble_h_sparse_matches_wave_equation_residual_at_zero_source(tiny_setup):
-    solver = HelmholtzSolver(
-        tiny_setup.wf, tiny_setup.geom, space_order=2, damping_scale=1.0
-    )
-    c = tiny_setup.vm.c.detach()
-    H = solver.assemble_H_sparse(c, freq_idx=0)
-
+@pytest.mark.parametrize("space_order", [2, 4])
+def test_assemble_h_sparse_matches_wave_equation_residual(space_order):
+    """Sparse and matrix-free operators agree, PML included."""
+    grid = _make_grid(pml_width=4, dtype=torch.float64)
+    freq = FrequencySelection.from_frequencies(grid, [4e4, 8e4])
+    vm = make_model(grid, profile="shepp_logan")
+    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
+    solver = HelmholtzSolver(wf, None, space_order=space_order, damping_scale=1.3)
     torch.manual_seed(2)
-    amp = torch.randn(
-        1, 1, tiny_setup.grid.nx, tiny_setup.grid.ny, dtype=torch.float64
-    ).to(tiny_setup.wf.cdtype)
-    source = torch.zeros_like(amp)
-    r = solver.wave_eq.residual(amp, c, source)
-
-    flat = amp.reshape(-1).cpu().numpy().astype(H.dtype)
-    Hu = (H @ flat).reshape(tiny_setup.grid.nx, tiny_setup.grid.ny)
-    assert torch.allclose(
-        r[0, 0], torch.as_tensor(Hu, dtype=r.dtype), atol=1e-4, rtol=1e-4
-    )
+    amp = torch.randn(1, 2, grid.nx, grid.ny, dtype=wf.cdtype)
+    r = solver.wave_eq.residual(amp, vm.c, torch.zeros_like(amp))
+    for k in range(2):
+        H = solver.assemble_H_sparse(vm.c, freq_idx=k)
+        Hu = (H @ amp[0, k].reshape(-1).numpy()).reshape(grid.shape)
+        assert np.allclose(r[0, k].numpy(), Hu, rtol=1e-10, atol=1e-8)
 
 
 def test_helmholtz_solver_solve_smoke(tiny_setup):

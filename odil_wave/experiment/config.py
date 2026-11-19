@@ -113,14 +113,16 @@ class GridCfg:
 
 @dataclass(frozen=True)
 class PmlCfg:
-    """Absorbing layer (PML sponge) around the interior.
+    """Stretched-coordinate PML around the interior.
 
     Params:
     * ``width``: int >= 0 nodes per side; PML thickness of the inversion grid.
+      ``python -m odil_wave.experiment.pml_check`` measures its reflection.
     * ``power``: PML grading polynomial order (typ. 2-4).
-    * ``R0``: target PML reflection coefficient (small, e.g. 1e-4 .. 1e-8).
-    * ``damping_scale``: >= 0 factor multiplying the operator's PML damping
-      terms (``sigma`` in the frequency-domain residual); ``1`` is the designed
+    * ``R0``: continuous-PML design reflection coefficient, which sets the
+      peak ``sigma``; it doesn't predict the discrete layer's reflection.
+    * ``damping_scale``: >= 0 factor multiplying ``sigma`` in the operator's
+      stretch ``s = 1 + sigma / (i omega)``; ``1`` is the designed
       absorption, ``0`` disables absorption (reflecting borders).
     * ``observation_width``: ``None`` -> same as ``width``: observations are
       generated on the inversion grid with the inversion operator (the inverse
