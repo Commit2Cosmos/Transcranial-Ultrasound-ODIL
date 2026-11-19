@@ -1,11 +1,11 @@
 import pytest
 import torch
 
-from odil_wave import FrequencySelection
+from odil_wave import FrequencySelection, HelmholtzSolver, SourceSignal, Wavefield
 
 # conftest's tone burst: n_cycles / f0 = 2 / 40 kHz = 5e-5 s < the tiny grid's
 # t_max (6e-5 s), so the burst fits.
-from conftest import F0, make_source
+from conftest import F0, T_MAX, make_geometry, make_grid, make_model, make_source
 
 
 def test_tone_burst_shape_and_dtype(grid):
@@ -94,5 +94,43 @@ def test_spectrum_uses_selection_bins(grid):
     fs2 = FrequencySelection.from_bins(grid, [2, 4, 6])
     spec = src.spectrum(fs2)
     assert spec.shape == (3,)
-    full = torch.fft.fft(src.waveform(), dim=0)
+    full = torch.fft.fft(src.waveform(), dim=0) * grid.dt
     assert torch.allclose(spec, full[torch.tensor([2, 4, 6])])
+
+
+def _ricker_at_nt(nt: int):
+    """A Ricker source on a grid of ``nt`` samples with ``nt * dt`` fixed, so
+    the selected bin frequency does not move with ``nt``. Ricker, not the tone
+    burst: the burst's length is quantised to whole samples."""
+    grid = make_grid(t_max=T_MAX * (nt - 1) / nt, init_nt=nt)
+    freq = FrequencySelection.from_frequencies(grid, [F0])
+    return grid, freq, SourceSignal(grid, kind="ricker", f0=F0)
+
+
+def test_spectrum_independent_of_nt():
+    """At a fixed bin frequency, doubling nt leaves the source spectrum unchanged
+    (an unnormalised DFT would double it)."""
+    (_, fs1, src1), (_, fs2, src2) = _ricker_at_nt(120), _ricker_at_nt(240)
+    assert float(fs1.frequencies) == pytest.approx(float(fs2.frequencies))
+    torch.testing.assert_close(
+        src1.spectrum(fs1), src2.spectrum(fs2), rtol=1e-4, atol=0
+    )
+
+
+def test_true_traces_independent_of_nt():
+    """Doubling nt at a fixed bin frequency leaves the traces unchanged up to the
+    time symbols: their leapfrog form (#116) moves by 7e-4 between the two dt,
+    which shifts the traces by about 1e-3."""
+    traces = []
+    for nt in (120, 240):
+        grid, freq, src = _ricker_at_nt(nt)
+        geom = make_geometry(grid, src, freq)
+        wf = Wavefield(grid, freq, velocity_model=make_model(grid))
+        solved = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0).solve()
+        traces.append(
+            geom.extract_observations(torch.stack([w.amplitude for w in solved]))
+        )
+    rel = torch.linalg.vector_norm(traces[1] - traces[0]) / torch.linalg.vector_norm(
+        traces[0]
+    )
+    assert float(rel) < 3e-3

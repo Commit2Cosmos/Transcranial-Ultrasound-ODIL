@@ -38,7 +38,10 @@ def test_source_spectrum_marks_each_bands_inversion_bins(tiny_two_band_run, tmp_
     marked = [list(line.get_xdata())[:1] for line in markers]
     np.testing.assert_allclose(marked, solved_khz, rtol=1e-6)
     legend = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert legend[1:] == ["band 0: 30khz", "band 1: 40khz"]
+    assert legend[1:] == [
+        f"band {b}: {khz[0]:.2f}khz" for b, khz in enumerate(solved_khz)
+    ]
+    assert legend[1:] != ["band 0: 30.00khz", "band 1: 40.00khz"]  # snapped
 
 
 def series(ax, label: str) -> tuple:

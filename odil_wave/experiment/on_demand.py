@@ -58,13 +58,14 @@ def source_spectrum(run_dir: PathLike) -> Figure:
     f_max = 0.0
     for b, band in enumerate(problem.cfg.continuation.bands):
         bins = FrequencySelection.from_frequencies(grid, band.frequencies_hz)
-        khz = bins.frequencies.abs().cpu().numpy() / 1e3
+        hz = bins.frequencies.abs().cpu().numpy()
+        khz = hz / 1e3
         for k, f in enumerate(khz):
             ax.axvline(
                 f,
                 color=f"C{b}",
                 linestyle="--",
-                label=f"band {b}: {band_label(band.frequencies_hz)}"
+                label=f"band {b}: {band_label(list(hz), decimals=2)}"
                 if k == 0
                 else None,
             )
