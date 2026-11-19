@@ -32,13 +32,14 @@ Code is the source of truth for how it works. Docstrings and comments exist to h
 A docstring is read to decide whether to read the code:
 
 - **Module docstring** (every module): what the module is responsible for, in glossary terms; what a reader might expect to find here that lives elsewhere, and where; which names are its entry points.
-- **Public class or function docstring**: one or two lines on its role, meaning what it is for and when a caller picks it over a sibling. Cite the ADR if one governs it.
+- **Public class or function docstring**: one or two lines on its role, meaning what it is for and when a caller picks it over a sibling. Cite the ADR if one governs it: "Defaults follow ADR 0001" (the signature shows which parameters are required).
 - **Units and tensor shapes**: state them where the signature cannot (`(n_shots, nx, ny)` complex pressure, Pa). They change only when the interface does.
+- **Exceptions**: one prose clause for an exception a caller must handle ("; `ConfigError` if a run's config is invalid").
 - **Private helpers**: no docstring, unless the name cannot carry the role.
 
-A comment gives only a reason the code cannot show and that is too small for an ADR ("plain python, not pytest: `conftest.py` imports torch").
+A comment gives only a reason the code cannot show and that is too small for an ADR ("plain python, not pytest: `conftest.py` imports torch"). A section banner names a topic grouping several definitions; in tests, the test names already name the symbol under test.
 
-Never: Args/Returns sections restating the signature, a walkthrough of the body, a restatement of what a line does, or a definition of a glossary term. Decision-scale "why" belongs in an ADR; what a term means belongs in `GLOSSARY.md`.
+Never: Args/Returns/Raises/Notes sections restating the signature, a walkthrough of the body, a restatement of what a line does, or a definition of a glossary term. Decision-scale "why" belongs in an ADR; what a term means belongs in `GLOSSARY.md`.
 
 ## Glossary terms
 
