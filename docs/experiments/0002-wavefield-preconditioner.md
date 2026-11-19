@@ -129,3 +129,5 @@ Health warnings: `none` hit `c_min` within 1% of 1300 m/s from `iter` 5 and `c_m
 Current.
 
 2026-11-15 · note · #146 · L-BFGS closures no longer compute the full-grid diagnostic norms, so `wall_s` drops in both arms by a different share; the equal-wall-time reading (0.54× against the 0.5× threshold) may move. Results at equal outer budget are unchanged.
+
+2026-11-19 · note · #162 · The source spectrum is now DFT × dt, scaling every wavefield by dt; the scale-normalised objective is unchanged, but round-off differs, so L-BFGS trajectories and exact numbers will not reproduce bit-for-bit. Conclusions should hold.
