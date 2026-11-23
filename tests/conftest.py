@@ -70,7 +70,6 @@ def make_source(grid, **overrides) -> SourceSignal:
         amplitude=1.0,
         n_cycles=N_CYCLES,
         envelope="gaussian",
-        dimensionless=True,
         t_start=T_START,
     )
     kw.update(overrides)

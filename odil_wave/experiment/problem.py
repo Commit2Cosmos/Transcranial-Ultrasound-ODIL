@@ -200,7 +200,6 @@ def _make_source(cfg: RunConfig, grid: Grid) -> SourceSignal:
         amplitude=s.amplitude,
         n_cycles=s.n_cycles,
         envelope=s.envelope,
-        dimensionless=s.dimensionless,
     )
 
 

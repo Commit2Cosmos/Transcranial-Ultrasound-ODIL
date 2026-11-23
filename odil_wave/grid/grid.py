@@ -176,13 +176,6 @@ class Grid:
         """``(nx, ny)`` of the full grid, PML included."""
         return (self.nx, self.ny)
 
-    def natural_source_amplitude(self, f0: float) -> float:
-        """Physical source amplitude at centre frequency ``f0`` (Hz) that lands
-        the wavefield near O(1)."""
-        if f0 <= 0:
-            raise ValueError("f0 must be positive.")
-        return 2.0 * f0**2
-
     @property
     def interior_slice(self) -> Tuple[slice, slice]:
         """``(slice_x, slice_y)`` selecting the interior of a full-grid tensor."""
