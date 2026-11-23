@@ -95,9 +95,10 @@ def stretched_second_difference_1d(
     """Sparse ``Λ̃ = Λ + D⁻ diag(a) D⁺ / h²`` along one axis, ``a_faces`` the
     PML's ``1/s - 1`` on the ``n + P - 1`` faces (see
     :class:`~odil_wave.operator.conditions.Pml`)."""
+    lap = second_difference_1d(n, space_order, h_nd)
     d_plus, d_minus = _staggered_differences_1d(n, space_order)
     corr = d_minus @ sp.diags(a_faces) @ d_plus / h_nd**2
-    return (second_difference_1d(n, space_order, h_nd) + corr).tocsr()
+    return (lap + corr).tocsr()
 
 
 class HelmholtzSolver:

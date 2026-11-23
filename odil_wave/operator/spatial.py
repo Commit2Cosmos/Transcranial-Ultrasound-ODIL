@@ -25,8 +25,7 @@ FD2_COEFFS: dict[int, tuple[float, tuple[float, ...]]] = {
 
 
 # 1D staggered FD coefficients for du/dx between nodes, by space order: offsets
-# 1/2 .. (P - 1)/2. The PML's correction (:mod:`.conditions`) uses them, in both
-# the matrix-free and the sparse operator.
+# 1/2 .. (P - 1)/2.
 STAGGERED_D1_COEFFS: dict[int, tuple[float, ...]] = {
     2: (1.0,),
     4: (9.0 / 8.0, -1.0 / 24.0),
