@@ -225,11 +225,11 @@ class ModelCfg:
     * ``base``: m/s background velocity (homogeneous / overdensity).
     * ``contrast``: overdensity only; m/s added to ``base`` inside the anomaly.
     * ``skull_alpha``: [0, 1]; shepp_logan_skull only (skull contrast fraction).
-    * ``skull_sigma``: >= 0 grid cells; shepp_logan_skull only, Gaussian soft
-      edge (try 1-3).
+    * ``skull_sigma``: >= 0 m; shepp_logan_skull only, Gaussian soft edge.
+    * ``skull_thickness``: > 0 m; shepp_logan / shepp_logan_skull, the skull's
+      thickness (under-resolved below 2 grid cells).
     * ``extra``: other profile kwargs: ``radius`` / ``center`` (overdensity),
-      ``threshold`` / ``c_water`` / ``c_skull`` / ``soft_intercept`` /
-      ``soft_slope`` / ``interior_value`` (Shepp-Logan profiles).
+      ``c_water`` / ``c_skull`` / ``interior_value`` (Shepp-Logan profiles).
     """
 
     profile: str = library_default(VelocityModel, "profile")
@@ -238,6 +238,7 @@ class ModelCfg:
     contrast: float = library_default(VelocityModel, "contrast")
     skull_alpha: float = library_default(VelocityModel, "skull_alpha")
     skull_sigma: float = library_default(VelocityModel, "skull_sigma")
+    skull_thickness: float = library_default(VelocityModel, "skull_thickness")
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -347,12 +348,24 @@ class SSIMCfg:
     over the brain region eroded by the window radius).
 
     Params:
-    * ``sigma``: > 0 Gaussian window std in cells. The window spans
-      ``2 * round(3.5 * sigma) + 1`` cells (``sigma = 1.5``: 11, Wang 2004)
-      and must fit in the interior.
+    * ``sigma``: > 0 Gaussian window std in m. In cells of the grid spacing it
+      spans ``2 * round(3.5 * sigma / h) + 1`` cells (``3.0e-3`` at
+      ``h = 2.016 mm``: 11, Wang 2004) and must fit in the interior.
     """
 
-    sigma: float = 1.5
+    sigma: float = 3.0e-3
+
+
+def grid_spacing(cfg: "RunConfig") -> float:
+    """The coarser of the interior grid spacings ``h`` (m)."""
+    (x0, x1), (y0, y1) = cfg.grid.interior_extent
+    nx, ny = cfg.grid.interior_shape
+    return max((x1 - x0) / (nx - 1), (y1 - y0) / (ny - 1))
+
+
+def ssim_sigma_cells(cfg: "RunConfig") -> float:
+    """``metrics.ssim.sigma`` in cells of :func:`grid_spacing`."""
+    return float(cfg.metrics.ssim.sigma) / grid_spacing(cfg)
 
 
 def ssim_window_size(sigma: float) -> int:
@@ -591,11 +604,8 @@ _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 _EXTRA_KEYS = (
     "radius",
     "center",
-    "threshold",
     "c_water",
     "c_skull",
-    "soft_intercept",
-    "soft_slope",
     "interior_value",
 )
 
@@ -736,15 +746,16 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     sigma = float(cfg.metrics.ssim.sigma)
     if sigma <= 0:
         raise ConfigError(f"metrics.ssim.sigma must be > 0, got {sigma}")
-    win = ssim_window_size(sigma)
+    _check_within_interior(cfg, "metrics.ssim.sigma", sigma)
+    win = ssim_window_size(ssim_sigma_cells(cfg))
     if win > min(cfg.grid.interior_shape):
         raise ConfigError(
-            f"metrics.ssim.sigma={sigma} gives a {win}-cell SSIM window, larger "
+            f"metrics.ssim.sigma={sigma} m gives a {win}-cell SSIM window, larger "
             f"than the interior {list(cfg.grid.interior_shape)}"
         )
 
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):
-        _validate_model_cfg(label, model, warnings)
+        _validate_model_cfg(cfg, label, model, warnings)
 
     return warnings
 
@@ -755,8 +766,7 @@ def _source_width_warnings(cfg: "RunConfig") -> List[str]:
     names ``sigma/h``, ``k_max sigma`` and the ring's clearance to the PML."""
     sigma = float(cfg.acquisition.sigma_s)
     (x0, x1), (y0, y1) = cfg.grid.interior_extent
-    nx, ny = cfg.grid.interior_shape
-    h = max((x1 - x0) / (nx - 1), (y1 - y0) / (ny - 1))
+    h = grid_spacing(cfg)
     f_max = max(float(f) for b in cfg.continuation.bands for f in b.frequencies_hz)
     k_max = 2.0 * math.pi * f_max / float(cfg.grid.c_min)
     rc = cfg.acquisition.ring_center
@@ -790,7 +800,19 @@ def _source_width_warnings(cfg: "RunConfig") -> List[str]:
     return out
 
 
-def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> None:
+def _check_within_interior(cfg: "RunConfig", key: str, length: float) -> None:
+    """Reject a length (m) longer than the interior, such as one left in cells."""
+    (x0, x1), (y0, y1) = cfg.grid.interior_extent
+    if length > min(x1 - x0, y1 - y0):
+        raise ConfigError(
+            f"{key}={length} m is longer than the interior "
+            f"{[x1 - x0, y1 - y0]} m; it is a length in metres, not cells"
+        )
+
+
+def _validate_model_cfg(
+    cfg: "RunConfig", label: str, model: "ModelCfg", warnings: List[str]
+) -> None:
     """Validate the profile, skull knobs and ``extra`` kwargs of a truth or init
     ``model``."""
     if model.profile not in _PROFILES:
@@ -803,6 +825,10 @@ def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> N
         )
     if model.skull_sigma < 0.0:
         raise ConfigError(f"{label}.skull_sigma must be >= 0; got {model.skull_sigma}")
+    _check_within_interior(cfg, f"{label}.skull_sigma", float(model.skull_sigma))
+    thickness = float(model.skull_thickness)
+    if thickness <= 0.0:
+        raise ConfigError(f"{label}.skull_thickness must be > 0 m; got {thickness}")
     unknown = set(model.extra or {}) - set(_EXTRA_KEYS)
     if unknown:
         raise ConfigError(
@@ -815,4 +841,16 @@ def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> N
         warnings.append(
             f"{label}.profile={model.profile!r} ignores skull_alpha / "
             "skull_sigma (they apply only to shepp_logan_skull)."
+        )
+    if model.profile in _REGION_PROFILES:
+        h = grid_spacing(cfg)
+        if thickness < 2.0 * h:
+            warnings.append(
+                f"{label}.skull_thickness={thickness:g} m is under-resolved "
+                f"(< 2 h, h = {h * 1e3:.3f} mm): the skull is a partial-volume ring"
+            )
+    elif thickness != library_default(VelocityModel, "skull_thickness"):
+        warnings.append(
+            f"{label}.profile={model.profile!r} ignores skull_thickness (it "
+            "applies only to the Shepp-Logan profiles)."
         )

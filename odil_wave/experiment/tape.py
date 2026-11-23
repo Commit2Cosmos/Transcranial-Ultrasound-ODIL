@@ -34,7 +34,7 @@ from skimage.metrics import structural_similarity
 
 from odil_wave.optimisation import Iterate
 
-from .config import ConfigError, ssim_window_size
+from .config import ConfigError, ssim_sigma_cells, ssim_window_size
 
 
 @dataclass(frozen=True)
@@ -227,8 +227,9 @@ class ModelError:
         )
         if not self.ssim_region.any():
             raise ConfigError(
-                f"the {win}-cell SSIM window (metrics.ssim.sigma={self.sigma}) "
-                "leaves no brain-region cell after erosion; lower the sigma"
+                f"the {win}-cell SSIM window (metrics.ssim.sigma = "
+                f"{self.sigma:.3g} cells) leaves no brain-region cell after "
+                "erosion; lower the sigma"
             )
         self.data_range = float(np.ptp(self.truth[self.brain]))
         if self.data_range <= 0:
@@ -252,7 +253,7 @@ class ModelError:
             _np(truth.c[sl]),
             _np(brain[sl]),
             _np(skull[sl]),
-            sigma=problem.cfg.metrics.ssim.sigma,
+            sigma=ssim_sigma_cells(problem.cfg),
         )
 
     def __call__(self, c: np.ndarray) -> Dict[str, float]:

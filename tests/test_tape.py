@@ -192,7 +192,7 @@ def expected_model_error(problem, c_full: np.ndarray) -> dict:
     full-grid velocity."""
     truth, brain, skull = regions(problem)
     c = np.asarray(c_full)[problem.grid.interior_slice].astype(np.float64)
-    sigma = problem.cfg.metrics.ssim.sigma
+    sigma = problem.cfg.metrics.ssim.sigma / problem.grid.dx  # cells
     win = 2 * int(3.5 * sigma + 0.5) + 1  # skimage truncates at 3.5 sigma
     _, ssim_map = structural_similarity(
         c,
@@ -307,7 +307,8 @@ def test_model_errors_match_the_band_models(tiny_two_band_run):
         rows_b = band_rows(rows, b)
         for row, c in ((rows_b[0], c_start), (rows_b[-1], c_final)):
             for key, value in expected_model_error(problem, c).items():
-                assert row[key] == pytest.approx(value, rel=1e-5, abs=1e-6), (b, key)
+                # Saved models are float32: ~1e-4 m/s against a 90 m/s range.
+                assert row[key] == pytest.approx(value, rel=1e-5, abs=1e-5), (b, key)
 
 
 def run_cli(tmp_path: Path, repo: Path, user: dict, expect: int = 0) -> Path:
@@ -377,10 +378,10 @@ def test_reg_term_is_zero_without_a_regulariser(tiny_two_band_run):
         # no truth with a brain region
         {"truth": {"profile": "overdensity", "extra": {"radius": 0.012}}},
         {"truth": {"profile": "homogeneous"}},
-        # a 23-cell SSIM window on a 20 x 20 interior
-        {"metrics": {"ssim": {"sigma": 3.0}}},
-        # an 11-cell window erodes the whole tiny brain region
-        {"metrics": {"ssim": {"sigma": 1.5}}},
+        # a 23-cell SSIM window (3 h) on a 20 x 20 interior
+        {"metrics": {"ssim": {"sigma": 7.9e-3}}},
+        # an 11-cell window (1.5 h) erodes the whole tiny brain region
+        {"metrics": {"ssim": {"sigma": 3.95e-3}}},
         # a truth constant over the brain region has no SSIM data range
         {"truth": {"profile": "shepp_logan_skull"}},
     ],

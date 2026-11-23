@@ -39,6 +39,7 @@ EXPECTED_SHAPE = {
         "contrast",
         "skull_alpha",
         "skull_sigma",
+        "skull_thickness",
         "extra",
     ],
     "init": [
@@ -48,6 +49,7 @@ EXPECTED_SHAPE = {
         "contrast",
         "skull_alpha",
         "skull_sigma",
+        "skull_thickness",
         "extra",
     ],
     "continuation": ["bands"],
@@ -250,6 +252,51 @@ def test_under_resolved_bound_is_one_grid_spacing(h_frac, warns):
     under = [w for w in warnings if "under-resolved" in w]
     assert len(under) == warns
     assert all("(< 1.0 h)" in w for w in under)
+
+
+@pytest.mark.parametrize("thickness, warns", [(4.0e-3, True), (4.1e-3, False)])
+def test_a_skull_under_two_cells_thick_warns(thickness, warns):
+    """2h = 4.03 mm on the default grid."""
+    warnings = validate_config(
+        resolve_config({}, [f"truth.skull_thickness={thickness!r}"])
+    )
+    assert any("truth.skull_thickness" in w and "2 h" in w for w in warnings) == warns
+
+
+def test_the_default_skull_is_resolved():
+    assert not any("skull_thickness" in w for w in validate_config(resolve_config({})))
+
+
+@pytest.mark.parametrize("value", ["0", "-1e-3"])
+def test_skull_thickness_must_be_a_positive_length(value):
+    with pytest.raises(ConfigError, match="skull_thickness"):
+        validate_config(resolve_config({}, [f"truth.skull_thickness={value}"]))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        # values left in cells: both exceed the 0.25 m interior
+        "truth.skull_sigma=2.0",
+        "metrics.ssim.sigma=1.5",
+    ],
+)
+def test_a_sigma_longer_than_the_interior_is_rejected(override):
+    overrides = [override, "truth.profile=shepp_logan_skull"]
+    with pytest.raises(ConfigError, match="interior"):
+        validate_config(resolve_config({}, overrides))
+
+
+@pytest.mark.parametrize("sigma, fits", [(0.03, True), (0.04, False)])
+def test_the_ssim_window_is_sized_in_cells_from_metres(sigma, fits):
+    """0.03 m is 14.9 cells at h = 2.016 mm, a 105-cell window; 0.04 m is a
+    139-cell window, wider than the 125-cell interior."""
+    cfg = resolve_config({}, [f"metrics.ssim.sigma={sigma}"])
+    if fits:
+        validate_config(cfg)
+    else:
+        with pytest.raises(ConfigError, match="139-cell SSIM window"):
+            validate_config(cfg)
 
 
 @pytest.mark.parametrize("value", ["null", "0", "-1e-3"])

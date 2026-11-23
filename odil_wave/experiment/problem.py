@@ -157,6 +157,7 @@ def _build_velocity(
         scale=spec.scale,
         skull_alpha=spec.skull_alpha,
         skull_sigma=spec.skull_sigma,
+        skull_thickness=spec.skull_thickness,
         **kwargs,
     )
 

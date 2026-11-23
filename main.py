@@ -60,7 +60,7 @@ def _summarise(cfg) -> str:
         f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
-    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma}")
+    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma} m")
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]
