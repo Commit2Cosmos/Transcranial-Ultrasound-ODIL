@@ -53,6 +53,11 @@ class IndependentSolve:
     space_order: int
     time_symbols: str
 
+    def node_offset(self, coarse: Grid) -> int:
+        """Full-grid index of ``coarse``'s node 0 on :attr:`grid`; node ``i``
+        is at ``node_offset + refine * i``."""
+        return self.grid.pml_width - self.refine * coarse.pml_width
+
 
 class ObservationPath:
     """Generates each band's :class:`Observations` from the true model.
@@ -91,9 +96,11 @@ class ObservationPath:
         """Observations at ``geometry``'s receivers and frequency bins
         (``geometry`` on the inversion grid)."""
         t0 = time.perf_counter()
-        own = self._solve(geometry, self.truth, self.space_order, self.damping_scale)
+        inversion_solve = self._solve(
+            geometry, self.truth, self.space_order, self.damping_scale
+        )
         if self.independent is None:
-            true_wavefields = own
+            true_wavefields = inversion_solve
             solve_s = time.perf_counter() - t0
         else:
             t0 = time.perf_counter()
@@ -105,7 +112,7 @@ class ObservationPath:
         traces = add_noise(
             clean, geometry.frequency_selection.fft_bins, self.snr_db, self.seed
         )
-        predicted = geometry.extract_observations(_stack(own))
+        predicted = geometry.extract_observations(_stack(inversion_solve))
         rel = float(
             torch.linalg.vector_norm(predicted - traces)
             / torch.linalg.vector_norm(traces)
@@ -143,7 +150,7 @@ class ObservationPath:
         ind = self.independent
         if ind is None:
             raise ValueError("the inverse crime observes on the inversion grid")
-        off = ind.grid.pml_width - ind.refine * geometry.grid.pml_width
+        off = ind.node_offset(geometry.grid)
         freq = FrequencySelection.from_bins(
             ind.grid,
             geometry.frequency_selection.fft_bins,
@@ -167,7 +174,7 @@ class ObservationPath:
         """The independent solve, restricted to ``geometry.grid``'s nodes."""
         ind = self.independent
         coarse, r = geometry.grid, ind.refine
-        off = ind.grid.pml_width - r * coarse.pml_width
+        off = ind.node_offset(coarse)
         fine = self._solve(
             self.observation_geometry(geometry),
             ind.truth,
@@ -201,17 +208,14 @@ def prolonged_truth(truth: VelocityModel, grid: Grid, refine: int) -> VelocityMo
     the speed of the nearest node of ``truth``'s grid."""
     sl = truth.grid.interior_slice
     c = truth.c[sl]
-    ix = torch.div(
-        torch.arange(grid.interior_nx, device=c.device) + refine // 2,
-        refine,
-        rounding_mode="floor",
+
+    def nearest(n: int) -> torch.Tensor:
+        fine = torch.arange(n, device=c.device)
+        return torch.div(fine + refine // 2, refine, rounding_mode="floor")
+
+    return VelocityModel.from_interior(
+        grid, c[nearest(grid.interior_nx)][:, nearest(grid.interior_ny)]
     )
-    iy = torch.div(
-        torch.arange(grid.interior_ny, device=c.device) + refine // 2,
-        refine,
-        rounding_mode="floor",
-    )
-    return VelocityModel.from_interior(grid, c[ix][:, iy])
 
 
 def add_noise(

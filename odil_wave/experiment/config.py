@@ -853,15 +853,10 @@ def _validate_observation(obs: "ObservationCfg") -> List[str]:
         return []
     default = ObservationCfg()
     ignored = [
-        k
-        for k in (
-            "refine",
-            "space_order",
-            "time_symbols",
-            "pml_thickness_factor",
-            "truth",
-        )
-        if getattr(obs, k) != getattr(default, k)
+        f.name
+        for f in fields(ObservationCfg)
+        if f.name not in ("mode", "noise")
+        and getattr(obs, f.name) != getattr(default, f.name)
     ]
     if not ignored:
         return []

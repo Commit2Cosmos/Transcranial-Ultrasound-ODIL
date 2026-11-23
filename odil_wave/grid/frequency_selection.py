@@ -175,8 +175,6 @@ class FrequencySelection:
         cls,
         grid: Grid,
         frequencies_hz: Union[Sequence[float], torch.Tensor],
-        *,
-        time_symbols: str = "leapfrog",
     ) -> "FrequencySelection":
         """Map physical frequencies (Hz) to nearest positive FFT bins on ``grid.t``."""
         f_req = torch.as_tensor(
@@ -196,7 +194,6 @@ class FrequencySelection:
             grid,
             bins,
             requested_frequencies=f_req,
-            time_symbols=time_symbols,
         )
 
     def fft_time_series(self, signal: torch.Tensor, dim: int = -3) -> torch.Tensor:

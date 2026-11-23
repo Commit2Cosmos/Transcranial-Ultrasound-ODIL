@@ -163,7 +163,7 @@ def test_leapfrog_symbols_tend_to_the_exact_ones(grid):
     """The centred differences are second order: ``λ_tt`` is ``-ω²`` up to a
     relative ``(ω Δt)² / 12``."""
     leap = FrequencySelection.from_frequencies(grid, [F0])
-    exact = FrequencySelection.from_frequencies(grid, [F0], time_symbols="exact")
+    exact = FrequencySelection.from_bins(grid, leap.fft_bins, time_symbols="exact")
     wdt = float(leap.omega_nd[0] * leap.dt_nd)
     assert complex(exact.lambda_t[0]) == pytest.approx(1j * float(leap.omega_nd[0]))
     ratio = float(leap.lambda_tt[0] / exact.lambda_tt[0])
@@ -172,7 +172,7 @@ def test_leapfrog_symbols_tend_to_the_exact_ones(grid):
 
 def test_unknown_time_symbols_raise(grid):
     with pytest.raises(ValueError, match="time_symbols"):
-        FrequencySelection.from_frequencies(grid, [F0], time_symbols="rk4")
+        FrequencySelection.from_bins(grid, [3], time_symbols="rk4")
 
 
 def test_cdtype_matches_grid_dtype(grid):
