@@ -15,7 +15,7 @@ def _mirror_ghost_faces(a: torch.Tensor) -> torch.Tensor:
 
 class Pml:
     """Conservative stretched-coordinate PML, per frequency, its rows divided
-    by ``s_x s_y`` (ADR-0002).
+    by ``s_x s_y`` (ADR 0002).
 
     With ``s_ξ = 1 + weight σ_ξ / (iω)`` along axis ``ξ`` (``weight = 0``
     disables it)::
@@ -24,11 +24,12 @@ class Pml:
         Λ̃_ξ u = Λ_ξ u + D⁻_ξ[(1/s_ξ − 1) D⁺_ξ u]
 
     ``Λ_ξ`` is the order-P second difference and ``D±`` the order-2 one-sided
-    differences, ``1/s`` sampled on the faces between nodes; the mass term
-    stays ``λ_tt u`` and the source is multiplied by ``row_weight``. In the
-    interior ``s = 1``, so the Laplacian reduces to ``Λ_x u + Λ_y u``. At
-    order 2 ``Λ̃`` is the conservative form ``D⁻ (1/s) D⁺``; at higher orders
-    the PML reflects more (#160 decides that form).
+    differences, ``1/s`` sampled on the faces between nodes, and
+    ``row_weight = 1 / (s_x s_y)`` ``(nf, nx, ny)`` the factor on the rows'
+    remaining terms. In the interior ``s = 1``, so the Laplacian reduces to
+    ``Λ_x u + Λ_y u``. At order 2 ``Λ̃`` is the conservative form
+    ``D⁻ (1/s) D⁺``; at higher orders the PML reflects more (#160 decides that
+    form).
     """
 
     def __init__(self, wavefield: Wavefield, weight: float) -> None:
@@ -60,7 +61,6 @@ class Pml:
         self.a_y = _mirror_ghost_faces(
             (1.0 / (1.0 + w * sig_yf * inv_iw) - 1.0).transpose(1, 2)
         ).transpose(1, 2)
-        # (nf, nx, ny): 1 / (s_x s_y), the source's factor.
         self.row_weight = 1.0 / (self.s_x * self.s_y)
 
     def stretched_laplacian(

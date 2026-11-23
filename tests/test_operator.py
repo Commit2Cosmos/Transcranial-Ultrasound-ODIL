@@ -230,9 +230,8 @@ def test_wave_equation_residual_is_the_conservative_stretched_form():
     source = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
     c = wf.velocity_model.c
     r = we.residual(amp, c, source)
-    # ``source`` here is already weighted, as ``WaveEquation.sources`` gives it.
     expected = _conservative_pml_residual(
-        grid, wf, amp, c, source * we.pml.s_x * we.pml.s_y, 1.7, row_weighted=True
+        grid, wf, amp, c, source, 1.7, row_weighted=True
     )
     assert np.allclose(r[0, 0].numpy(), expected, rtol=1e-10, atol=1e-8)
 

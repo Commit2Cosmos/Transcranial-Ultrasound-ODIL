@@ -119,7 +119,8 @@ class HelmholtzSolver:
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
         """Sparse H at full-grid ``c`` and frequency index ``freq_idx``: the
-        matrix of the matrix-free residual."""
+        matrix of the matrix-free residual, so a source ``f`` enters its
+        right-hand side as ``wave_eq.pml.row_weight * f``."""
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
@@ -175,6 +176,7 @@ class HelmholtzSolver:
         c = wf.velocity_model.c.to(device=device)
 
         sources = self.wave_eq.sources(self.geometry)
+        row_weight = self.wave_eq.pml.row_weight
         amp = torch.zeros(n_shots, nf, Nx, Ny, dtype=cdtype, device=device)
 
         assemble_times: list[float] = []
@@ -198,7 +200,7 @@ class HelmholtzSolver:
 
             # Batched RHS: columns are shots  (n, n_shots)
             F = (
-                sources[:, k]
+                (row_weight[k] * sources[:, k])
                 .detach()
                 .cpu()
                 .numpy()
