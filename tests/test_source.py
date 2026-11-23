@@ -1,16 +1,24 @@
 import pytest
 import torch
 
-from odil_wave import FrequencySelection, HelmholtzSolver, SourceSignal, Wavefield
+from odil_wave import FrequencySelection, HelmholtzSolver, Wavefield
 
 # conftest's tone burst: n_cycles / f0 = 2 / 40 kHz = 5e-5 s < the tiny grid's
 # t_max (6e-5 s), so the burst fits.
-from conftest import F0, T_MAX, make_geometry, make_grid, make_model, make_source
+from conftest import (
+    F0,
+    N_CYCLES,
+    T_MAX,
+    make_geometry,
+    make_grid,
+    make_model,
+    make_source,
+)
 
 
 def test_tone_burst_shape_and_dtype(grid):
     """The tone burst samples onto grid.t with the grid's shape and dtype."""
-    src = make_source(grid, offset=0)
+    src = make_source(grid, t_start=0.0)
     w = src.waveform()
     assert w.shape == (grid.nt,)
     assert w.dtype == grid.dtype
@@ -20,26 +28,25 @@ def test_tone_burst_shape_and_dtype(grid):
 
 def test_dimensionless_scaling(grid):
     """dimensionless=True multiplies the wavelet by the grid's natural amplitude."""
-    phys = make_source(grid, offset=0, amplitude=1.0, dimensionless=False)
-    nd = make_source(grid, offset=0, amplitude=1.0, dimensionless=True)
+    phys = make_source(grid, t_start=0.0, amplitude=1.0, dimensionless=False)
+    nd = make_source(grid, t_start=0.0, amplitude=1.0, dimensionless=True)
     # The natural amplitude scales the whole signal, so the peak ratio is exact.
     ratio = nd.waveform().abs().max() / phys.waveform().abs().max()
     assert float(ratio) == pytest.approx(grid.natural_source_amplitude(F0), rel=1e-6)
 
 
-def test_tone_burst_length_and_offset(grid):
-    """Tone burst fills the whole time axis and stays zero before its offset."""
-    offset = 10
-    tb = make_source(grid, offset=offset)
-    w = tb.waveform()
-    assert w.shape == (grid.nt,)
-    assert torch.all(w[:offset] == 0)
+def test_tone_burst_is_zero_outside_its_window(grid):
+    """The tone burst is zero before t_start and after n_cycles / f0."""
+    t_start = 10 * grid.dt
+    w = make_source(grid, t_start=t_start).waveform()
+    outside = (grid.t < t_start) | (grid.t >= t_start + N_CYCLES / F0)
+    assert torch.all(w[outside] == 0)
     assert float(w.abs().max()) > 0
 
 
 def test_tone_burst_rectangular_envelope(grid):
     """The rectangular envelope is supported and produces a non-trivial burst."""
-    tb = make_source(grid, offset=0, envelope="rectangular")
+    tb = make_source(grid, t_start=0.0, envelope="rectangular")
     w = tb.waveform()
     assert w.shape == (grid.nt,)
     assert float(w.abs().max()) > 0
@@ -51,17 +58,17 @@ def test_tone_burst_bad_envelope_raises(grid):
         make_source(grid, envelope="triangular")
 
 
-@pytest.mark.parametrize("offset", [-1, 10**6])
-def test_tone_burst_out_of_range_offset_raises(grid, offset):
+@pytest.mark.parametrize("t_start", [-1e-6, 1.0])
+def test_tone_burst_out_of_range_start_raises(grid, t_start):
     """A burst that starts before t=0 or runs past the time axis is rejected."""
-    with pytest.raises(ValueError, match="offset"):
-        make_source(grid, offset=offset)
+    with pytest.raises(ValueError, match="t_start"):
+        make_source(grid, t_start=t_start)
 
 
 def test_tone_burst_too_long_for_grid_raises(grid):
-    """A burst longer than the time axis is rejected, even at offset 0."""
-    with pytest.raises(ValueError, match="offset"):
-        make_source(grid, offset=0, n_cycles=100)
+    """A burst longer than the time axis is rejected, even at t_start = 0."""
+    with pytest.raises(ValueError, match="t_start"):
+        make_source(grid, t_start=0.0, n_cycles=100)
 
 
 def test_ricker_centre_time(grid):
@@ -80,7 +87,7 @@ def test_unknown_kind_raises(grid):
 
 def test_spectrum_matches_fft_of_waveform(grid, freq_selection):
     """spectrum(fs) equals the FFT of the sampled waveform gathered on fs bins."""
-    src = make_source(grid, offset=0)
+    src = make_source(grid, t_start=0.0)
     spec = src.spectrum(freq_selection)
     assert spec.shape == (freq_selection.n_frequencies,)
     assert spec.is_complex()
@@ -90,7 +97,7 @@ def test_spectrum_matches_fft_of_waveform(grid, freq_selection):
 
 def test_spectrum_uses_selection_bins(grid):
     """Different bin selections gather different spectral samples."""
-    src = make_source(grid, offset=0)
+    src = make_source(grid, t_start=0.0)
     fs2 = FrequencySelection.from_bins(grid, [2, 4, 6])
     spec = src.spectrum(fs2)
     assert spec.shape == (3,)
@@ -98,19 +105,34 @@ def test_spectrum_uses_selection_bins(grid):
     assert torch.allclose(spec, full[torch.tensor([2, 4, 6])])
 
 
-def _ricker_at_nt(nt: int):
-    """A Ricker source on a grid of ``nt`` samples with ``nt * dt`` fixed, so
-    the selected bin frequency does not move with ``nt``. Ricker, not the tone
-    burst: the burst's length is quantised to whole samples."""
+def _source_at_nt(nt: int, **source_kw):
+    """A source on a grid of ``nt`` samples with ``nt * dt`` fixed, so the
+    selected bin frequency does not move with ``nt``."""
     grid = make_grid(t_max=T_MAX * (nt - 1) / nt, init_nt=nt)
     freq = FrequencySelection.from_frequencies(grid, [F0])
-    return grid, freq, SourceSignal(grid, kind="ricker", f0=F0)
+    return grid, freq, make_source(grid, **source_kw)
 
 
-def test_spectrum_independent_of_nt():
+def _ricker_at_nt(nt: int):
+    return _source_at_nt(nt, kind="ricker")
+
+
+@pytest.mark.parametrize(
+    "source_kw",
+    [
+        dict(kind="ricker"),
+        dict(envelope="gaussian"),
+        dict(envelope="rectangular"),
+    ],
+)
+def test_spectrum_independent_of_nt(source_kw):
     """At a fixed bin frequency, doubling nt leaves the source spectrum unchanged
-    (an unnormalised DFT would double it)."""
-    (_, fs1, src1), (_, fs2, src2) = _ricker_at_nt(120), _ricker_at_nt(240)
+    (an unnormalised DFT would double it; a burst built from samples would move
+    by ~3%)."""
+    (_, fs1, src1), (_, fs2, src2) = (
+        _source_at_nt(120, **source_kw),
+        _source_at_nt(240, **source_kw),
+    )
     assert float(fs1.frequencies) == pytest.approx(float(fs2.frequencies))
     torch.testing.assert_close(
         src1.spectrum(fs1), src2.spectrum(fs2), rtol=1e-4, atol=0

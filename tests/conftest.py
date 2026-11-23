@@ -38,7 +38,7 @@ T_MAX, INIT_NT = 6e-5, 120
 PML = 12
 F0 = 40e3
 N_CYCLES = 2.0
-OFFSET = 5
+T_START = 5e-6
 DTYPE = torch.float64
 
 
@@ -71,7 +71,7 @@ def make_source(grid, **overrides) -> SourceSignal:
         n_cycles=N_CYCLES,
         envelope="gaussian",
         dimensionless=True,
-        offset=OFFSET,
+        t_start=T_START,
     )
     kw.update(overrides)
     return SourceSignal(grid, **kw)
