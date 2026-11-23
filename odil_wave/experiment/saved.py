@@ -10,8 +10,8 @@ and :func:`load_final_metrics`. ``tape.csv`` belongs to :mod:`.tape` and
 
 Every array is saved as float32 / complex64 whatever ``runtime.dtype`` (masks
 bool, indices int64), in an uncompressed ``.npz`` written atomically. Velocities
-cover the interior only; the full-grid model is the interior padded with
-``pml_c`` (:meth:`~odil_wave.models.VelocityModel.from_interior`).
+cover the interior only; the full-grid model is the interior with its edge
+replicated into the PML (:meth:`~odil_wave.models.VelocityModel.from_interior`).
 """
 
 from __future__ import annotations
@@ -114,7 +114,6 @@ class ProblemArrays:
 
     c_star: np.ndarray
     c0: np.ndarray
-    pml_c: float  # the frozen PML speed, m/s
     brain_mask: np.ndarray
     skull_mask: np.ndarray
     transducer_angles_deg: np.ndarray  # (n_transducers,): shot k's ring angle
@@ -128,7 +127,6 @@ class ProblemArrays:
         return cls(
             c_star=_single(problem.truth_velocity.c[sl]),
             c0=_single(problem.init_velocity.c[sl]),
-            pml_c=float(problem.init_velocity.pml_c),
             brain_mask=np.asarray(brain, dtype=bool),
             skull_mask=np.asarray(skull, dtype=bool),
             transducer_angles_deg=transducer_angles_deg(
@@ -141,8 +139,10 @@ class ProblemArrays:
     def load(cls, path: Path) -> "ProblemArrays":
         z = _load_npz(path)
         (x0, x1), (y0, y1) = z.pop("interior_slice")
+        # Runs saved before #164 also hold their frozen PML speed.
+        z.pop("pml_c", None)
         return cls(
-            **{**z, "pml_c": float(z["pml_c"])},
+            **z,
             interior_slice=(slice(int(x0), int(x1)), slice(int(y0), int(y1))),
         )
 
@@ -152,7 +152,6 @@ class ProblemArrays:
             {
                 "c_star": _single(self.c_star),
                 "c0": _single(self.c0),
-                "pml_c": np.float32(self.pml_c),
                 "brain_mask": np.asarray(self.brain_mask, dtype=bool),
                 "skull_mask": np.asarray(self.skull_mask, dtype=bool),
                 "transducer_angles_deg": _single(self.transducer_angles_deg),

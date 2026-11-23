@@ -45,7 +45,7 @@ def test_problem_npz_holds_the_truth_start_model_and_layout(tiny_two_band_run):
         saved["c0"], problem.init_velocity.c[sl].numpy(), rtol=1e-6
     )
     assert saved["c_star"].shape == (20, 20)
-    assert float(saved["pml_c"]) == pytest.approx(problem.init_velocity.pml_c)
+    assert "pml_c" not in saved
     _, brain, skull = problem.truth_velocity.skull_region_masks()
     assert np.array_equal(saved["brain_mask"], brain[sl].numpy())
     assert np.array_equal(saved["skull_mask"], skull[sl].numpy())
@@ -113,13 +113,16 @@ def test_band_velocities_need_no_config_when_given_a_grid(tiny_two_band_run, tmp
         )
 
 
-def test_band_velocities_without_problem_npz_or_pml_c_fail_clearly(
+def test_problem_npz_saved_with_a_frozen_pml_speed_still_loads(
     tiny_two_band_run, tmp_path
 ):
-    run_dir = shutil.copytree(tiny_two_band_run.run_dir, tmp_path / "run")
-    (run_dir / "problem.npz").unlink()
-    with pytest.raises(FileNotFoundError):
-        load_band_velocities(run_dir)
+    """Runs saved before the PML replicated the interior edge hold ``pml_c``."""
+    path = tiny_two_band_run.run_dir / "problem.npz"
+    legacy = tmp_path / "problem.npz"
+    np.savez(legacy, **load_npz(path), pml_c=np.float32(1500.0))
+    old, new = ProblemArrays.load(legacy), ProblemArrays.load(path)
+    np.testing.assert_array_equal(old.c0, new.c0)
+    assert old.interior_slice == new.interior_slice
 
 
 # --------------------------------------------------------------------------- #

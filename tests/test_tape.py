@@ -220,12 +220,10 @@ def expected_model_error(problem, c_full: np.ndarray) -> dict:
 
 def saved_final_model(band_dir: Path, problem) -> np.ndarray:
     """A band's saved final model (interior, in ``arrays.npz``) padded to the
-    full grid with the frozen PML speed."""
+    full grid with its edge replicated into the PML."""
     with np.load(band_dir / "arrays.npz") as saved:
         c = saved["c"]
-    return np.pad(
-        c, problem.grid.pml_width, constant_values=problem.init_velocity.pml_c
-    )
+    return np.pad(c, problem.grid.pml_width, mode="edge")
 
 
 def band_start_models(run_dir: Path, problem) -> list:
@@ -256,7 +254,6 @@ def test_start_row_residuals_match_a_helmholtz_solve(tiny_two_band_run):
         model = VelocityModel.from_field(
             problem.grid,
             torch.as_tensor(c_start, dtype=problem.dtype),
-            pml_c=problem.init_velocity.pml_c,
         )
         band = problem.make_band(bands[b].frequencies_hz, model)
         wf = Wavefield(problem.grid, band.frequency_selection, velocity_model=model)

@@ -12,9 +12,9 @@ Formulation
       m(z_m) = m_min + (m_max - m_min) * sigmoid(z_scale * z_m),
       m_min = 1 / c_max**2 ,   m_max = 1 / c_min**2 ,   c = 1 / sqrt(m),
 
-  with ``c_min`` / ``c_max`` the grid's velocity bounds. PML cells stay at
-  ``pml_c``. The sigmoid keeps every L-BFGS line-search trial in bounds (no
-  post-step projection).
+  with ``c_min`` / ``c_max`` the grid's velocity bounds. PML cells replicate
+  the interior edge (``VelocityModel.build_full_c``). The sigmoid keeps every
+  L-BFGS line-search trial in bounds (no post-step projection).
 
 * Scaled wavefield ``u = u_ref * u_tilde`` with a fixed per-(shot, frequency)
   scalar ``u_ref[s, w] = max(RMS_active|u_init[s, w]|, eps_u)``.
@@ -314,7 +314,6 @@ class JointFreqODIL:
         )
 
         self.vm_in = wavefield.velocity_model
-        self.pml_c = float(self.vm_in.pml_c)
 
         # ---- fixed reference model / wavefield / residual scales ---------- #
         self.sources = band.sources  # (n_shots, nf, Nx, Ny), t0**2-scaled, no m-dep
@@ -414,7 +413,8 @@ class JointFreqODIL:
         At ``(u_seed, z0)``, ``z0`` the band's initial latent (``init_params``):
         ``H_kk`` is w.r.t. ``k = (c/c0)^2`` (exact, as ``r`` is linear in ``k``),
         ``H_zz`` w.r.t. ``z_m`` (exact where the PDE residual vanishes, i.e. for
-        a Helmholtz warm start).
+        a Helmholtz warm start). An edge cell's curvature counts the PML cells
+        replicating it.
         """
         c_full = self.c_full_of_z(z0)
         no_src = torch.zeros_like(self.u_seed)
@@ -425,8 +425,12 @@ class JointFreqODIL:
             ) - self.wave_eq.residual(
                 self.u_seed, torch.full_like(c_full, self.c0), no_src
             )
-            lap_u = lap_u[:, :, self._interior_slice[0], self._interior_slice[1]]
-            H_kk = (abs_sq(lap_u) / self.pde_scale.square()).sum(dim=(0, 1))
+            H_full = (abs_sq(lap_u) / self.pde_scale.square()).sum(dim=(0, 1))
+        # Each PML cell's k is its edge cell's, so the edge cell sums their
+        # curvature: the adjoint of the (linear) PML padding.
+        k_int = torch.zeros_like(z0, requires_grad=True)
+        (H_kk,) = torch.autograd.grad(self.vm_in.build_full_c(k_int), k_int, H_full)
+        with torch.no_grad():
             H_kk = self.pde_weight * H_kk / (self.n_int * self.n_shots * self.nf)
             # k = 1 / (c0^2 m)
             m = self.latent.m_of_z(z0)
@@ -619,7 +623,7 @@ class JointFreqODIL:
             # the objective at the final iterate instead (not counted as a closure).
             loss_final = float(self.objective(v_re_final, v_im_final, z_final))
             velocity_model = VelocityModel.from_field(
-                self.grid, self.c_full_of_z(z_final), pml_c=self.vm_in.pml_c
+                self.grid, self.c_full_of_z(z_final)
             )
             u_final = self.physical_u(v_re_final, v_im_final)
         return BandSolve(

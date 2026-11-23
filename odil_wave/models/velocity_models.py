@@ -17,7 +17,7 @@ from odil_wave.plot_utils import length_scale
 # Speed-of-sound constants + phantom parameters mirroring the Stride reference
 # ``stride/stride_forward_shepp.py::shepp_logan_sos`` so the Shepp-Logan model
 # built here is numerically identical to the Stride forward ground truth.
-SOS_WATER = 1500.0  # background / PML fill [m/s]
+SOS_WATER = 1500.0  # background [m/s]
 SOS_SKULL = 3000.0  # constant skull-rim speed [m/s]
 SOFT_INTERCEPT = 1450.0  # interior = SOFT_INTERCEPT + SOFT_SLOPE * phantom
 SOFT_SLOPE = 300.0
@@ -71,7 +71,8 @@ def profile_velocity_norm(
 
 
 class VelocityModel:
-    """2D velocity field c(x, y) attached to a Grid (full extended grid).
+    """2D velocity field c(x, y) attached to a Grid (full extended grid), its
+    PML the interior edge replicated outwards (:meth:`build_full_c`).
 
     ``**profile_kwargs``: ``radius`` (m) and ``center`` (``(x, y)`` m,
     default the interior centre) for ``overdensity``; ``c_water``,
@@ -87,7 +88,6 @@ class VelocityModel:
         profile: str = "shepp_logan",
         base: float = 1500.0,
         contrast: float = 0.4,
-        pml_c: Optional[float] = None,
         scale: float = 0.85,
         skull_alpha: float = 1.0,
         skull_sigma: float = 0.0,
@@ -95,8 +95,7 @@ class VelocityModel:
     ):
         """Build ``profile``'s velocity field on the full grid.
 
-        ``base`` and ``contrast`` are m/s. ``pml_c`` ``None`` is the interior
-        background (skull profiles), else the field minimum. ``scale`` is the
+        ``base`` and ``contrast`` are m/s. ``scale`` is the
         fraction of the interior the Shepp-Logan phantom occupies.
         ``shepp_logan_skull`` only: ``skull_alpha`` in [0, 1] scales the skull
         contrast, ``c = c_water + alpha * G_σ(c_perfect - c_water)``;
@@ -110,24 +109,15 @@ class VelocityModel:
         self.skull_alpha = skull_alpha
         self.skull_sigma = skull_sigma
         self.profile_kwargs = profile_kwargs
-        self.c = self._build()
-        if pml_c is not None:
-            self.pml_c = float(pml_c)
-        elif self._interior_bg is not None:
-            # Skull profiles: match the PML to the surrounding brain background.
-            self.pml_c = float(self._interior_bg)
-        else:
-            self.pml_c = float(self.c.min())
+        self.c = self.build_full_c(self._build()[grid.interior_slice])
 
     @classmethod
     def from_field(
         cls,
         grid: Grid,
         c: torch.Tensor,
-        pml_c: Optional[float] = None,
     ) -> "VelocityModel":
-        """A maskless ``"custom"`` model of a full-grid ``c``; ``pml_c``
-        defaults to its minimum."""
+        """A maskless ``"custom"`` model of a full-grid ``c``, taken as is."""
         vm = cls.__new__(cls)
         vm.grid = grid
         vm.profile = "custom"
@@ -135,7 +125,6 @@ class VelocityModel:
         vm.contrast = float("nan")
         vm.profile_kwargs = {}
         vm.c = c.to(dtype=grid.dtype, device=grid.device).reshape(grid.shape)
-        vm.pml_c = float(pml_c) if pml_c is not None else float(vm.c.min())
         vm._head_mask = None  # noqa: SLF001 - alternate constructor
         vm._interior_mask = None  # noqa: SLF001 - alternate constructor
         vm._rim_mask = None  # noqa: SLF001 - alternate constructor
@@ -143,22 +132,22 @@ class VelocityModel:
         return vm
 
     @classmethod
-    def from_interior(
-        cls, grid: Grid, c_interior: torch.Tensor, pml_c: float
-    ) -> "VelocityModel":
+    def from_interior(cls, grid: Grid, c_interior: torch.Tensor) -> "VelocityModel":
         """A model from an interior ``c`` ``(interior_nx, interior_ny)``, its PML
-        filled with ``pml_c`` by :meth:`build_full_c`: a saved band's model."""
-        vm = cls.from_field(grid, torch.full(grid.shape, float(pml_c)), pml_c=pml_c)
+        filled by :meth:`build_full_c`: a saved band's model."""
+        vm = cls.from_field(grid, torch.empty(grid.shape))
         vm.c = vm.build_full_c(c_interior.to(dtype=grid.dtype, device=grid.device))
         return vm
 
     def build_full_c(self, c_interior: torch.Tensor) -> torch.Tensor:
         """The full-grid ``c`` of an interior ``c`` ``(interior_nx,
-        interior_ny)``, its PML at the fixed ``pml_c``."""
+        interior_ny)``, each PML cell the speed of its nearest interior edge
+        cell; the PML's gradient sums onto those edge cells."""
         p = self.grid.pml_width
         if p == 0:
             return c_interior
-        return F.pad(c_interior, (p, p, p, p), mode="constant", value=self.pml_c)
+        # 2D replicate padding needs a (batch, channel) prefix.
+        return F.pad(c_interior[None, None], (p, p, p, p), mode="replicate")[0, 0]
 
     def _shepp_logan_interior_phantom(self, scale: float, threshold: float):
         """``(phantom, head, inner, rim)`` on the interior: a float32 phantom in

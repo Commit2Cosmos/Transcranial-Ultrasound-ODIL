@@ -154,7 +154,6 @@ def _build_velocity(
         profile=spec.profile,
         base=spec.base,
         contrast=spec.contrast,
-        pml_c=spec.pml_c,
         scale=spec.scale,
         skull_alpha=spec.skull_alpha,
         skull_sigma=spec.skull_sigma,

@@ -81,49 +81,52 @@ def test_shepp_logan_skull_validates_params(grid):
 # --------------------------------------------------------------------------- #
 # PML embedding
 # --------------------------------------------------------------------------- #
-def _pml_ring(grid):
-    """Boolean full-grid mask of the PML ring (everything outside the interior)."""
-    ring = torch.ones(grid.shape, dtype=torch.bool)
-    ring[grid.interior_slice] = False
-    return ring
 
 
-def test_build_full_c_constant_fill(grid):
-    """The whole PML ring is padded with the fixed pml_c, not the interior edge."""
-    vm = make_model(grid, pml_c=1234.0)
-    # Non-uniform interior so an edge-replicating fill would differ from pml_c.
-    ci = (
-        torch.arange(grid.interior_nx * grid.interior_ny, dtype=grid.dtype).reshape(
-            grid.interior_shape
-        )
-        + 1600.0
-    )
-    full = vm.build_full_c(ci)
+def _ramp_interior(grid):
+    """A non-uniform interior c (m/s), so every edge cell differs."""
+    n = grid.interior_nx * grid.interior_ny
+    return torch.arange(n, dtype=grid.dtype).reshape(grid.interior_shape) + 1600.0
+
+
+def test_build_full_c_replicates_the_interior_edge(grid):
+    """Each PML cell takes the speed of the nearest interior edge cell."""
+    ci = _ramp_interior(grid)
+    full = make_model(grid).build_full_c(ci)
     assert full.shape == grid.shape
-    assert torch.allclose(full[grid.interior_slice], ci)
-    assert torch.all(full[_pml_ring(grid)] == 1234.0)
+    assert torch.equal(full[grid.interior_slice], ci)
+    sx, sy = grid.interior_slice
+    p = grid.pml_width
+    for i in range(p):
+        assert torch.equal(full[i, sy], ci[0])
+        assert torch.equal(full[-1 - i, sy], ci[-1])
+        assert torch.equal(full[sx, i], ci[:, 0])
+        assert torch.equal(full[sx, -1 - i], ci[:, -1])
+    assert torch.all(full[:p, :p] == ci[0, 0])
+    assert torch.all(full[-p:, -p:] == ci[-1, -1])
 
 
-def test_from_field_build_full_c_pads_with_pml_c(grid):
-    """from_field models use the same constant pml_c fill."""
-    vm = VelocityModel.from_field(
-        grid, torch.full(grid.shape, 1600.0, dtype=grid.dtype), pml_c=1500.0
-    )
-    ci = torch.full(grid.interior_shape, 1700.0, dtype=grid.dtype)
-    full = vm.build_full_c(ci)
-    assert torch.allclose(full[grid.interior_slice], ci)
-    assert torch.all(full[_pml_ring(grid)] == 1500.0)
+def test_build_full_c_sums_the_pml_gradient_onto_the_edge_cells(grid):
+    """The gradient of a sum over the full grid counts every cell a PML cell
+    copies: 1 inside, 1 + p on an edge, (1 + p)^2 at a corner."""
+    ci = _ramp_interior(grid).requires_grad_(True)
+    make_model(grid).build_full_c(ci).sum().backward()
+    p = grid.pml_width
+    assert float(ci.grad[1:-1, 1:-1].max()) == 1.0
+    assert float(ci.grad[0, 1:-1].min()) == 1.0 + p
+    assert float(ci.grad[0, 0]) == (1.0 + p) ** 2
 
 
-def test_from_interior_pads_an_interior_c_with_pml_c(grid):
-    """A saved band's interior c becomes a full-grid model, its PML ring at the
-    run's pml_c."""
+def test_from_interior_replicates_an_interior_c_into_the_pml(grid):
+    """A saved band's interior c becomes a full-grid model, its PML ring the
+    interior edge's speed."""
     ci = torch.full(grid.interior_shape, 1700.0, dtype=torch.float32)
-    vm = VelocityModel.from_interior(grid, ci, 1500.0)
+    ci[0] = 1650.0
+    vm = VelocityModel.from_interior(grid, ci)
     assert vm.c.shape == grid.shape and vm.c.dtype == grid.dtype
-    assert torch.all(vm.c[grid.interior_slice] == 1700.0)
-    assert torch.all(vm.c[_pml_ring(grid)] == 1500.0)
-    assert vm.pml_c == 1500.0
+    assert torch.all(vm.c[grid.interior_slice] == ci.to(grid.dtype))
+    assert torch.all(vm.c[: grid.pml_width, grid.interior_slice[1]] == 1650.0)
+    assert torch.all(vm.c[-grid.pml_width :, grid.interior_slice[1]] == 1700.0)
 
 
 def test_from_field_custom_profile(grid):
@@ -132,7 +135,6 @@ def test_from_field_custom_profile(grid):
     vm = VelocityModel.from_field(grid, c)
     assert vm.profile == "custom"
     assert torch.allclose(vm.c, c)
-    assert vm.pml_c == pytest.approx(1600.0)  # defaults to the field minimum
     assert vm.head_mask is None
 
 

@@ -272,9 +272,9 @@ def pde_residual_map(
     divided by the interior node count is that shot and frequency's value.
 
     The residual is the inversion's operator (``WaveEquation.residual``)
-    evaluated on the saved ``u`` and ``c`` (padded with ``pml_c``), on the problem
-    rebuilt from the run's config; nothing is solved. ``band``, ``shot`` and
-    ``frequency`` are as for :func:`wavefield_comparison`.
+    evaluated on the saved ``u`` and ``c`` (edge replicated into the PML), on
+    the problem rebuilt from the run's config; nothing is solved. ``band``,
+    ``shot`` and ``frequency`` are as for :func:`wavefield_comparison`.
     """
     run = SavedRun.load(run_dir)
     saved = _band(run, band)
@@ -290,9 +290,7 @@ def pde_residual_map(
         damping_scale=problem.damping_scale,
     )
     cdtype = wave_eq.wavefield.cdtype
-    model = VelocityModel.from_interior(
-        grid, torch.from_numpy(saved.c), run.problem.pml_c
-    )
+    model = VelocityModel.from_interior(grid, torch.from_numpy(saved.c))
     with torch.no_grad():
         u = torch.as_tensor(saved.arrays.u[k], dtype=cdtype)
         q = wave_eq.sources(geom)[shot]
