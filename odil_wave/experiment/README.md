@@ -15,6 +15,7 @@ run, …) are in `GLOSSARY.md`.
 | `rundir.py` | Where a run is written, the clean-tree / scratch policy, `metadata.json` provenance, schema versions |
 | `saved.py` | Every array and summary a run saves, and `SavedRun` to read them back |
 | `tape.py` | `tape.csv`: `COLUMNS` lists each column and what it measures |
+| `constraints.py` | Constraint checks on a config and their thresholds |
 | `health.py` | Optimiser-health warnings and their thresholds |
 | `postprocess.py` | A run's figures (`RUN_PLOTS`), drawn from the run directory only |
 | `on_demand.py` | Notebook plots of a saved run, not saved |
@@ -46,6 +47,11 @@ Overrides are dotted keys, parsed as JSON with a bare-string fallback. A run
 needs a clean git tree; `--scratch` allows a dirty one and saves `git.diff`.
 No experiment record may cite a scratch run. Ctrl-C ends a run as
 `interrupted`, keeping its tape and completed bands.
+
+`--dry-run` and every run's log print the constraint checks as a table, and
+`metadata.json` records them under `constraint_report`. A failed `error`
+check refuses the run; a failed `warn` check is printed and also recorded in
+`config_warnings`.
 
 From Python:
 

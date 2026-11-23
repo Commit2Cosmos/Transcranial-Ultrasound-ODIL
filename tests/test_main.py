@@ -68,6 +68,22 @@ def test_dry_run_default_config(capsys):
     assert "[dry-run] configuration is valid; no artifacts written." in out
 
 
+def test_dry_run_prints_the_constraint_report(capsys):
+    """The summary names the stencil order and source width, and the table
+    has a row per check, the default failing dispersion and ring sampling."""
+    assert main.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "space_order=2" in out and "sigma_s=0.0025" in out
+    assert "constraint checks:" in out
+    rows = {
+        line.split()[0]: line.split()[-1]
+        for line in out.splitlines()
+        if line.startswith("  ") and len(line.split()) > 1
+    }
+    assert rows["dispersion"] == "FAIL" and rows["ring_sampling"] == "FAIL"
+    assert rows["temporal_nyquist"] == "ok" and rows["pml_width"] == "ok"
+
+
 def test_dry_run_with_config_file(run_config_file, capsys):
     code = main.main(["--config", str(run_config_file), "--dry-run"])
     out = capsys.readouterr().out

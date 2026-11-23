@@ -1,4 +1,4 @@
-from .grid import Grid
+from .grid import Grid, time_samples
 from .frequency_selection import (
     FrequencySelection,
     complex_dtype,
@@ -8,6 +8,7 @@ from .frequency_selection import (
 
 __all__ = [
     "Grid",
+    "time_samples",
     "FrequencySelection",
     "complex_dtype",
     "discrete_lambda_t",

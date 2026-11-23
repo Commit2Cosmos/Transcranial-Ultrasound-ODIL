@@ -8,6 +8,7 @@ from .config import (
     resolve_config,
     validate_config,
 )
+from .constraints import Check, check_constraints, format_constraint_report
 from .live import LiveVelocityView
 from .on_demand import (
     optimiser_health,
@@ -48,6 +49,10 @@ __all__ = [
     "default_config_dict",
     "apply_overrides",
     "deep_merge",
+    # constraint checks
+    "Check",
+    "check_constraints",
+    "format_constraint_report",
     # problem
     "Problem",
     "build_problem",

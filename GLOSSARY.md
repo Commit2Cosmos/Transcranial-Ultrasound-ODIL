@@ -21,6 +21,10 @@ A single value change given on the command line, applied on top of the run confi
 The fully specified config of one run: the default config with that run's changes applied, recorded with the run.
 _Avoid_: effective config, final config
 
+**Constraint check**:
+A rule a config must satisfy for the grid, time step, source and transducers to resolve the problem; a failed check warns or refuses the run. Distinct from the optimiser health check, which watches a run as it goes.
+_Avoid_: sanity check, validation warning
+
 ### Experiments
 
 **Run**:

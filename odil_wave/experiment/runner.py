@@ -24,6 +24,7 @@ from odil_wave.loss import Regulariser
 
 from . import envinfo
 from .config import BandCfg, ConfigError, RunConfig, validate_config
+from .constraints import check_constraints, format_constraint_report
 from .health import HealthCheck
 from .postprocess import draw_reported, postprocess_run
 from .problem import Problem, build_problem, grid_summary
@@ -275,6 +276,8 @@ def run_inverse(
     called again); a ``KeyboardInterrupt`` ends it as ``interrupted``.
     """
     warnings = validate_config(config)
+    checks = check_constraints(config)
+    print(format_constraint_report(checks))
     for w in warnings:
         print(f"  [config warning] {w}")
     # The run summary's warnings: the config's, then each health warning fired.
@@ -304,6 +307,7 @@ def run_inverse(
         "seed_record": seed_record,
         "n_bands": len(config.continuation.bands),
         "config_warnings": warnings,
+        "constraint_report": [c.to_dict() for c in checks],
     }
 
     if on_log is not None:

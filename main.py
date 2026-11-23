@@ -46,12 +46,15 @@ def _summarise(cfg) -> str:
     )
     lines.append(
         f"grid            : interior={cfg.grid.interior_shape}, pml={cfg.pml.width}, "
-        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.time.init_nt}"
+        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.time.init_nt}, "
+        f"space_order={cfg.grid.space_order}"
     )
     lines.append(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
     lines.append(
         f"acquisition     : n_transducers={cfg.acquisition.n_transducers}, "
-        f"ring={cfg.acquisition.ring_center}"
+        f"ring={cfg.acquisition.ring_center}, "
+        f"source_spatial={cfg.acquisition.source_spatial}, "
+        f"sigma_s={cfg.acquisition.sigma_s}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
     obs_pml = cfg.pml.observation_width
@@ -201,6 +204,10 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
     # import lazily so --help stays instant.
     import yaml
 
+    from odil_wave.experiment.constraints import (
+        check_constraints,
+        format_constraint_report,
+    )
     from odil_wave.experiment.config import (
         ConfigError,
         default_config_dict,
@@ -225,6 +232,8 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         return 2
 
     print(_summarise(cfg))
+    if args.dry_run:  # a run prints the report in its own log (run_inverse)
+        print(format_constraint_report(check_constraints(cfg)))
     for w in warnings:
         print(f"[warning] {w}")
 
