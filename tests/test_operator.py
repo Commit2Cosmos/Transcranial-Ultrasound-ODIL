@@ -62,7 +62,7 @@ def tiny_setup():
     shared read-only across the Helmholtz integration tests."""
     grid = _make_grid()
     vm = make_model(grid)
-    source = make_source(grid, kind="ricker", f0=8e4, offset=0)
+    source = make_source(grid, kind="ricker", f0=8e4)
     freq = FrequencySelection.from_frequencies(grid, [8e4])
     geom = make_geometry(grid, source, freq, n_transducers=4, source_spatial="gaussian")
     wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)

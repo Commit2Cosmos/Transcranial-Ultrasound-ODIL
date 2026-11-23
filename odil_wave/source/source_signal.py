@@ -2,7 +2,6 @@ import math
 from typing import Optional
 
 import numpy as np
-import scipy.signal
 import torch
 import matplotlib.pyplot as plt
 
@@ -25,14 +24,14 @@ class SourceSignal:
         envelope: str = "gaussian",
         dimensionless: bool = True,
         t_centre: Optional[float] = None,
-        offset: int = 0,
+        t_start: float = 0.0,
     ):
         """Build a source pulse on `grid`; defaults follow ADR 0001.
 
         ``f0`` is in Hz, ``amplitude`` the peak of `s(t)` before the
         ``dimensionless`` scaling by ``grid.natural_source_amplitude(f0)``.
-        ``n_cycles``, ``envelope`` and ``offset`` (samples) are tone_burst
-        only; the burst must start and end on the grid's time axis.
+        ``n_cycles``, ``envelope`` and ``t_start`` (s) are tone_burst only;
+        the burst must start and end on the grid's time axis.
         ``t_centre`` is the Ricker centre in s, ``None`` -> ``1 / f0``.
         """
         self.grid = grid
@@ -50,7 +49,7 @@ class SourceSignal:
         )
         self.n_cycles = n_cycles
         self.envelope = envelope
-        self.offset = offset
+        self.t_start = t_start
 
         if kind == "ricker":
             self._signal = self._ricker(grid.t)
@@ -65,43 +64,33 @@ class SourceSignal:
         arg = (math.pi * self.f0 * (t - self.t_centre)) ** 2
         return self._amplitude_phys * (1.0 - 2.0 * arg) * torch.exp(-arg)
 
-    # Tone burst (Stride)
+    # Tone burst (Stride's shape, defined in continuous time)
     def _tone_burst(self) -> torch.Tensor:
-        """Sample the tone-burst onto the grid's time axis."""
-        dt = float(self.grid.dt)
-        n_samples = self.grid.nt
+        """Sample the tone burst at ``grid.t``, so its spectrum does not depend
+        on ``dt``."""
         tone_length = self.n_cycles / self.f0
-        n_tone = int(tone_length // dt + 1)
-
-        time_array = np.linspace(0, tone_length, n_tone, endpoint=False)
-        signal = np.sin(2 * np.pi * self.f0 * time_array)
-
-        if self.envelope == "gaussian":
-            window_x = np.linspace(-3.0, 3.0, n_tone)
-            window = np.exp(-(window_x**2) / 2)
-        elif self.envelope == "rectangular":
-            window = np.ones(n_tone)
-        else:
+        if self.t_start < 0 or self.t_start + tone_length > self.grid.t_max:
+            raise ValueError(
+                f"tone burst of {tone_length:g} s starting at t_start = "
+                f"{self.t_start:g} s does not fit the grid's time axis "
+                f"[0, {self.grid.t_max:g}] s"
+            )
+        if self.envelope not in ("gaussian", "rectangular"):
             raise ValueError(
                 f"envelope '{self.envelope}' not supported, "
                 "use 'gaussian' or 'rectangular'"
             )
 
-        signal = signal * window
-        signal = signal * scipy.signal.get_window(("tukey", 0.05), n_tone, False)
+        t = np.arange(self.grid.nt) * float(self.grid.dt) - self.t_start
+        x = t / tone_length  # burst on [0, 1)
+        inside = (x >= 0) & (x < 1)
+        x = np.where(inside, x, 0.0)
 
-        pad_after = n_samples - self.offset - n_tone
-        if self.offset < 0 or pad_after < 0:
-            raise ValueError(
-                f"tone burst of {n_tone} samples at offset {self.offset} does not "
-                f"fit the grid's {n_samples} time samples"
-            )
-        signal = np.pad(
-            signal,
-            ((self.offset, pad_after),),
-            mode="constant",
-            constant_values=0.0,
-        )
+        signal = np.sin(2 * np.pi * self.n_cycles * x)
+        if self.envelope == "gaussian":
+            signal = signal * np.exp(-((6 * x - 3) ** 2) / 2)
+        signal = signal * _tukey(x, alpha=0.05)
+        signal = np.where(inside, signal, 0.0)
         return torch.tensor(
             signal * self._amplitude_phys,
             dtype=self.grid.dtype,
@@ -195,3 +184,11 @@ def _as_frequency_array(frequencies):
     else:
         freqs = np.abs(np.asarray(freqs, dtype=float))
     return np.atleast_1d(freqs)
+
+
+def _tukey(x: np.ndarray, alpha: float) -> np.ndarray:
+    """Continuous Tukey window on ``x`` in [0, 1]: cosine tapers over the first
+    and last ``alpha / 2``."""
+    edge = np.minimum(x, 1 - x)
+    taper = 0.5 * (1 - np.cos(2 * np.pi * edge / alpha))
+    return np.where(edge < alpha / 2, taper, 1.0)
