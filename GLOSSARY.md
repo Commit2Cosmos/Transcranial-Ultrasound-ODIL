@@ -108,7 +108,7 @@ Everything inside the skull, excluding the skull itself.
 _Avoid_: interior, intracranial ROI, head ROI
 
 **PML**:
-The absorbing layer around the interior that suppresses reflections from the grid boundary. Its size that matters physically is its thickness in metres.
+The absorbing layer around the interior that suppresses reflections from the grid boundary. Its size that matters physically is its thickness in metres. Its velocity is the interior's edge velocity, extended outwards.
 _Avoid_: sponge, absorbing boundary, PML ring (ring is the transducer ring)
 
 **PDE term**:

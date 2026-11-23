@@ -93,7 +93,7 @@ def make_geometry(grid, source, freq, **overrides) -> AcquisitionGeometry:
 
 def make_model(grid, profile="homogeneous", **overrides) -> VelocityModel:
     """A velocity model on ``grid`` (1500 m/s background); overrides win."""
-    kw = dict(base=1500.0, contrast=0.0, pml_c=None)
+    kw = dict(base=1500.0, contrast=0.0)
     kw.update(overrides)
     return VelocityModel(grid, profile=profile, **kw)
 

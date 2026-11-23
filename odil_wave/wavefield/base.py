@@ -81,7 +81,6 @@ class Wavefield:
                 profile="homogeneous",
                 base=SOS_WATER,
                 contrast=0.0,
-                pml_c=None,
             )
 
     @property

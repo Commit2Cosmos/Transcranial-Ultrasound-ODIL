@@ -15,7 +15,7 @@ from odil_wave.models import VelocityModel
 
 from .config import RunConfig
 from .problem import Problem, build_problem
-from .saved import PROBLEM_FILE, ProblemArrays, load_bands, load_run_config
+from .saved import load_bands, load_run_config
 from .tape import load_tape
 
 
@@ -48,16 +48,15 @@ def _records(source: RunDirOrRecords) -> List[dict]:
 def load_final_velocity(
     run_dir: Union[str, Path],
     grid: Optional[Grid] = None,
-    pml_c: Optional[float] = None,
 ) -> VelocityModel:
     """Load the last completed band's final model (the run's final model) into
     a :class:`VelocityModel`.
 
-    ``grid`` and ``pml_c`` default to the ones rebuilt from the run's saved
-    config, so only the run directory is required; pass them to reuse a
-    ``Problem`` you already hold.
+    ``grid`` defaults to the one rebuilt from the run's saved config, so only
+    the run directory is required; pass it to reuse a ``Problem`` you already
+    hold.
     """
-    bands = load_band_velocities(run_dir, grid, pml_c)
+    bands = load_band_velocities(run_dir, grid)
     if not bands:
         raise FileNotFoundError(f"no completed band under {run_dir!r}")
     return bands[-1][2]
@@ -66,25 +65,21 @@ def load_final_velocity(
 def load_band_velocities(
     run_dir: Union[str, Path],
     grid: Optional[Grid] = None,
-    pml_c: Optional[float] = None,
 ) -> List[Tuple[int, str, VelocityModel]]:
     """Load every completed band's final model, in band order.
 
     Each band's ``arrays.npz`` holds the interior ``c``; the full-grid model is
-    it padded with ``pml_c``. Returns ``[(band_index, label, VelocityModel),
-    ...]`` sorted by band index. ``grid`` defaults to the one rebuilt from the
-    run's saved config and ``pml_c`` to the run's frozen PML speed (in
-    ``problem.npz``), so only the run directory is required.
+    it with its edge replicated into the PML. Returns ``[(band_index, label,
+    VelocityModel), ...]`` sorted by band index. ``grid`` defaults to the one
+    rebuilt from the run's saved config, so only the run directory is required.
     """
-    if pml_c is None:
-        pml_c = ProblemArrays.load(Path(run_dir) / PROBLEM_FILE).pml_c
     if grid is None:
         grid = rebuild_problem(run_dir).grid
     return [
         (
             band.index,
             band.label,
-            VelocityModel.from_interior(grid, torch.from_numpy(band.c), pml_c),
+            VelocityModel.from_interior(grid, torch.from_numpy(band.c)),
         )
         for band in load_bands(run_dir)
     ]

@@ -224,8 +224,6 @@ class ModelCfg:
       phantom occupies.
     * ``base``: m/s background velocity (homogeneous / overdensity).
     * ``contrast``: overdensity only; m/s added to ``base`` inside the anomaly.
-    * ``pml_c``: ``None`` -> derived (background for the Shepp-Logan
-      profiles, else the field minimum); constant velocity of the PML ring.
     * ``skull_alpha``: [0, 1]; shepp_logan_skull only (skull contrast fraction).
     * ``skull_sigma``: >= 0 grid cells; shepp_logan_skull only, Gaussian soft
       edge (try 1-3).
@@ -238,7 +236,6 @@ class ModelCfg:
     scale: float = library_default(VelocityModel, "scale")
     base: float = library_default(VelocityModel, "base")
     contrast: float = library_default(VelocityModel, "contrast")
-    pml_c: Optional[float] = library_default(VelocityModel, "pml_c")
     skull_alpha: float = library_default(VelocityModel, "skull_alpha")
     skull_sigma: float = library_default(VelocityModel, "skull_sigma")
     extra: Dict[str, Any] = field(default_factory=dict)

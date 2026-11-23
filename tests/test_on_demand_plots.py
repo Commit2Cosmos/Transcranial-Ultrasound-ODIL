@@ -151,7 +151,6 @@ def with_helmholtz_wavefields(run_dir: Path, tmp_path: Path, config) -> Path:
     model = VelocityModel.from_field(
         problem.grid,
         torch.as_tensor(saved_final_model(band_dir, problem), dtype=problem.dtype),
-        pml_c=problem.init_velocity.pml_c,
     )
     band = problem.make_band(config.continuation.bands[-1].frequencies_hz, model)
     u = band.u_init.numpy()[arrays.shots]
