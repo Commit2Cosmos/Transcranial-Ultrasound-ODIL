@@ -14,20 +14,21 @@ def _mirror_ghost_faces(a: torch.Tensor) -> torch.Tensor:
 
 
 class Pml:
-    """Conservative stretched-coordinate PML, per frequency.
+    """Conservative stretched-coordinate PML, per frequency, its rows divided
+    by ``s_x s_y`` (ADR-0002).
 
     With ``s_ξ = 1 + weight σ_ξ / (iω)`` along axis ``ξ`` (``weight = 0``
     disables it)::
 
-        mass(λ_tt) u = λ_tt s_x s_y u
-        stretched_laplacian(u) = s_y Λ̃_x u + s_x Λ̃_y u,
+        stretched_laplacian(u) = Λ̃_x u / s_x + Λ̃_y u / s_y,
         Λ̃_ξ u = Λ_ξ u + D⁻_ξ[(1/s_ξ − 1) D⁺_ξ u]
 
     ``Λ_ξ`` is the order-P second difference and ``D±`` the order-2 one-sided
-    differences, ``1/s`` sampled on the faces between nodes. In the interior
-    ``s = 1``, so both reduce to ``λ_tt u`` and ``Λ_x u + Λ_y u``. At order 2
-    ``Λ̃`` is the conservative form ``D⁻ (1/s) D⁺``; at higher orders the PML
-    reflects more (#160 decides that form).
+    differences, ``1/s`` sampled on the faces between nodes; the mass term
+    stays ``λ_tt u`` and the source is multiplied by ``row_weight``. In the
+    interior ``s = 1``, so the Laplacian reduces to ``Λ_x u + Λ_y u``. At
+    order 2 ``Λ̃`` is the conservative form ``D⁻ (1/s) D⁺``; at higher orders
+    the PML reflects more (#160 decides that form).
     """
 
     def __init__(self, wavefield: Wavefield, weight: float) -> None:
@@ -59,20 +60,17 @@ class Pml:
         self.a_y = _mirror_ghost_faces(
             (1.0 / (1.0 + w * sig_yf * inv_iw) - 1.0).transpose(1, 2)
         ).transpose(1, 2)
-
-    def mass(self, lambda_tt: torch.Tensor) -> torch.Tensor:
-        """``λ_tt s_x s_y``, ``(nf, nx, ny)``; ``lambda_tt`` broadcast ``(…, nf,
-        1, 1)``."""
-        return lambda_tt * self.s_x * self.s_y
+        # (nf, nx, ny): 1 / (s_x s_y), the source's factor.
+        self.row_weight = 1.0 / (self.s_x * self.s_y)
 
     def stretched_laplacian(
         self, u: torch.Tensor, u_xx: torch.Tensor, u_yy: torch.Tensor
     ) -> torch.Tensor:
-        """``s_y Λ̃_x u + s_x Λ̃_y u`` from ``u`` and its order-P ``u_xx``,
+        """``Λ̃_x u / s_x + Λ̃_y u / s_y`` from ``u`` and its order-P ``u_xx``,
         ``u_yy``; all ``(…, nf, nx, ny)`` complex."""
         corr_x = _flux_difference(u, self.a_x, dim=-2) / self.dx_nd**2
         corr_y = _flux_difference(u, self.a_y, dim=-1) / self.dy_nd**2
-        return self.s_y * (u_xx + corr_x) + self.s_x * (u_yy + corr_y)
+        return (u_xx + corr_x) / self.s_x + (u_yy + corr_y) / self.s_y
 
 
 def _flux_difference(u: torch.Tensor, a: torch.Tensor, dim: int) -> torch.Tensor:

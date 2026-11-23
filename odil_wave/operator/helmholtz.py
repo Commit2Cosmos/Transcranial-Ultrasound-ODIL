@@ -147,13 +147,13 @@ class HelmholtzSolver:
             ),
         )
         # Row-major (nx, ny) flattening: x is the slow index.
-        sx_nodes = np.repeat(s_x, ny)
-        sy_nodes = np.tile(s_y, nx)
-        lap = sp.diags(sy_nodes) @ Lx + sp.diags(sx_nodes) @ Ly
+        lap = (
+            sp.diags(1.0 / np.repeat(s_x, ny)) @ Lx
+            + sp.diags(1.0 / np.tile(s_y, nx)) @ Ly
+        )
 
         cd = np_complex_dtype(self.wavefield.cdtype)
-        mass = lam_tt * sx_nodes * sy_nodes
-        H = (sp.diags(mass) - sp.diags(c_nd2) @ lap).astype(cd)
+        H = (lam_tt * sp.identity(n) - sp.diags(c_nd2) @ lap).astype(cd)
         assert H.shape == (n, n)
         return H.tocsr()
 

@@ -14,10 +14,11 @@ class WaveEquation:
     """Discrete frequency-domain acoustic residual with a stretched-coordinate
     PML (:class:`~odil_wave.operator.conditions.Pml`)::
 
-        r(ω) = λ_tt s_x s_y u - c'^2 (s_y Λ̃_x u + s_x Λ̃_y u) - f̂'
+        r(ω) = λ_tt u - c'^2 (Λ̃_x u / s_x + Λ̃_y u / s_y) - f̂' / (s_x s_y)
 
-    with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed PML
-    absorption, ``0`` disables it) and the 2nd-order centred symbol
+    (the conservative stretched form with its rows divided by ``s_x s_y``,
+    ADR-0002) with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed
+    PML absorption, ``0`` disables it) and the 2nd-order centred symbol
     ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)`` from FrequencySelection. In the
     interior ``s = 1`` and ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow
     ADR 0001.
@@ -38,8 +39,9 @@ class WaveEquation:
         self.pml = Pml(self.wavefield, self.damping_scale)
 
     def sources(self, geometry) -> torch.Tensor:
-        """Every shot's source term, scaled by ``t0**2`` as :meth:`residual`
-        takes it: complex ``(n_shots, n_frequencies, nx, ny)``."""
+        """Every shot's source term, scaled by ``t0**2`` and divided by
+        ``s_x s_y`` as :meth:`residual` takes it: complex ``(n_shots,
+        n_frequencies, nx, ny)``."""
         grid = self.wavefield.grid
         cdtype = self.wavefield.cdtype
         return (
@@ -50,6 +52,7 @@ class WaveEquation:
                 ]
             )
             * grid.t0**2
+            * self.pml.row_weight
         )
 
     def residual(
@@ -57,11 +60,11 @@ class WaveEquation:
     ) -> torch.Tensor:
         """Complex dimensionless PDE residual, shaped as ``amp`` ``(n_shots,
         n_frequencies, nx, ny)``; ``wsp`` in m/s, ``source`` scaled by
-        ``t0**2``."""
+        ``t0**2`` and divided by ``s_x s_y`` (:meth:`sources`)."""
         c0 = self.wavefield.grid.c0
         wsp_nd = wsp / c0
         _, lambda_tt = self.wavefield.frequency_selection.symbols_broadcast()
         lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
         u_xx, u_yy = self._lap.axes(amp)
         lap = self.pml.stretched_laplacian(amp, u_xx, u_yy)
-        return self.pml.mass(lambda_tt) * amp - wsp_nd**2 * lap - source
+        return lambda_tt * amp - wsp_nd**2 * lap - source
