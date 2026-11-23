@@ -6,7 +6,7 @@ renders its result as the table ``--dry-run`` and the run log print.
 :func:`~odil_wave.experiment.config.validate_config` turns failed checks into a
 :class:`~odil_wave.experiment.config.ConfigError` (``error``) or config
 warnings (``warn``). The optimiser health check during a run lives in
-:mod:`.health`. Thresholds are module constants, not config keys; the basis
+:mod:`.health`. Tolerances are module constants, not config keys; the basis
 for each is ``research/discretisation-constraints.md`` and issue #124.
 """
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import operator
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
 import numpy as np
 from scipy.optimize import brentq
@@ -27,6 +27,12 @@ from odil_wave.models.velocity_models import SOS_WATER
 if TYPE_CHECKING:
     from .config import RunConfig
 
+# Least Gaussian source width, in grid spacings.
+MIN_SOURCE_CELLS = 1.0
+# Largest k_max * sigma_s before the source low-pass filters the top frequency.
+MAX_SOURCE_K_SIGMA = 1.0
+# Least ring clearance to the PML, in source widths.
+MIN_CLEARANCE_SIGMAS = 3.0
 # Fewest PML cells per side: a stretched PML's reflection is set by its width
 # in cells (#37, ``pml_check``).
 MIN_PML_CELLS = 12
@@ -49,9 +55,9 @@ class Check:
     name: str
     quantity: str
     value: float
-    op: str
+    op: Literal["<", "<=", ">", ">="]
     threshold: float
-    severity: str
+    severity: Literal["error", "warn"]
     message: str
 
     @property
@@ -112,9 +118,6 @@ class _Geometry:
 
 
 def _source_width(cfg: "RunConfig", g: _Geometry) -> List[Check]:
-    """Whether a Gaussian ``acquisition.sigma_s`` is resolved, passes the top
-    band frequency and keeps the ring clear of the PML; each message names
-    ``sigma/h``, ``k_max sigma`` and the ring's clearance to the PML."""
     sigma = float(cfg.acquisition.sigma_s)
     h = max(g.dx, g.dy)
     k_max = 2.0 * math.pi * g.f_max / float(cfg.grid.c_min)
@@ -130,10 +133,11 @@ def _source_width(cfg: "RunConfig", g: _Geometry) -> List[Check]:
             quantity="sigma_s / h",
             value=sigma / h,
             op=">=",
-            threshold=1.0,
+            threshold=MIN_SOURCE_CELLS,
             severity="warn",
             message=(
-                f"acquisition.sigma_s={sigma:g} m is under-resolved (< 1.0 h): the "
+                f"acquisition.sigma_s={sigma:g} m is under-resolved "
+                f"(< {MIN_SOURCE_CELLS} h): the "
                 f"source's normalisation is off by ~{err:.0e} {facts}"
             ),
         ),
@@ -142,11 +146,11 @@ def _source_width(cfg: "RunConfig", g: _Geometry) -> List[Check]:
             quantity="k_max * sigma_s",
             value=k_max * sigma,
             op="<=",
-            threshold=1.0,
+            threshold=MAX_SOURCE_K_SIGMA,
             severity="warn",
             message=(
                 f"acquisition.sigma_s={sigma:g} m low-pass filters the top frequency "
-                f"(k_max*sigma_s > 1, amplitude factor "
+                f"(k_max*sigma_s > {MAX_SOURCE_K_SIGMA:g}, amplitude factor "
                 f"{math.exp(-((k_max * sigma) ** 2) / 4):.2f}) {facts}"
             ),
         ),
@@ -155,11 +159,11 @@ def _source_width(cfg: "RunConfig", g: _Geometry) -> List[Check]:
             quantity="ring clearance to PML / sigma_s",
             value=g.clearance / sigma,
             op=">=",
-            threshold=3.0,
+            threshold=MIN_CLEARANCE_SIGMAS,
             severity="warn",
             message=(
                 f"acquisition.sigma_s={sigma:g} m: the transducer ring is within "
-                f"3 sigma_s of the PML {facts}"
+                f"{MIN_CLEARANCE_SIGMAS:g} sigma_s of the PML {facts}"
             ),
         ),
     ]
@@ -179,8 +183,8 @@ def _dispersion(cfg: "RunConfig", g: _Geometry) -> Check:
         message=(
             f"numerical dispersion: the order-{order} stencil at dx = "
             f"{g.dx * 1e3:.3g} mm accumulates {phase:.2f} rad of phase error over "
-            f"the ring diameter at {g.f_max / 1e3:g} kHz in water (> pi/4; "
-            f"velocity bias {err * SOS_WATER:.1f} m/s); refine grid.interior_shape "
+            f"the ring diameter at {g.f_max / 1e3:g} kHz in water "
+            f"(> {PHASE_TOLERANCE:.2f} rad; velocity bias {err * SOS_WATER:.1f} m/s); refine grid.interior_shape "
             "or raise grid.space_order"
         ),
     )
@@ -236,7 +240,8 @@ def _time_symbol(g: _Geometry) -> Check:
         message=(
             f"time-symbol error: dt = {g.dt:.3g} s accumulates {phase:.2f} rad of "
             f"phase error over the ring diameter at {g.f_max / 1e3:g} kHz in water "
-            f"(> pi/4; velocity bias {err * SOS_WATER:.1f} m/s); raise "
+            f"(> {PHASE_TOLERANCE:.2f} rad; velocity bias {err * SOS_WATER:.1f} "
+            "m/s); raise "
             "time.init_nt (#116)"
         ),
     )

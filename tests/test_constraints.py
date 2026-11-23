@@ -121,3 +121,46 @@ def test_a_point_source_has_no_source_width_checks():
     cfg = resolve_config({}, ["acquisition.source_spatial=point"])
     names = {c.name for c in check_constraints(cfg)}
     assert names.isdisjoint(SOURCE_WIDTH_CHECKS)
+
+
+@pytest.mark.parametrize(
+    "source, f",
+    [
+        ({"kind": "tone_burst", "envelope": "gaussian"}, 100e3),
+        ({"kind": "tone_burst", "envelope": "rectangular"}, 90e3),
+        ({"kind": "ricker", "envelope": "gaussian"}, 140e3),
+    ],
+)
+def test_source_spectrum_matches_the_source_signal(source, f):
+    """The check's amplitude ratio agrees with SourceSignal's sampled spectrum
+    at f over its peak (searched on 2 kHz bins from 2 to 300 kHz), to 0.05:
+    the check ignores the Tukey taper and the negative-frequency image."""
+    from odil_wave import FrequencySelection, Grid, SourceSignal
+
+    cfg = resolve_config({"source": source}, [_bands(f)])
+    grid = Grid(
+        interior_shape=(9, 9),
+        interior_extent=((0.0, 0.01), (0.0, 0.01)),
+        c_min=cfg.grid.c_min,
+        c_max=cfg.grid.c_max,
+        t_max=cfg.time.t_max,
+        init_nt=cfg.time.init_nt,
+    )
+    src = SourceSignal(
+        grid,
+        kind=cfg.source.kind,
+        f0=cfg.source.f0,
+        n_cycles=cfg.source.n_cycles,
+        envelope=cfg.source.envelope,
+    )
+    freqs = [f, *(2e3 * i for i in range(1, 151))]
+    spec = src.spectrum(FrequencySelection.from_frequencies(grid, freqs)).abs()
+    expected = float(spec[0] / spec.max())
+    assert _check(
+        "source_spectrum",
+        [
+            f"source.kind={source['kind']}",
+            f"source.envelope={source['envelope']}",
+            _bands(f),
+        ],
+    ).value == pytest.approx(expected, abs=0.05)
