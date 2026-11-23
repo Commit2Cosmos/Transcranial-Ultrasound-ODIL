@@ -137,3 +137,5 @@ Current.
 2026-11-23 · note · #174 · The tone burst is now built in continuous time, not stretched to whole samples: at 80 kHz on the default grid the source spectrum changes by 5.5% (mostly a 0.055 rad phase), in both the truth data and the forward source. Exact numbers will not reproduce; conclusions should hold.
 
 2026-11-23 · note · #164 · The PML now replicates the interior edge velocity instead of a frozen 1500 m/s, and the model gradient and `pde_diagonal` curvature of edge cells count their PML copies. Every run whose inversion moves an edge cell changes (tiny config: final `rel_wavefield_error` 0.10748, was 0.10745); exact numbers will not reproduce. Conclusions should hold.
+
+2026-11-23 · note · #179 · The Shepp-Logan truth is now the analytic phantom in metres. The skull is 6.5 mm, not 4.0 mm, and is cell-averaged; the brain region loses its skull fragment and its boundary cells; `ssim.sigma` is in metres (same 11-cell window at 125²). The truth, the observed data and every region metric change (iteration-0 `rmse_brain` 48.7 → 26.3 m/s), so the absolute numbers no longer reproduce and the arm ratios may move.
