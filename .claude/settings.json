@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "ab-skills": {
+      "source": { "source": "github", "repo": "Commit2Cosmos/skills" }
+    }
+  },
+  "enabledPlugins": {
+    "engineering@ab-skills": true
+  }
+}
