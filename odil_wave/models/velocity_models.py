@@ -128,7 +128,6 @@ class VelocityModel:
         vm._head_mask = None  # noqa: SLF001 - alternate constructor
         vm._interior_mask = None  # noqa: SLF001 - alternate constructor
         vm._rim_mask = None  # noqa: SLF001 - alternate constructor
-        vm._interior_bg = None  # noqa: SLF001 - alternate constructor
         return vm
 
     @classmethod
@@ -206,12 +205,11 @@ class VelocityModel:
 
         g = self.grid
         base_field = torch.full(g.shape, self.base, dtype=g.dtype, device=g.device)
-        # Head / interior / rim masks + brain-background level, populated only
+        # Head / interior / rim masks, populated only
         # by skull-bearing profiles (None otherwise).
         self._head_mask = None
         self._interior_mask = None
         self._rim_mask = None
-        self._interior_bg = None
 
         if self.profile == "homogeneous":
             return base_field
@@ -241,7 +239,6 @@ class VelocityModel:
             model[head] = interior_values[head]
             model[rim] = c_skull
 
-            self._interior_bg = float(c_water)
             self._head_mask = self._embed_mask(head)
             self._interior_mask = self._embed_mask(inner)
             self._rim_mask = self._embed_mask(rim)
@@ -275,7 +272,6 @@ class VelocityModel:
                 contrast = ndi.gaussian_filter(contrast, sigma=skull_sigma)
             model = cw + np.float32(skull_alpha) * contrast
 
-            self._interior_bg = float(c_water)
             self._head_mask = self._embed_mask(head)
             self._interior_mask = self._embed_mask(inner)
             self._rim_mask = self._embed_mask(rim)

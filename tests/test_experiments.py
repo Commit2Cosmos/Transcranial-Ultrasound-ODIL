@@ -146,6 +146,8 @@ def test_unknown_key_raises():
         ({"source": {"t0": None}}, "t0"),
         ({"acquisition": {"n_receivers": 64}}, "n_receivers"),
         ({"acquisition": {"n_sources": 64}}, "n_sources"),
+        ({"truth": {"pml_c": None}}, "pml_c"),
+        ({"init": {"pml_c": 1500.0}}, "pml_c"),
     ],
 )
 def test_removed_keys_raise_naming_the_key(removed, key):
