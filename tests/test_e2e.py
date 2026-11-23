@@ -77,3 +77,34 @@ def test_cli_tiny_two_band_run_float32(tmp_path, git_repo, tiny_run_config, devi
     with np.load(sorted((run_dir / "bands").iterdir())[-1] / "arrays.npz") as saved:
         c_final = saved["c"]
     assert c_final.shape == (problem.grid.interior_nx, problem.grid.interior_ny)
+
+
+def test_independent_noisy_run_records_its_observations(
+    tmp_path, git_repo, tiny_run_config
+):
+    """A run on independent, noisy data records them as not the inverse crime,
+    with each band's noise floor and the truth's own data residual."""
+    user_cfg = deep_merge(
+        tiny_run_config,
+        {
+            "observation": {"mode": "independent", "noise": {"snr_db": 30.0}},
+            "optimiser": {"n_iter": 1},
+        },
+    )
+    config_path = tmp_path / "independent.yaml"
+    config_path.write_text(yaml.safe_dump(user_cfg))
+    run_dir = tmp_path / "run"
+    argv = ["--config", str(config_path), "--out", str(run_dir)]
+    assert main.main(argv, repo_root=git_repo) == 0
+
+    meta = json.loads((run_dir / "metadata.json").read_text())
+    assert meta["observation"]["inverse_crime"] is False
+    assert meta["observation"]["mode"] == "independent"
+    assert meta["observation"]["noise"] == {"snr_db": 30.0, "seed": 0}
+    (band_dir,) = (run_dir / "bands").iterdir()
+    band = json.loads((band_dir / "band_summary.json").read_text())
+    obs = band["observation"]
+    assert obs["noise_floor"] == pytest.approx(10 ** (-1.5))
+    # Modelling error (~2%) and 30 dB noise (~3%) together.
+    assert 0.02 < obs["rel_data_residual_truth"] < 0.06
+    assert obs["solve_s"] > 0

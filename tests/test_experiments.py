@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import torch
@@ -21,7 +22,7 @@ EXPECTED_SHAPE = {
     "run": ["seed", "tags", "notes"],
     "runtime": ["device", "dtype", "torch_num_threads", "deterministic", "verbose"],
     "grid": ["interior_shape", "interior_extent", "c_min", "c_max", "space_order"],
-    "pml": ["width", "power", "R0", "damping_scale", "observation_width"],
+    "pml": ["width", "power", "R0", "damping_scale"],
     "time": ["t_max", "init_nt", "cfl_safety"],
     "source": ["kind", "f0", "amplitude", "n_cycles", "envelope", "dimensionless"],
     "acquisition": [
@@ -49,6 +50,15 @@ EXPECTED_SHAPE = {
         "skull_alpha",
         "skull_sigma",
         "extra",
+    ],
+    "observation": [
+        "mode",
+        "refine",
+        "space_order",
+        "time_symbols",
+        "pml_thickness_factor",
+        "truth",
+        "noise",
     ],
     "continuation": ["bands"],
     "loss": ["weights", "regulariser"],
@@ -81,16 +91,17 @@ def test_default_config_matches_the_documented_shape():
     assert list(d["loss"]["weights"]) == ["pde", "data", "reg"]
     assert list(d["loss"]["regulariser"]) == ["name", "eps"]
     assert list(d["metrics"]["ssim"]) == ["sigma"]
+    assert list(d["observation"]["noise"]) == ["snr_db", "seed"]
 
 
 def test_resolve_empty_config_gives_the_default_values():
     """resolve_config({}) is the default config: 64 transducers, one 80 kHz band,
-    a homogeneous initial model and observations on the inversion grid."""
+    a homogeneous initial model and inverse-crime observations."""
     cfg = resolve_config({})
     assert cfg.acquisition.n_transducers == 64
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[80e3]]
     assert cfg.init.profile == "homogeneous"
-    assert cfg.pml.observation_width is None
+    assert cfg.observation.mode == "inverse_crime"
 
 
 def test_resolve_config_overlays_user_fields():
@@ -136,7 +147,8 @@ def test_unknown_key_raises():
         ({"metrics": {"log_c_stats": True}}, "log_c_stats"),
         ({"loss": {"regulariser": {"params": {"eps": 1e-6}}}}, "params"),
         ({"physics": {"space_order": 2}}, "physics"),
-        ({"observation": {"normalize_data": "none"}}, "observation"),
+        ({"observation": {"normalize_data": "none"}}, "normalize_data"),
+        ({"pml": {"observation_width": 12}}, "observation_width"),
         ({"loss": {"normalize_data": "none"}}, "normalize_data"),
         ({"continuation": {"warm_start": "helmholtz"}}, "warm_start"),
         ({"grid": {"pml_width": 10}}, "pml_width"),
@@ -293,7 +305,15 @@ def test_supported_space_orders_validate(order):
         {"grid": {"space_order": 12}},
         {"pml": {"width": -1}},
         {"pml": {"damping_scale": -1.0}},
-        {"pml": {"observation_width": -1}},
+        {"observation": {"mode": "crime"}},
+        {"observation": {"refine": 2}},
+        {"observation": {"refine": 0}},
+        {"observation": {"space_order": 3}},
+        {"observation": {"time_symbols": "rk4"}},
+        {"observation": {"pml_thickness_factor": 0.5}},
+        {"observation": {"truth": "fine"}},
+        {"observation": {"noise": {"seed": -1}}},
+        {"observation": {"noise": {"snr_db": "30"}}},
         {"loss": {"regulariser": {"name": None}}},
         {"loss": {"regulariser": {"name": "tv"}}},
         {"loss": {"regulariser": {"name": "l2"}}},
@@ -344,21 +364,16 @@ def test_build_problem_assembles_pieces(tiny_run_config):
     assert problem.head_mask.shape == (20, 20) and problem.head_mask.any()
 
 
-@pytest.mark.parametrize("observation_width", [None, 12])
-def test_make_band_observes_traces_on_either_grid(tiny_run_config, observation_width):
-    """With or without the PML split, the band holds N - 1 observed traces per
-    shot, one true wavefield per shot on the observation grid, and a warm start
-    per shot on the inversion grid."""
-    split = deep_merge(
-        tiny_run_config, {"pml": {"observation_width": observation_width}}
-    )
-    problem = build_problem(resolve_config(split))
+def test_make_band_holds_traces_true_wavefields_and_warm_start(tiny_run_config):
+    """The band holds N - 1 observed traces per shot, and one true wavefield and
+    one warm start per shot on the inversion grid."""
+    problem = build_problem(resolve_config(tiny_run_config))
     band = problem.make_band([40e3], problem.init_velocity)
     n = problem.cfg.acquisition.n_transducers
     assert band.frequency_selection.n_frequencies == 1
     assert band.observed_traces.shape == (n, 1, n - 1)
     assert len(band.true_wavefields) == n
-    assert band.true_wavefields[0].grid is problem.observation_grid
+    assert band.true_wavefields[0].grid is problem.grid
     assert band.u_init.shape == (n, 1, *problem.grid.shape)
 
 
@@ -415,15 +430,172 @@ def _data_misfit_at_truth(run_config) -> float:
     return float((predicted - observed).abs().norm() / observed.abs().norm())
 
 
-def test_default_observation_width_commits_the_inverse_crime(tiny_run_config):
-    """With the default pml.observation_width the true model fits the data."""
+def test_default_observation_mode_commits_the_inverse_crime(tiny_run_config):
+    """With the default observation block the true model fits the data."""
     assert _data_misfit_at_truth(tiny_run_config) < 1e-10
 
 
-def test_different_observation_width_is_a_modelling_error(tiny_run_config):
-    """A different observation PML width means the true model no longer fits."""
-    split = deep_merge(tiny_run_config, {"pml": {"observation_width": 12}})
-    assert _data_misfit_at_truth(split) > 1e-6
+# The independent observation path set up to reproduce the inversion's own
+# discretisation: it guards the plumbing.
+PLUMBING = {
+    "observation": {
+        "mode": "independent",
+        "refine": 1,
+        "space_order": 2,
+        "time_symbols": "leapfrog",
+        "truth": "inversion",
+    }
+}
+
+
+def test_independent_observations_matching_the_inversion_reproduce_its_data(
+    tiny_run_config,
+):
+    crime = build_problem(resolve_config(tiny_run_config)).observe([40e3])
+    plumbing = build_problem(
+        resolve_config(deep_merge(tiny_run_config, PLUMBING))
+    ).observe([40e3])
+    assert torch.equal(plumbing.traces, crime.traces)
+
+
+INDEPENDENT = {"observation": {"mode": "independent"}}
+
+
+@pytest.mark.parametrize("pml_thickness_factor", [1.0, 1.5])
+def test_independent_observations_keep_the_transducer_positions(
+    tiny_run_config, pml_thickness_factor
+):
+    run = deep_merge(
+        tiny_run_config,
+        {
+            "observation": {
+                "mode": "independent",
+                "pml_thickness_factor": pml_thickness_factor,
+            }
+        },
+    )
+    problem = build_problem(resolve_config(run))
+    geom = problem.observe([40e3]).geometry
+    fine = problem.observation.observation_geometry(geom)
+    assert fine.grid.dx == pytest.approx(geom.grid.dx / 3)
+    for s in range(geom.n_transducers):
+        assert fine.src_position(s) == pytest.approx(geom.src_position(s), abs=1e-12)
+
+
+def _rel(a: torch.Tensor, b: torch.Tensor) -> float:
+    return float(torch.linalg.vector_norm(a - b) / torch.linalg.vector_norm(b))
+
+
+def test_independent_observations_converge_with_refinement(tiny_run_config):
+    """Refining the observation grid from 3x to 5x moves the data far less than
+    the inversion's own discretisation is off from them."""
+
+    def traces(observation):
+        run = deep_merge(tiny_run_config, {"observation": observation})
+        return build_problem(resolve_config(run)).observe([40e3]).traces
+
+    r3 = traces({"mode": "independent"})
+    r5 = traces({"mode": "independent", "refine": 5})
+    # Measured 2.3e-3 (r3 vs r5) and 2.2e-2 (inverse crime vs r5).
+    assert _rel(r3, r5) < 5e-3
+    assert _rel(traces({}), r5) > 1e-2
+
+
+def test_independent_observations_of_a_homogeneous_truth_match_the_greens_function(
+    tiny_run_config,
+):
+    """In a homogeneous medium the traces are the physical wavefield of the
+    Gaussian source: ``S(ω) (-i/4) H0⁽²⁾(kr) exp(-k²σ²/4) / c²``."""
+    from scipy.special import hankel2
+
+    sigma, c = 4e-3, 1500.0
+    run = deep_merge(
+        tiny_run_config,
+        {
+            "truth": {"profile": "homogeneous", "base": c},
+            "acquisition": {"source_spatial": "gaussian", "sigma_s": sigma},
+            "observation": {"mode": "independent"},
+        },
+    )
+    problem = build_problem(resolve_config(run))
+    obs = problem.observe([40e3])
+    geom = obs.geometry
+    freq = geom.frequency_selection
+    k = float(freq.omega[0]) / c
+    spectrum = complex(problem.source.spectrum(freq)[0])
+    pos = torch.tensor([geom.src_position(s) for s in range(geom.n_shots)])
+    r = torch.linalg.vector_norm(pos[geom.receivers] - pos[:, None], dim=-1).numpy()
+    green = spectrum * (-0.25j) * hankel2(0, k * r) * np.exp(-((k * sigma) ** 2) / 4)
+    expected = torch.from_numpy(green / c**2)
+    # Measured 3.4e-3; the inverse crime's own traces are 2.3e-2 off.
+    assert _rel(obs.traces[:, 0], expected) < 1e-2
+
+
+def _observe(run_config, frequencies_hz, observation):
+    run = deep_merge(run_config, {"observation": observation})
+    return build_problem(resolve_config(run)).observe(frequencies_hz)
+
+
+def test_noise_sits_at_the_requested_snr_per_frequency(tiny_run_config):
+    clean = _observe(tiny_run_config, [30e3, 40e3], {})
+    noisy = _observe(tiny_run_config, [30e3, 40e3], {"noise": {"snr_db": 20.0}})
+    assert noisy.noise_floor == pytest.approx(0.1)
+    for f in range(2):
+        # 56 complex traces per frequency: the realised level is within ~15%.
+        assert _rel(noisy.traces[:, f], clean.traces[:, f]) == pytest.approx(
+            0.1, rel=0.3
+        )
+    # Under the inverse crime the truth's own data misfit is the noise.
+    assert noisy.rel_data_residual_truth == pytest.approx(0.1, rel=0.3)
+    assert clean.noise_floor is None
+    assert clean.rel_data_residual_truth == 0.0
+
+
+def test_noise_is_seeded_per_frequency(tiny_run_config):
+    noise = {"noise": {"snr_db": 20.0, "seed": 3}}
+    pair = _observe(tiny_run_config, [30e3, 40e3], noise).traces
+    alone = _observe(tiny_run_config, [40e3], noise).traces
+    reseeded = _observe(
+        tiny_run_config, [40e3], {"noise": {"snr_db": 20.0, "seed": 4}}
+    ).traces
+    # A frequency shared by two bands gets the same realisation.
+    assert torch.equal(pair[:, 1], alone[:, 0])
+    assert not torch.allclose(reseeded, alone)
+
+
+def test_independent_observations_report_their_modelling_error(tiny_run_config):
+    obs = _observe(tiny_run_config, [40e3], {"mode": "independent"})
+    # The inversion's own solve at the truth is ~2% off the independent data.
+    assert 1e-2 < obs.rel_data_residual_truth < 5e-2
+    assert obs.solve_s > 0
+
+
+def test_native_truth_is_a_different_model_from_the_prolonged_one(
+    tiny_run_config,
+):
+    """Rebuilding the phantom on the observation grid changes the data (11% on
+    the tiny config), while the tape keeps scoring the inversion-grid truth."""
+    native = deep_merge(
+        tiny_run_config, {"observation": {"mode": "independent", "truth": "native"}}
+    )
+    a = _observe(tiny_run_config, [40e3], {"mode": "independent"}).traces
+    b = build_problem(resolve_config(native))
+    assert _rel(b.observe([40e3]).traces, a) > 5e-2
+    crime = build_problem(resolve_config(tiny_run_config))
+    assert torch.equal(b.truth_velocity.c, crime.truth_velocity.c)
+
+
+def test_independent_observations_warn_about_a_point_source():
+    run = {
+        "observation": {"mode": "independent"},
+        "acquisition": {"source_spatial": "point"},
+    }
+    assert any("point" in w for w in validate_config(resolve_config(run)))
+
+
+def test_inverse_crime_warns_about_independent_only_keys():
+    warnings = validate_config(resolve_config({"observation": {"refine": 5}}))
+    assert any("observation.refine" in w for w in warnings)
 
 
 # --------------------------------------------------------------------------- #

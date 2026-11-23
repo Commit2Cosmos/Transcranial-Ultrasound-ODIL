@@ -54,10 +54,17 @@ def _summarise(cfg) -> str:
         f"ring={cfg.acquisition.ring_center}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
-    obs_pml = cfg.pml.observation_width
+    obs = cfg.observation
+    if obs.mode == "independent":
+        detail = (
+            f"refine={obs.refine}, space_order={obs.space_order}, "
+            f"time_symbols={obs.time_symbols}, truth={obs.truth}"
+        )
+    else:
+        detail = "inverse crime"
     lines.append(
-        f"observation pml : {cfg.pml.width if obs_pml is None else obs_pml}"
-        f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
+        f"observation     : {detail}, snr_db={obs.noise.snr_db}"
+        + ("" if obs.noise.snr_db is None else f", seed={obs.noise.seed}")
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
     lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma}")
