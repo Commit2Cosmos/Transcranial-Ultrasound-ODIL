@@ -267,6 +267,12 @@ def test_the_default_skull_is_resolved():
     assert not any("skull_thickness" in w for w in validate_config(resolve_config({})))
 
 
+def test_a_skull_filling_the_head_is_rejected():
+    """The default head's short semi-axis is 73 mm."""
+    with pytest.raises(ConfigError, match="leaves no brain"):
+        validate_config(resolve_config({}, ["truth.skull_thickness=0.08"]))
+
+
 @pytest.mark.parametrize("value", ["0", "-1e-3"])
 def test_skull_thickness_must_be_a_positive_length(value):
     with pytest.raises(ConfigError, match="skull_thickness"):

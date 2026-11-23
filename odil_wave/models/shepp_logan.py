@@ -34,6 +34,8 @@ FEATURES = (
 )
 # Table 3.1's head ellipse (x, y semi-axes), long axis along y.
 HEAD_SEMI_AXES = (0.69, 0.92)
+# Sub-samples per cell side over which a cell averages 1/c².
+N_SUB = 8
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,20 @@ class SheppLogan:
     c_water: float = SOS_WATER
     c_skull: float = SOS_SKULL
     c_brain: Optional[float] = None
+
+    @classmethod
+    def in_interior(
+        cls, interior_extent, scale: float, skull_thickness: float, **kwargs
+    ) -> "SheppLogan":
+        """The phantom centred in ``interior_extent`` (``((x0, x1), (y0, y1))``
+        m), its unit square ``scale`` of the interior."""
+        (x0, x1), (y0, y1) = interior_extent
+        return cls(
+            center=((x0 + x1) / 2, (y0 + y1) / 2),
+            half_extent=(scale * (x1 - x0) / 2, scale * (y1 - y0) / 2),
+            skull_thickness=skull_thickness,
+            **kwargs,
+        )
 
     def __post_init__(self):
         if self.skull_thickness <= 0.0:
@@ -109,18 +125,13 @@ class SheppLogan:
                 tissue += dc * ((p / a) ** 2 + (q / b) ** 2 <= 1.0)
         return np.where(brain, tissue, np.where(head, self.c_skull, self.c_water))
 
-    def rasterise(self, x: np.ndarray, y: np.ndarray, n_sub: int = 8) -> Raster:
+    def rasterise(self, x: np.ndarray, y: np.ndarray) -> Raster:
         """Sample on the uniform node coordinates ``x`` ``(nx,)`` and ``y``
-        ``(ny,)`` (m), each node the centre of an ``h × h`` cell.
-
-        A cell's speed averages ``1/c²`` over ``n_sub × n_sub`` sub-samples. A
-        cell is skull when at least half of it is skull, head when at least half
-        is head, and brain only when it lies wholly inside the brain.
-        """
+        ``(ny,)`` (m), each node the centre of a cell (ADR 0004)."""
         x = np.asarray(x, float)
         y = np.asarray(y, float)
         hx, hy = x[1] - x[0], y[1] - y[0]
-        sub = (np.arange(n_sub) + 0.5) / n_sub - 0.5
+        sub = (np.arange(N_SUB) + 0.5) / N_SUB - 0.5
         xs = (x[:, None] + hx * sub[None, :])[:, None, :, None]
         ys = (y[:, None] + hy * sub[None, :])[None, :, None, :]
         c = self.speed(xs, ys)

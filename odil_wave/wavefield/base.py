@@ -7,7 +7,7 @@ from matplotlib import animation
 
 from odil_wave.grid import Grid, FrequencySelection, complex_dtype
 from odil_wave.models import VelocityModel
-from odil_wave.models.velocity_models import SOS_WATER
+from odil_wave.models.shepp_logan import SOS_WATER
 from odil_wave.plot_utils import length_scale, frequency_scale
 
 

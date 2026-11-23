@@ -42,6 +42,7 @@ from odil_wave import (
     WaveEquation,
 )
 from odil_wave.defaults import library_default
+from odil_wave.models.shepp_logan import SheppLogan
 
 from .atomic import write_text_atomic
 
@@ -348,9 +349,8 @@ class SSIMCfg:
     over the brain region eroded by the window radius).
 
     Params:
-    * ``sigma``: > 0 Gaussian window std in m. In cells of the grid spacing it
-      spans ``2 * round(3.5 * sigma / h) + 1`` cells (``3.0e-3`` at
-      ``h = 2.016 mm``: 11, Wang 2004) and must fit in the interior.
+    * ``sigma``: > 0 Gaussian window std in m; the window
+      (:func:`ssim_window_size` of ``sigma / h``) must fit in the interior.
     """
 
     sigma: float = 3.0e-3
@@ -829,6 +829,11 @@ def _validate_model_cfg(
     thickness = float(model.skull_thickness)
     if thickness <= 0.0:
         raise ConfigError(f"{label}.skull_thickness must be > 0 m; got {thickness}")
+    if model.profile in _REGION_PROFILES:
+        try:
+            SheppLogan.in_interior(cfg.grid.interior_extent, model.scale, thickness)
+        except ValueError as exc:
+            raise ConfigError(f"{label}: {exc}") from None
     unknown = set(model.extra or {}) - set(_EXTRA_KEYS)
     if unknown:
         raise ConfigError(
@@ -847,7 +852,7 @@ def _validate_model_cfg(
         if thickness < 2.0 * h:
             warnings.append(
                 f"{label}.skull_thickness={thickness:g} m is under-resolved "
-                f"(< 2 h, h = {h * 1e3:.3f} mm): the skull is a partial-volume ring"
+                f"(< 2 h, h = {h * 1e3:.3f} mm): the skull is a partial-volume shell"
             )
     elif thickness != library_default(VelocityModel, "skull_thickness"):
         warnings.append(

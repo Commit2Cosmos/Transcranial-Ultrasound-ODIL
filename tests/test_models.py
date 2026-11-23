@@ -58,7 +58,7 @@ def test_shepp_logan_masks_and_skull(grid):
     assert vm.head_mask.shape == grid.interior_shape
 
 
-# A Baseline-sized head (0.25 m interior, scale 0.85), sampled at three
+# The default config's head (0.25 m interior, scale 0.85), sampled at three
 # resolutions spanning a skull thinner than a cell to one 6.5 cells thick.
 HEAD_EXTENT = 0.25
 HEAD_SCALE = 0.85

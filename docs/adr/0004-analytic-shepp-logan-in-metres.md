@@ -1,6 +1,6 @@
 # The Shepp-Logan true model is analytic and sized in metres
 
-The Shepp-Logan profiles sample a continuous phantom: the Kak & Slaney Table 3.1 ellipses scaled to `scale ·` the interior extent, a single-layer skull `truth.skull_thickness` thick, and each cell's `1/c²` averaged over 8 × 8 sub-samples. We chose this over the resized `skimage` image with a rim eroded in cells because that rim's thickness in metres changed below a ~100 px phantom, and its brain region held fragments of the image's own skull. So runs at different resolutions solved different physical problems (#84). The analytic phantom is the same object on every grid, at the cost of a skull that is a partial-volume ring wherever it is under 2 cells thick.
+The Shepp-Logan profiles sample a continuous phantom: the Kak & Slaney Table 3.1 ellipses scaled to `scale ·` the interior extent, a single-layer skull `truth.skull_thickness` thick, and each cell's `1/c²` averaged over 8 × 8 sub-samples. We chose this over the resized `skimage` image with a rim eroded in cells because that rim's thickness in metres changed below a ~100 px phantom, and its brain region held fragments of the image's own skull. So runs at different resolutions solved different physical problems (#84). The analytic phantom is the same object on every grid, at the cost of a skull that is a partial-volume shell wherever it is under 2 cells thick.
 
 Rejected alternatives:
 

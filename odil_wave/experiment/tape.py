@@ -227,9 +227,8 @@ class ModelError:
         )
         if not self.ssim_region.any():
             raise ConfigError(
-                f"the {win}-cell SSIM window (metrics.ssim.sigma = "
-                f"{self.sigma:.3g} cells) leaves no brain-region cell after "
-                "erosion; lower the sigma"
+                f"the {win}-cell SSIM window (std {self.sigma:.3g} cells) leaves "
+                "no brain-region cell after erosion; lower metrics.ssim.sigma"
             )
         self.data_range = float(np.ptp(self.truth[self.brain]))
         if self.data_range <= 0:

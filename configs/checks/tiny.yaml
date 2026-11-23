@@ -29,7 +29,7 @@ continuation:
 loss:
   weights: {data: 10.0}
 optimiser: {n_iter: 10, log_every: 1}
-# A 3-cell SSIM window (0.38 h) leaves part of the tiny brain region after
-# erosion.
+# A 3-cell SSIM window (sigma = 0.38 h) leaves part of the tiny brain region
+# after erosion.
 metrics:
   ssim: {sigma: 1.0e-3}

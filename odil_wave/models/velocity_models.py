@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Optional
 import torch
 import torch.nn.functional as F
@@ -10,7 +11,7 @@ from scipy import ndimage as ndi
 import numpy as np
 
 from odil_wave.grid import Grid
-from odil_wave.models.shepp_logan import SOS_WATER, SheppLogan
+from odil_wave.models.shepp_logan import SheppLogan
 from odil_wave.plot_utils import length_scale
 
 
@@ -141,21 +142,20 @@ class VelocityModel:
         # 2D replicate padding needs a (batch, channel) prefix.
         return F.pad(c_interior[None, None], (p, p, p, p), mode="replicate")[0, 0]
 
-    def _shepp_logan_raster(self, **kwargs):
-        g = self.grid
-        (x0, x1), (y0, y1) = g.interior_extent
-        phantom = SheppLogan(
-            center=g.interior_center,
-            half_extent=(self.scale * (x1 - x0) / 2, self.scale * (y1 - y0) / 2),
-            skull_thickness=self.skull_thickness,
-            **kwargs,
+    def _shepp_logan(self, **kwargs) -> SheppLogan:
+        return SheppLogan.in_interior(
+            self.grid.interior_extent, self.scale, self.skull_thickness, **kwargs
         )
+
+    def _rasterise_with_masks(self, phantom: SheppLogan) -> np.ndarray:
+        """The interior ``c`` of ``phantom``; sets the region masks from it."""
+        g = self.grid
         sx, sy = g.interior_slice
         raster = phantom.rasterise(g.x[sx].cpu().numpy(), g.y[sy].cpu().numpy())
         self._head_mask = self._embed_mask(raster.head)
         self._interior_mask = self._embed_mask(raster.brain)
         self._rim_mask = self._embed_mask(raster.skull)
-        return raster
+        return raster.c
 
     def _embed_interior(self, interior_np: np.ndarray, fill: float) -> torch.Tensor:
         g = self.grid
@@ -196,9 +196,9 @@ class VelocityModel:
             )
 
         if self.profile == "shepp_logan":
-            raster = self._shepp_logan_raster(**self.profile_kwargs)
-            c_water = self.profile_kwargs.get("c_water", SOS_WATER)
-            return self._embed_interior(raster.c, c_water)
+            phantom = self._shepp_logan(**self.profile_kwargs)
+            c = self._rasterise_with_masks(phantom)
+            return self._embed_interior(c, phantom.c_water)
 
         if self.profile == "shepp_logan_skull":
             skull_alpha = float(self.skull_alpha)
@@ -208,11 +208,13 @@ class VelocityModel:
             if skull_sigma < 0.0:
                 raise ValueError(f"skull_sigma must be >= 0; got {skull_sigma}")
             kwargs = dict(self.profile_kwargs)
-            c_water = kwargs.get("c_water", SOS_WATER)
-            kwargs["c_brain"] = kwargs.pop("interior_value", c_water)
-            raster = self._shepp_logan_raster(**kwargs)
-
-            contrast = raster.c - c_water
+            interior_value = kwargs.pop("interior_value", None)
+            phantom = self._shepp_logan(**kwargs)
+            c_water = phantom.c_water
+            phantom = replace(
+                phantom, c_brain=c_water if interior_value is None else interior_value
+            )
+            contrast = self._rasterise_with_masks(phantom) - c_water
             if skull_sigma > 0.0:
                 contrast = ndi.gaussian_filter(
                     contrast, sigma=(skull_sigma / g.dx, skull_sigma / g.dy)
