@@ -156,7 +156,7 @@ class NoWavefieldPreconditioner:
         nf, nx, ny = self.pde_scale_per_u.shape[1], *self.c_init.shape
         dtype, device = self.pde_scale_per_u.dtype, self.pde_scale_per_u.device
         cdtype = self.wave_eq.wavefield.cdtype
-        half = self.wave_eq.space_order // 2
+        half = self.wave_eq.stencil_reach
         stride = 2 * half + 1
         shape = (1, nf, nx, ny)
         no_src = torch.zeros(shape, dtype=cdtype, device=device)

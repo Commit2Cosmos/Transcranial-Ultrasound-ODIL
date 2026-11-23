@@ -1,5 +1,6 @@
 """Spatial finite-difference operators: the order-P second differences along
-each axis. The PML's stretch of them lives in :mod:`.conditions`."""
+each axis, and the staggered first-difference coefficients. The PML's stretch
+of them lives in :mod:`.conditions`."""
 
 import numpy as np
 import torch
@@ -19,6 +20,24 @@ FD2_COEFFS: dict[int, tuple[float, tuple[float, ...]]] = {
     10: (
         -5269.0 / 1800.0,
         (5.0 / 3.0, -5.0 / 21.0, 5.0 / 126.0, -5.0 / 1008.0, 1.0 / 3150.0),
+    ),
+}
+
+
+# 1D staggered FD coefficients for du/dx between nodes, by space order: offsets
+# 1/2 .. (P - 1)/2. The PML's correction (:mod:`.conditions`) uses them, in both
+# the matrix-free and the sparse operator.
+STAGGERED_D1_COEFFS: dict[int, tuple[float, ...]] = {
+    2: (1.0,),
+    4: (9.0 / 8.0, -1.0 / 24.0),
+    6: (75.0 / 64.0, -25.0 / 384.0, 3.0 / 640.0),
+    8: (1225.0 / 1024.0, -245.0 / 3072.0, 49.0 / 5120.0, -5.0 / 7168.0),
+    10: (
+        19845.0 / 16384.0,
+        -735.0 / 8192.0,
+        567.0 / 40960.0,
+        -405.0 / 229376.0,
+        35.0 / 294912.0,
     ),
 }
 
