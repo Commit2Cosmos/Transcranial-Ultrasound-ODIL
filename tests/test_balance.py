@@ -54,10 +54,15 @@ def test_scaled_config_keeps_the_physical_problem():
     assert same.acquisition.sigma_s == cfg.acquisition.sigma_s
 
 
-def test_balance_check_rejects_observation_pml():
-    cfg = resolve_config(SMALL, ["pml.observation_width=20"])
-    with pytest.raises(ConfigError, match="observation_width"):
-        balance_check(cfg, [GridCase(1)])
+def test_balance_pde_term_is_the_inversion_operator_at_the_truth():
+    """The PDE term is taken at the inversion grid's own solve on the truth, so
+    independent observations leave it unchanged."""
+    crime = balance_check(resolve_config(SMALL), [GridCase(1)])[0]
+    independent = balance_check(
+        resolve_config(SMALL, ["observation.mode=independent"]), [GridCase(1)]
+    )[0]
+    assert independent.pde_term == pytest.approx(crime.pde_term, rel=1e-12)
+    assert independent.data_term != pytest.approx(crime.data_term, rel=1e-6)
 
 
 @pytest.mark.parametrize("text", ["0", "a", "1:0", "1:x"])

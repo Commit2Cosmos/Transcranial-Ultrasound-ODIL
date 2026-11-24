@@ -42,6 +42,7 @@ from odil_wave import (
     WaveEquation,
 )
 from odil_wave.defaults import library_default
+from odil_wave.grid import TIME_SYMBOLS
 
 from .atomic import write_text_atomic
 
@@ -124,19 +125,12 @@ class PmlCfg:
     * ``damping_scale``: >= 0 factor multiplying ``sigma`` in the operator's
       stretch ``s = 1 + sigma / (i omega)``; ``1`` is the designed
       absorption, ``0`` disables absorption (reflecting borders).
-    * ``observation_width``: ``None`` -> same as ``width``: observations are
-      generated on the inversion grid with the inversion operator (the inverse
-      crime). An int >= 0 different from
-      ``width`` opts into a deliberate modelling error: observations are
-      synthesised on a separate grid with that PML width and reduced to
-      receiver traces.
     """
 
     width: int = library_default(Grid, "pml_width")
     power: int = library_default(Grid, "pml_power")
     R0: float = library_default(Grid, "pml_R0")
     damping_scale: float = library_default(WaveEquation, "damping_scale")
-    observation_width: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -164,12 +158,9 @@ class SourceCfg:
     Params:
     * ``kind``: ``"tone_burst"`` | ``"ricker"``.
     * ``f0``: Hz centre frequency.
-    * ``amplitude``: source amplitude scale.
+    * ``amplitude``: peak of the source waveform.
     * ``n_cycles``: tone_burst only; number of cycles in the burst.
     * ``envelope``: tone_burst only; ``"gaussian"`` | ``"rectangular"``.
-    * ``dimensionless``: true -> the physical waveform amplitude is
-      ``amplitude * 2 * f0**2`` (lands the wavefield near O(1)); false -> it is
-      ``amplitude``.
     """
 
     kind: str = "tone_burst"
@@ -177,7 +168,6 @@ class SourceCfg:
     amplitude: float = library_default(SourceSignal, "amplitude")
     n_cycles: float = library_default(SourceSignal, "n_cycles")
     envelope: str = library_default(SourceSignal, "envelope")
-    dimensionless: bool = library_default(SourceSignal, "dimensionless")
 
 
 @dataclass(frozen=True)
@@ -239,6 +229,60 @@ class ModelCfg:
     skull_alpha: float = library_default(VelocityModel, "skull_alpha")
     skull_sigma: float = library_default(VelocityModel, "skull_sigma")
     extra: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class NoiseCfg:
+    """Circular complex Gaussian noise added to the observed traces.
+
+    Each frequency's noise has ``sigma_f = RMS(|d_clean|) * 10**(-snr_db / 20)``
+    over its shots and receivers, i.i.d. across traces.
+
+    Params:
+    * ``snr_db``: ``null`` -> noiseless, else the SNR in dB per frequency bin
+      (not a time-domain SNR).
+    * ``seed``: int >= 0; with the FFT bin it seeds each frequency's noise, so
+      a frequency in two bands gets the same realisation.
+    """
+
+    snr_db: Optional[float] = None
+    seed: int = 0
+
+
+@dataclass(frozen=True)
+class ObservationCfg:
+    """How the observed data are generated (``GLOSSARY.md``: Inverse crime).
+
+    Params:
+    * ``mode``: ``"inverse_crime"`` (a solve on the inversion grid with the
+      inversion operator) | ``"independent"`` (a solve on a refined grid with
+      the settings below). The other keys except ``noise`` apply to
+      ``independent`` only.
+    * ``refine``: odd int >= 1; the observation grid has ``(n - 1) * refine +
+      1`` interior nodes over the same extent, so every inversion node is one
+      of its nodes. It shares the inversion grid's time axis.
+    * ``space_order``: stencil order of the observation solve, as
+      ``grid.space_order``.
+    * ``time_symbols``: ``"exact"`` (``i omega``, ``-omega**2``) |
+      ``"leapfrog"`` (the inversion's centred differences).
+    * ``pml_thickness_factor``: float >= 1; the observation PML's physical
+      thickness relative to the inversion's, ``round(factor * pml.width *
+      refine)`` cells.
+    * ``truth``: ``"inversion"`` (the inversion-grid truth prolonged to the
+      nearest node, so the true model is representable on the inversion grid)
+      | ``"native"`` (the truth profile rebuilt on the observation grid,
+      ``skull_sigma`` scaled by ``refine``). The tape scores against the
+      inversion-grid truth either way.
+    * ``noise``: :class:`NoiseCfg`.
+    """
+
+    mode: str = "inverse_crime"
+    refine: int = 3
+    space_order: int = 4
+    time_symbols: str = "exact"
+    pml_thickness_factor: float = 1.0
+    truth: str = "inversion"
+    noise: NoiseCfg = field(default_factory=NoiseCfg)
 
 
 @dataclass(frozen=True)
@@ -392,6 +436,7 @@ class RunConfig:
     acquisition: AcquisitionCfg = field(default_factory=AcquisitionCfg)
     truth: ModelCfg = field(default_factory=ModelCfg)
     init: ModelCfg = field(default_factory=lambda: ModelCfg(profile="homogeneous"))
+    observation: ObservationCfg = field(default_factory=ObservationCfg)
     continuation: ContinuationCfg = field(default_factory=ContinuationCfg)
     loss: LossCfg = field(default_factory=LossCfg)
     optimiser: OptimiserCfg = field(default_factory=OptimiserCfg)
@@ -586,6 +631,8 @@ _LINE_SEARCHES = ("strong_wolfe", None)
 _MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
 _WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
+_OBSERVATION_MODES = ("inverse_crime", "independent")
+_OBSERVATION_TRUTHS = ("inversion", "native")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
 _EXTRA_KEYS = (
@@ -676,9 +723,15 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(f"pml.width must be >= 0, got {pml.width}")
     if float(pml.damping_scale) < 0:
         raise ConfigError(f"pml.damping_scale must be >= 0, got {pml.damping_scale}")
-    if pml.observation_width is not None and int(pml.observation_width) < 0:
-        raise ConfigError(
-            f"pml.observation_width must be >= 0 when set, got {pml.observation_width}"
+    warnings.extend(_validate_observation(cfg.observation))
+    if (
+        cfg.observation.mode == "independent"
+        and cfg.acquisition.source_spatial == "point"
+    ):
+        warnings.append(
+            "acquisition.source_spatial='point' with observation.mode='independent': "
+            "a point source is 1 / (dx dy) at one node, so the observation grid "
+            "injects a different source; use 'gaussian'."
         )
 
     if cfg.runtime.dtype not in ("float32", "float64"):
@@ -747,6 +800,66 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         _validate_model_cfg(label, model, warnings)
 
     return warnings
+
+
+def _validate_observation(obs: "ObservationCfg") -> List[str]:
+    """Check the observation block; warn when ``inverse_crime`` mode leaves the
+    independent-only keys away from their defaults."""
+    if obs.mode not in _OBSERVATION_MODES:
+        raise ConfigError(
+            f"observation.mode must be one of {list(_OBSERVATION_MODES)}, "
+            f"got {obs.mode!r}"
+        )
+    r = obs.refine
+    if isinstance(r, bool) or not isinstance(r, int) or r < 1 or r % 2 == 0:
+        raise ConfigError(f"observation.refine must be an odd int >= 1, got {r!r}")
+    if obs.space_order not in _SPACE_ORDERS:
+        raise ConfigError(
+            f"observation.space_order must be one of {list(_SPACE_ORDERS)}, "
+            f"got {obs.space_order!r}"
+        )
+    if obs.time_symbols not in TIME_SYMBOLS:
+        raise ConfigError(
+            f"observation.time_symbols must be one of {list(TIME_SYMBOLS)}, "
+            f"got {obs.time_symbols!r}"
+        )
+    if float(obs.pml_thickness_factor) < 1.0:
+        raise ConfigError(
+            "observation.pml_thickness_factor must be >= 1, "
+            f"got {obs.pml_thickness_factor}"
+        )
+    if obs.truth not in _OBSERVATION_TRUTHS:
+        raise ConfigError(
+            f"observation.truth must be one of {list(_OBSERVATION_TRUTHS)}, "
+            f"got {obs.truth!r}"
+        )
+    seed = obs.noise.seed
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError(f"observation.noise.seed must be an int >= 0, got {seed!r}")
+    snr = obs.noise.snr_db
+    if snr is not None and (
+        isinstance(snr, bool)
+        or not isinstance(snr, (int, float))
+        or not math.isfinite(snr)
+    ):
+        raise ConfigError(
+            f"observation.noise.snr_db must be null or a finite number, got {snr!r}"
+        )
+    if obs.mode == "independent":
+        return []
+    default = ObservationCfg()
+    ignored = [
+        f.name
+        for f in fields(ObservationCfg)
+        if f.name not in ("mode", "noise")
+        and getattr(obs, f.name) != getattr(default, f.name)
+    ]
+    if not ignored:
+        return []
+    return [
+        f"observation.mode='inverse_crime' ignores observation.{', observation.'.join(ignored)} "
+        "(they apply only to mode 'independent')."
+    ]
 
 
 def _source_width_warnings(cfg: "RunConfig") -> List[str]:

@@ -20,8 +20,8 @@ class WaveEquation:
     ADR 0002) with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed
     PML absorption, ``0`` disables it) and the 2nd-order centred symbol
     ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)`` from FrequencySelection. In the
-    interior ``s = 1`` and ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow
-    ADR 0001.
+    interior, beyond ``P/2 - 1`` cells from the PML,
+    ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow ADR 0001.
 
     Amplitudes / sources are complex ``(n_shots, n_frequencies, nx, ny)``.
     """
@@ -36,7 +36,13 @@ class WaveEquation:
     def __post_init__(self):
         """Build the second differences for ``space_order`` and the PML."""
         self._lap = Laplacian(self.wavefield, space_order=self.space_order)
-        self.pml = Pml(self.wavefield, self.damping_scale)
+        self.pml = Pml(self.wavefield, self.damping_scale, space_order=self.space_order)
+
+    @property
+    def stencil_reach(self) -> int:
+        """Cells a residual row reaches along each axis: ``P - 1``, the PML's
+        staggered correction (the second difference alone reaches ``P/2``)."""
+        return self.space_order - 1
 
     def sources(self, geometry) -> torch.Tensor:
         """Every shot's source term, scaled by ``t0**2`` as :meth:`residual`

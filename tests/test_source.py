@@ -26,13 +26,11 @@ def test_tone_burst_shape_and_dtype(grid):
     assert float(w.abs().max()) > 0
 
 
-def test_dimensionless_scaling(grid):
-    """dimensionless=True multiplies the wavelet by the grid's natural amplitude."""
-    phys = make_source(grid, t_start=0.0, amplitude=1.0, dimensionless=False)
-    nd = make_source(grid, t_start=0.0, amplitude=1.0, dimensionless=True)
-    # The natural amplitude scales the whole signal, so the peak ratio is exact.
-    ratio = nd.waveform().abs().max() / phys.waveform().abs().max()
-    assert float(ratio) == pytest.approx(grid.natural_source_amplitude(F0), rel=1e-6)
+def test_amplitude_is_waveform_peak(grid):
+    """``amplitude`` is the peak of s(t), with no hidden scaling."""
+    t_centre = float(grid.t[grid.nt // 2])
+    src = make_source(grid, kind="ricker", amplitude=2.5, t_centre=t_centre)
+    assert float(src.waveform().abs().max()) == pytest.approx(2.5, rel=1e-12)
 
 
 def test_tone_burst_is_zero_outside_its_window(grid):
