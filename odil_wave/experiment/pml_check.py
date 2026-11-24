@@ -54,7 +54,7 @@ def _check_config(cfg: RunConfig, width: int, R0: float) -> RunConfig:
     data = cfg.to_dict()
     data["pml"]["width"] = int(width)
     data["pml"]["R0"] = float(R0)
-    data["pml"]["observation_width"] = None
+    data["observation"]["mode"] = "inverse_crime"
     data["runtime"]["dtype"] = "float64"
     return RunConfig.from_dict(data)
 

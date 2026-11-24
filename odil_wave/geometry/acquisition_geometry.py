@@ -48,6 +48,7 @@ class AcquisitionGeometry:
         b_frac: float = 0.9,
         ring_center: Optional[Tuple[float, float]] = None,
         source_spatial: str = "gaussian",
+        transducer_ij: Optional[torch.Tensor] = None,
     ):
         """Build the transducer ring on ``grid``; defaults follow ADR 0001.
 
@@ -56,7 +57,9 @@ class AcquisitionGeometry:
         (``source_spatial="gaussian"``; ``"point"`` is ``1 / (dx * dy)`` at one
         node). ``a_frac`` / ``b_frac`` are the ellipse semi-axes as fractions of
         the interior half-width / half-height; ``ring_center`` is in metres,
-        ``None`` the interior centre.
+        ``None`` the interior centre. ``transducer_ij`` ``(n_transducers, 2)``
+        full-grid nodes override the ellipse placement, e.g. to keep the
+        transducers of a coarser grid on a refined one.
         """
         self.grid = grid
         self.source = source
@@ -76,7 +79,17 @@ class AcquisitionGeometry:
         self.ring_center = grid.interior_center if ring_center is None else ring_center
         self.source_spatial = source_spatial
 
-        self.transducer_ij = self._place_ellipse(self.n_transducers)
+        if transducer_ij is None:
+            self.transducer_ij = self._place_ellipse(self.n_transducers)
+        else:
+            self.transducer_ij = torch.as_tensor(
+                transducer_ij, dtype=torch.long, device=self.device
+            )
+            if tuple(self.transducer_ij.shape) != (self.n_transducers, 2):
+                raise ValueError(
+                    f"transducer_ij must be ({self.n_transducers}, 2), "
+                    f"got {tuple(self.transducer_ij.shape)}"
+                )
         # receivers[s]: the transducers recording shot s, ascending, without s.
         ids = torch.arange(self.n_transducers, device=self.device)
         others = ids.view(1, -1) != ids.view(-1, 1)

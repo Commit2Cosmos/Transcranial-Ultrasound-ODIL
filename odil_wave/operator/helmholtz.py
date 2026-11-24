@@ -11,7 +11,7 @@ from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.defaults import library_default
 from odil_wave.wavefield import Wavefield
-from .spatial import second_difference_stencil
+from .spatial import STAGGERED_D1_COEFFS, second_difference_stencil
 from .utils import WaveEquation
 
 
@@ -57,41 +57,48 @@ def second_difference_1d(n: int, space_order: int, h_nd: float) -> sp.csr_matrix
     )
 
 
+def _staggered_difference_matrix(
+    rows: int, cols: int, coeffs: Tuple[float, ...]
+) -> sp.csr_matrix:
+    """The ``(rows, cols)`` staggered differences, row ``k`` centred between
+    columns ``k + P/2 - 1`` and ``k + P/2``, unit spacing."""
+    half = len(coeffs)
+    return sp.diags(
+        [-c for c in reversed(coeffs)] + list(coeffs),
+        list(range(2 * half)),
+        shape=(rows, cols),
+        format="csr",
+    )
+
+
 @functools.lru_cache(maxsize=16)
-def _one_sided_differences_1d(n: int) -> Tuple[sp.csr_matrix, sp.csr_matrix]:
-    """``(D⁺, D⁻)``: nodes to the ``n + 1`` faces (ghosts included, reflect)
-    and back, unit spacing."""
-    k = np.arange(n + 1)
-    d_plus = sp.csr_matrix(
-        (
-            np.concatenate([np.ones(n + 1), -np.ones(n + 1)]),
-            (
-                np.concatenate([k, k]),
-                np.concatenate([_reflect_index(k, n), _reflect_index(k - 1, n)]),
-            ),
-        ),
-        shape=(n + 1, n),
+def _staggered_differences_1d(
+    n: int, space_order: int
+) -> Tuple[sp.csr_matrix, sp.csr_matrix]:
+    """``(D⁺, D⁻)``: order-P staggered, nodes to the ``n + P - 1`` faces (ghosts
+    included, reflect) and back, unit spacing."""
+    coeffs = STAGGERED_D1_COEFFS[space_order]
+    p = space_order
+    nodes = np.arange(1 - p, n - 1 + p)
+    reflect = sp.csr_matrix(
+        (np.ones(len(nodes)), (np.arange(len(nodes)), _reflect_index(nodes, n))),
+        shape=(len(nodes), n),
     )
-    i = np.arange(n)
-    d_minus = sp.csr_matrix(
-        (
-            np.concatenate([np.ones(n), -np.ones(n)]),
-            (np.concatenate([i, i]), np.concatenate([i + 1, i])),
-        ),
-        shape=(n, n + 1),
-    )
-    return d_plus, d_minus
+    d_plus = _staggered_difference_matrix(n + p - 1, len(nodes), coeffs) @ reflect
+    d_minus = _staggered_difference_matrix(n, n + p - 1, coeffs)
+    return d_plus.tocsr(), d_minus
 
 
 def stretched_second_difference_1d(
     n: int, space_order: int, h_nd: float, a_faces: np.ndarray
 ) -> sp.csr_matrix:
     """Sparse ``Λ̃ = Λ + D⁻ diag(a) D⁺ / h²`` along one axis, ``a_faces`` the
-    PML's ``1/s - 1`` on the ``n + 1`` faces (see
+    PML's ``1/s - 1`` on the ``n + P - 1`` faces (see
     :class:`~odil_wave.operator.conditions.Pml`)."""
-    d_plus, d_minus = _one_sided_differences_1d(n)
+    lap = second_difference_1d(n, space_order, h_nd)
+    d_plus, d_minus = _staggered_differences_1d(n, space_order)
     corr = d_minus @ sp.diags(a_faces) @ d_plus / h_nd**2
-    return (second_difference_1d(n, space_order, h_nd) + corr).tocsr()
+    return (lap + corr).tocsr()
 
 
 class HelmholtzSolver:

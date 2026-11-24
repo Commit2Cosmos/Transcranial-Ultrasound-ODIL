@@ -156,8 +156,8 @@ class NoWavefieldPreconditioner:
         nf, nx, ny = self.pde_scale_per_u.shape[1], *self.c_init.shape
         dtype, device = self.pde_scale_per_u.dtype, self.pde_scale_per_u.device
         cdtype = self.wave_eq.wavefield.cdtype
-        half = self.wave_eq.space_order // 2
-        stride = 2 * half + 1
+        reach = self.wave_eq.stencil_reach
+        stride = 2 * reach + 1
         shape = (1, nf, nx, ny)
         no_src = torch.zeros(shape, dtype=cdtype, device=device)
         box = torch.ones(1, 1, stride, stride, dtype=dtype, device=device)
@@ -169,7 +169,7 @@ class NoWavefieldPreconditioner:
                     comb[..., a::stride, b::stride] = 1.0
                     Ae_sq = abs_sq(self.wave_eq.residual(comb, self.c_init, no_src))
                     boxed = torch.nn.functional.conv2d(
-                        Ae_sq.view(nf, 1, nx, ny), box, padding=half
+                        Ae_sq.view(nf, 1, nx, ny), box, padding=reach
                     ).view(shape[1:])
                     col_sq[:, a::stride, b::stride] = boxed[:, a::stride, b::stride]
         return self.term_weight * col_sq / self.pde_scale_per_u.square()

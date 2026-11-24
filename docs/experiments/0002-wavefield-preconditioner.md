@@ -137,3 +137,5 @@ Current.
 2026-11-23 · note · #174 · The tone burst is now built in continuous time, not stretched to whole samples: at 80 kHz on the default grid the source spectrum changes by 5.5% (mostly a 0.055 rad phase), in both the truth data and the forward source. Exact numbers will not reproduce; conclusions should hold.
 
 2026-11-23 · note · #164 · The PML now replicates the interior edge velocity instead of a frozen 1500 m/s, and the model gradient and `pde_diagonal` curvature of edge cells count their PML copies. Every run whose inversion moves an edge cell changes (tiny config: final `rel_wavefield_error` 0.10748, was 0.10745); exact numbers will not reproduce. Conclusions should hold.
+
+2026-11-23 · note · #176 · `source.dimensionless` is removed, so the source waveform is no longer scaled by `2·f0²` and wavefield magnitudes drop by that factor; the objective is amplitude-invariant, so results change at round-off only (tiny config: iteration-0 loss agrees to 1e-16, L-BFGS evaluation counts drift by 1). Exact numbers will not reproduce bit-for-bit; conclusions should hold.

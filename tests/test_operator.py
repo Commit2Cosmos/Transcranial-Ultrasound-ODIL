@@ -15,6 +15,7 @@ from odil_wave.wavefield import Wavefield
 
 from odil_wave.operator.conditions import Pml
 from odil_wave.operator.spatial import (
+    STAGGERED_D1_COEFFS,
     Laplacian,
     _apply_conv,
     second_difference_stencil,
@@ -75,7 +76,7 @@ def tiny_setup():
 def test_pml_zero_weight_leaves_the_operator_unstretched():
     grid = _make_grid(pml_width=2)
     wf = _make_wavefield(grid)
-    pml = Pml(wf, weight=0.0)
+    pml = Pml(wf, weight=0.0, space_order=2)
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     u_xx = torch.randn_like(u)
     u_yy = torch.randn_like(u)
@@ -88,7 +89,7 @@ def test_pml_is_inactive_in_the_interior():
     """``s = 1`` at interior nodes and ``1/s - 1 = 0`` on the faces around
     them, so interior rows see the unstretched operator."""
     grid = _make_grid(pml_width=3)
-    pml = Pml(_make_wavefield(grid), weight=1.0)
+    pml = Pml(_make_wavefield(grid), weight=1.0, space_order=2)
     sx, sy = grid.interior_slice
     assert torch.equal(pml.s_x[:, sx], torch.ones_like(pml.s_x[:, sx]))
     assert torch.equal(pml.s_y[:, :, sy], torch.ones_like(pml.s_y[:, :, sy]))
@@ -99,13 +100,18 @@ def test_pml_is_inactive_in_the_interior():
     assert (pml.a_x[:, :p] != 0).all() and (pml.a_x[:, -p:] != 0).all()
 
 
+def test_pml_unsupported_order_raises():
+    with pytest.raises(ValueError, match="space order"):
+        Pml(_make_wavefield(_make_grid()), weight=1.0, space_order=3)
+
+
 def test_pml_at_zero_hertz_raises():
     grid = _make_grid(pml_width=2)
     freq = FrequencySelection.from_bins(grid, [0, 3])
     wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=make_model(grid))
     with pytest.raises(ValueError, match="0 Hz"):
-        Pml(wf, weight=1.0)
-    Pml(wf, weight=0.0)
+        Pml(wf, weight=1.0, space_order=2)
+    Pml(wf, weight=0.0, space_order=2)
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +144,17 @@ def test_second_difference_stencil_unsupported_order_raises(space_order):
     """Orders without a coefficient table are rejected."""
     with pytest.raises(ValueError):
         second_difference_stencil(space_order, 1.0)
+
+
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
+def test_staggered_first_differences_are_exact_to_their_order(space_order):
+    """On ``x**k`` about a face, ``k <= P``, the staggered difference gives the
+    exact derivative there: 1 for ``k = 1``, else 0."""
+    offsets = np.arange(1, space_order // 2 + 1) - 0.5
+    coeffs = np.array(STAGGERED_D1_COEFFS[space_order])
+    for k in range(space_order + 1):
+        d = coeffs @ (offsets**k - (-offsets) ** k)
+        assert d == pytest.approx(float(k == 1), abs=1e-12)
 
 
 @pytest.mark.parametrize("space_order,pad", [(2, 1), (4, 2), (6, 3), (8, 4), (10, 5)])
@@ -232,9 +249,10 @@ def test_wave_equation_residual_is_the_conservative_stretched_form():
     assert np.allclose(r[0, 0].numpy(), expected, rtol=1e-10, atol=1e-8)
 
 
-@pytest.mark.parametrize("space_order", [2, 4])
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8])
 def test_pml_leaves_interior_rows_unchanged(space_order):
-    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on."""
+    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on,
+    beyond the ``P/2 - 1`` cells the staggered correction reaches in."""
     grid = _make_grid(pml_width=4, dtype=torch.float64)
     wf = _make_wavefield(grid)
     torch.manual_seed(1)
@@ -247,7 +265,9 @@ def test_pml_leaves_interior_rows_unchanged(space_order):
     u_xx, u_yy = Laplacian(wf, space_order=space_order).axes(amp)
     _, lambda_tt = wf.frequency_selection.symbols_broadcast()
     plain = lambda_tt * amp - (c / grid.c0) ** 2 * (u_xx + u_yy) - source
-    sx, sy = grid.interior_slice
+    p, band = grid.pml_width, space_order // 2 - 1
+    sx = slice(p + band, grid.nx - p - band)
+    sy = slice(p + band, grid.ny - p - band)
     assert torch.equal(r[..., sx, sy], plain[..., sx, sy])
     assert not torch.allclose(r, plain)
 
@@ -313,7 +333,7 @@ def test_second_difference_1d_unsupported_order_raises():
         second_difference_1d(5, 3, 1.0)
 
 
-@pytest.mark.parametrize("space_order", [2, 4])
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8])
 def test_assemble_h_sparse_matches_wave_equation_residual(space_order):
     """Sparse and matrix-free operators agree, PML included."""
     grid = _make_grid(pml_width=4, dtype=torch.float64)

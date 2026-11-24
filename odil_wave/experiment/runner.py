@@ -27,7 +27,7 @@ from .config import BandCfg, ConfigError, RunConfig, validate_config
 from .constraints import check_constraints, format_constraint_report
 from .health import HealthCheck
 from .postprocess import draw_reported, postprocess_run
-from .problem import Problem, build_problem, grid_summary
+from .problem import Problem, build_problem, grid_summary, observation_summary
 from .rundir import RunDirectory, write_json
 from .saved import (
     BANDS_DIR,
@@ -152,7 +152,8 @@ def run_frequency_band(
 
     t0 = time.perf_counter()
     t_start_epoch = time.time()
-    band = problem.make_band(freqs, velocity_model)
+    observations = problem.observe(freqs)
+    band = problem.make_band(freqs, velocity_model, observations)
 
     band_tape = tape.start_band(band_index, band)
     opt = build_optimiser(problem, band, n_iter)
@@ -202,6 +203,11 @@ def run_frequency_band(
             "t_start_epoch_s": t_start_epoch,
             "wall_s": wall_s,
             "warm_start_s": band.warm_start_s,
+            "observation": {
+                "solve_s": observations.solve_s,
+                "rel_data_residual_truth": observations.rel_data_residual_truth,
+                "noise_floor": observations.noise_floor,
+            },
             "optimise_s": optimise_s,
             "wavefield_solve_s": opt.wavefield_solve_s,
             "start_metrics": start_metrics,
@@ -318,6 +324,7 @@ def run_inverse(
     try:
         problem = build_problem(config)
         meta["grid"] = grid_summary(problem)
+        meta["observation"] = observation_summary(problem)
         write_json(run_dir / METADATA_FILE, meta)
 
         # Raises ConfigError, before any band, if the truth gives nothing to score.

@@ -22,14 +22,12 @@ class SourceSignal:
         # tone_burst-only parameters
         n_cycles: float = 3.0,
         envelope: str = "gaussian",
-        dimensionless: bool = True,
         t_centre: Optional[float] = None,
         t_start: float = 0.0,
     ):
         """Build a source pulse on `grid`; defaults follow ADR 0001.
 
-        ``f0`` is in Hz, ``amplitude`` the peak of `s(t)` before the
-        ``dimensionless`` scaling by ``grid.natural_source_amplitude(f0)``.
+        ``f0`` is in Hz, ``amplitude`` the peak of `s(t)`.
         ``n_cycles``, ``envelope`` and ``t_start`` (s) are tone_burst only;
         the burst must start and end on the grid's time axis.
         ``t_centre`` is the Ricker centre in s, ``None`` -> ``1 / f0``.
@@ -38,15 +36,7 @@ class SourceSignal:
         self.kind = kind
         self.f0 = f0
         self.t_centre = 1.0 / f0 if t_centre is None else t_centre
-        self.dimensionless = dimensionless
-        # User-facing amplitude (kept as-is so plot titles read naturally),
-        # and the internal physical amplitude actually fed to the waveform.
         self.amplitude = amplitude
-        self._amplitude_phys = (
-            amplitude * grid.natural_source_amplitude(f0)
-            if dimensionless
-            else amplitude
-        )
         self.n_cycles = n_cycles
         self.envelope = envelope
         self.t_start = t_start
@@ -62,7 +52,7 @@ class SourceSignal:
 
     def _ricker(self, t: torch.Tensor) -> torch.Tensor:
         arg = (math.pi * self.f0 * (t - self.t_centre)) ** 2
-        return self._amplitude_phys * (1.0 - 2.0 * arg) * torch.exp(-arg)
+        return self.amplitude * (1.0 - 2.0 * arg) * torch.exp(-arg)
 
     # Tone burst (Stride's shape, defined in continuous time)
     def _tone_burst(self) -> torch.Tensor:
@@ -92,7 +82,7 @@ class SourceSignal:
         signal = signal * _tukey(x, alpha=0.05)
         signal = np.where(inside, signal, 0.0)
         return torch.tensor(
-            signal * self._amplitude_phys,
+            signal * self.amplitude,
             dtype=self.grid.dtype,
             device=self.grid.device,
         )

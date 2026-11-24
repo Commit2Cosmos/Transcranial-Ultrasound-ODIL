@@ -104,13 +104,6 @@ def test_bad_pml_R0_raises():
 # --------------------------------------------------------------------------- #
 # Helpers / constructors
 # --------------------------------------------------------------------------- #
-def test_natural_source_amplitude(grid):
-    """Amplitude is 2 f0^2 and requires a positive frequency."""
-    assert grid.natural_source_amplitude(10.0) == pytest.approx(200.0)
-    with pytest.raises(ValueError):
-        grid.natural_source_amplitude(0.0)
-
-
 def test_summary_is_string(grid):
     """The human-readable summary renders without error."""
     assert isinstance(grid.summary, str)
@@ -157,6 +150,22 @@ def test_symbols_and_broadcast(grid):
     assert lt.shape == (1, fs.n_frequencies, 1, 1)
     assert ltt.shape == (1, fs.n_frequencies, 1, 1)
     assert lt.is_complex()
+
+
+def test_leapfrog_symbols_tend_to_the_exact_ones(grid):
+    """The centred differences are second order: ``λ_tt`` is ``-ω²`` up to a
+    relative ``(ω Δt)² / 12``."""
+    leap = FrequencySelection.from_frequencies(grid, [F0])
+    exact = FrequencySelection.from_bins(grid, leap.fft_bins, time_symbols="exact")
+    wdt = float(leap.omega_nd[0] * leap.dt_nd)
+    assert complex(exact.lambda_t[0]) == pytest.approx(1j * float(leap.omega_nd[0]))
+    ratio = float(leap.lambda_tt[0] / exact.lambda_tt[0])
+    assert ratio == pytest.approx(1 - wdt**2 / 12, rel=wdt**4)
+
+
+def test_unknown_time_symbols_raise(grid):
+    with pytest.raises(ValueError, match="time_symbols"):
+        FrequencySelection.from_bins(grid, [3], time_symbols="rk4")
 
 
 def test_cdtype_matches_grid_dtype(grid):
