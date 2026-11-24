@@ -572,7 +572,7 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
     ).traces
     # A frequency shared by two bands gets the same realisation.
     assert torch.equal(pair[:, 1], alone[:, 0])
-    assert not torch.allclose(reseeded, alone)
+    assert _rel(reseeded, alone) > 0.05
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
