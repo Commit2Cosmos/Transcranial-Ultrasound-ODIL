@@ -11,7 +11,7 @@ Shepp-Logan head phantom from synthetic data.
 ## Install
 
 ```bash
-uv sync --extra dev        # or: pip install -e ".[dev]"
+uv sync                    # or: pip install -e . --group dev
 pre-commit install
 ```
 
