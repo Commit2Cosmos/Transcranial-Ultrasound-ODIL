@@ -5,8 +5,7 @@ import pytest
 from odil_wave.experiment import ConfigError, resolve_config
 from odil_wave.experiment.balance import GridCase, balance_check, scaled_config
 
-# A small physical problem: an overdensity truth (sized in metres, unlike the
-# Shepp-Logan skull rim, which bottoms out at 2 cells on small grids) and a
+# A small physical problem: an overdensity truth sized in metres and a
 # Gaussian source resolved on the coarse grid (σ = 1.74h).
 SMALL = {
     "runtime": {"dtype": "float64"},

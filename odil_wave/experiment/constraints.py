@@ -22,7 +22,7 @@ from scipy.optimize import brentq
 
 from odil_wave.grid import time_samples
 from odil_wave.operator.spatial import FD2_COEFFS
-from odil_wave.models.velocity_models import SOS_WATER
+from odil_wave.models.shepp_logan import SOS_WATER
 
 if TYPE_CHECKING:
     from .config import RunConfig

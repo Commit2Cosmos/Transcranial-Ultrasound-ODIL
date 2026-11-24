@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import torch
 from matplotlib.colors import Normalize, TwoSlopeNorm
@@ -5,7 +6,7 @@ from matplotlib.colors import Normalize, TwoSlopeNorm
 from odil_wave import VelocityModel
 from odil_wave.models import profile_velocity_norm, velocity_norm
 
-from conftest import make_model
+from conftest import make_grid, make_model
 
 # Phantom size used by the Shepp-Logan tests (fraction of the interior).
 SCALE = 0.90
@@ -57,6 +58,86 @@ def test_shepp_logan_masks_and_skull(grid):
     assert vm.head_mask.shape == grid.interior_shape
 
 
+# The default config's head (0.25 m interior, scale 0.85), sampled at three
+# resolutions spanning a skull thinner than a cell to one 6.5 cells thick.
+HEAD_EXTENT = 0.25
+HEAD_SCALE = 0.85
+
+
+def _head(n, **kw):
+    g = make_grid(
+        interior_shape=(n, n),
+        interior_extent=((0.0, HEAD_EXTENT), (0.0, HEAD_EXTENT)),
+        c_max=3100.0,
+        pml_width=2,
+    )
+    return make_model(g, "shepp_logan", scale=HEAD_SCALE, **kw)
+
+
+def _interior_c(vm):
+    return vm.c[vm.grid.interior_slice].numpy()
+
+
+def _cell_at(vm, x, y):
+    """The interior cell holding the point ``(x, y)`` (m)."""
+    g = vm.grid
+    xs, ys = (a[s].numpy() for a, s in zip((g.x, g.y), g.interior_slice))
+    return int(np.argmin(abs(xs - x))), int(np.argmin(abs(ys - y)))
+
+
+def _rim_thickness(vm):
+    """The skull thickness (m) on the head's short axis, from the slowness
+    ``1/c²`` integrated along the row through the centre: water, then skull,
+    then plain brain (1510 m/s) up to half the head's half-width."""
+    half = HEAD_SCALE * HEAD_EXTENT / 2
+    c0 = HEAD_EXTENT / 2
+    a = 0.69 * half  # Table 3.1's short semi-axis
+    i_end, j = _cell_at(vm, c0 - 0.5 * half, c0)
+    h = vm.grid.dx
+    m = _interior_c(vm)[: i_end + 1, j] ** -2.0
+    m_water, m_skull, m_brain = 1500.0**-2, 3000.0**-2, 1510.0**-2
+    x_end = float(vm.grid.x[vm.grid.interior_slice[0]][i_end]) + h / 2
+    excess = float(np.sum(m - m_water) * h)
+    brain_span = x_end - (c0 - a)
+    return (excess - (m_brain - m_water) * brain_span) / (m_skull - m_brain)
+
+
+@pytest.mark.parametrize("n", [32, 125, 250])
+def test_the_rim_is_as_thick_in_metres_at_any_resolution(n):
+    """The default 6.5 mm skull holds at 32², where it is thinner than a cell."""
+    vm = _head(n)
+    # 8 x 8 sub-samples place each of the skull's two edges to within h/16.
+    assert _rim_thickness(vm) == pytest.approx(6.5e-3, abs=vm.grid.dx / 8)
+
+
+def test_skull_thickness_sets_the_rim_in_metres():
+    assert _rim_thickness(_head(125, skull_thickness=5e-3)) == pytest.approx(
+        5e-3, abs=0.2e-3
+    )
+
+
+@pytest.mark.parametrize("n", [32, 125, 250])
+def test_brain_region_speeds_are_the_same_in_metres_at_any_resolution(n):
+    """Plain brain, a ventricle and a feature keep their speeds at fixed points
+    in metres, and the brain region holds no skull."""
+    vm = _head(n)
+    c = _interior_c(vm)
+    half = HEAD_SCALE * HEAD_EXTENT / 2
+    c0 = HEAD_EXTENT / 2
+    for (u, v), speed in [
+        ((-0.5, 0.0), 1510.0),
+        ((0.22, 0.0), 1450.0),
+        ((-0.22, 0.0), 1450.0),
+        ((0.0, -0.35), 1540.0),
+    ]:
+        cell = _cell_at(vm, c0 + u * half, c0 + v * half)
+        assert c[cell] == pytest.approx(speed, abs=1e-6), (u, v)
+    _, brain, _ = vm.skull_region_masks()
+    in_brain = vm.c[brain].numpy()
+    assert in_brain.min() >= 1450.0 - 1e-6
+    assert in_brain.max() <= 1570.0 + 1e-6
+
+
 def test_shepp_logan_skull_alpha_zero_is_water(grid):
     """skull_alpha=0 removes all contrast, leaving the water background."""
     vm = make_model(
@@ -64,6 +145,18 @@ def test_shepp_logan_skull_alpha_zero_is_water(grid):
     )
     assert vm.c_min == pytest.approx(1500.0)
     assert vm.c_max == pytest.approx(1500.0)
+
+
+def test_skull_sigma_blurs_the_skull_over_metres():
+    """A 4 mm blur of the 6.5 mm skull lowers its peak to ~2380 m/s (the
+    continuous erf profile) at either resolution."""
+    peaks = [
+        make_model(
+            _head(n).grid, "shepp_logan_skull", scale=HEAD_SCALE, skull_sigma=4e-3
+        ).c_max
+        for n in (125, 250)
+    ]
+    assert peaks == pytest.approx([2376.0, 2376.0], rel=0.03)
 
 
 def test_shepp_logan_skull_validates_params(grid):

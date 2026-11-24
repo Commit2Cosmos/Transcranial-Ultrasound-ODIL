@@ -15,10 +15,13 @@ source: {f0: 40000.0, n_cycles: 2.0}
 acquisition: {n_transducers: 8, source_spatial: point}
 # Shepp-Logan has the brain and skull regions the tape scores. A slow skull
 # keeps the truth inside the grid's velocity bounds; a small head keeps the
-# transducers in water and is recovered within the tiny budget.
+# transducers in water. Within the tiny budget the model as a whole, not the
+# brain region alone, moves towards the truth. A 2 h skull leaves a brain
+# region wide enough to score.
 truth:
   profile: shepp_logan
-  scale: 0.6
+  scale: 0.7
+  skull_thickness: 5.3e-3
   extra: {c_skull: 1700.0}
 init: {profile: homogeneous}
 continuation:
@@ -27,6 +30,7 @@ continuation:
 loss:
   weights: {data: 10.0}
 optimiser: {n_iter: 10, log_every: 1}
-# A 5-cell SSIM window leaves part of the tiny brain region after erosion.
+# A 3-cell SSIM window (sigma = 0.38 h) leaves part of the tiny brain region
+# after erosion.
 metrics:
-  ssim: {sigma: 0.5}
+  ssim: {sigma: 1.0e-3}

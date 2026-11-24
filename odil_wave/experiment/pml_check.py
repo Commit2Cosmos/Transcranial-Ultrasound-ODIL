@@ -25,7 +25,7 @@ from scipy.sparse.linalg import splu
 
 from odil_wave.grid import FrequencySelection, Grid
 from odil_wave.models import VelocityModel
-from odil_wave.models.velocity_models import SOS_WATER
+from odil_wave.models.shepp_logan import SOS_WATER
 from odil_wave.operator import HelmholtzSolver
 from odil_wave.wavefield import Wavefield
 

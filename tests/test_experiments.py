@@ -41,6 +41,7 @@ EXPECTED_SHAPE = {
         "contrast",
         "skull_alpha",
         "skull_sigma",
+        "skull_thickness",
         "extra",
     ],
     "init": [
@@ -50,6 +51,7 @@ EXPECTED_SHAPE = {
         "contrast",
         "skull_alpha",
         "skull_sigma",
+        "skull_thickness",
         "extra",
     ],
     "observation": [
@@ -58,7 +60,6 @@ EXPECTED_SHAPE = {
         "space_order",
         "time_symbols",
         "pml_thickness_factor",
-        "truth",
         "noise",
     ],
     "continuation": ["bands"],
@@ -276,6 +277,57 @@ def test_under_resolved_bound_is_one_grid_spacing(h_frac, warns):
     assert all("(< 1.0 h)" in w for w in under)
 
 
+@pytest.mark.parametrize("thickness, warns", [(4.0e-3, True), (4.1e-3, False)])
+def test_a_skull_under_two_cells_thick_warns(thickness, warns):
+    """2h = 4.03 mm on the default grid."""
+    warnings = validate_config(
+        resolve_config({}, [f"truth.skull_thickness={thickness!r}"])
+    )
+    assert any("truth.skull_thickness" in w and "2 h" in w for w in warnings) == warns
+
+
+def test_the_default_skull_is_resolved():
+    assert not any("skull_thickness" in w for w in validate_config(resolve_config({})))
+
+
+def test_a_skull_filling_the_head_is_rejected():
+    """The default head's short semi-axis is 73 mm."""
+    with pytest.raises(ConfigError, match="leaves no brain"):
+        validate_config(resolve_config({}, ["truth.skull_thickness=0.08"]))
+
+
+@pytest.mark.parametrize("value", ["0", "-1e-3"])
+def test_skull_thickness_must_be_a_positive_length(value):
+    with pytest.raises(ConfigError, match="skull_thickness"):
+        validate_config(resolve_config({}, [f"truth.skull_thickness={value}"]))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        # values left in cells: both exceed the 0.25 m interior
+        "truth.skull_sigma=2.0",
+        "metrics.ssim.sigma=1.5",
+    ],
+)
+def test_a_sigma_longer_than_the_interior_is_rejected(override):
+    overrides = [override, "truth.profile=shepp_logan_skull"]
+    with pytest.raises(ConfigError, match="interior"):
+        validate_config(resolve_config({}, overrides))
+
+
+@pytest.mark.parametrize("sigma, fits", [(0.03, True), (0.04, False)])
+def test_the_ssim_window_is_sized_in_cells_from_metres(sigma, fits):
+    """0.03 m is 14.9 cells at h = 2.016 mm, a 105-cell window; 0.04 m is a
+    139-cell window, wider than the 125-cell interior."""
+    cfg = resolve_config({}, [f"metrics.ssim.sigma={sigma}"])
+    if fits:
+        validate_config(cfg)
+    else:
+        with pytest.raises(ConfigError, match="139-cell SSIM window"):
+            validate_config(cfg)
+
+
 @pytest.mark.parametrize("value", ["null", "0", "-1e-3"])
 def test_sigma_s_must_be_a_positive_length(value):
     with pytest.raises(ConfigError, match="sigma_s"):
@@ -455,7 +507,6 @@ PLUMBING = {
         "refine": 1,
         "space_order": 2,
         "time_symbols": "leapfrog",
-        "truth": "inversion",
     }
 }
 
@@ -576,25 +627,14 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
-    obs = _observe(tiny_run_config, [40e3], {"mode": "independent"})
+    problem = build_problem(resolve_config(deep_merge(tiny_run_config, INDEPENDENT)))
+    obs = problem.observe([40e3])
     # The inversion's own solve at the truth is ~2% off the independent data.
     assert 1e-2 < obs.rel_data_residual_truth < 5e-2
     assert obs.solve_s > 0
-
-
-def test_native_truth_is_a_different_model_from_the_prolonged_one(
-    tiny_run_config,
-):
-    """Rebuilding the phantom on the observation grid changes the data (11% on
-    the tiny config), while the tape keeps scoring the inversion-grid truth."""
-    native = deep_merge(
-        tiny_run_config, {"observation": {"mode": "independent", "truth": "native"}}
-    )
-    a = _observe(tiny_run_config, [40e3], {"mode": "independent"}).traces
-    b = build_problem(resolve_config(native))
-    assert _rel(b.observe([40e3]).traces, a) > 5e-2
+    # The tape scores the inversion-grid truth, as under the inverse crime.
     crime = build_problem(resolve_config(tiny_run_config))
-    assert torch.equal(b.truth_velocity.c, crime.truth_velocity.c)
+    assert torch.equal(problem.truth_velocity.c, crime.truth_velocity.c)
 
 
 def test_independent_observations_warn_about_a_point_source():

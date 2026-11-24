@@ -61,7 +61,7 @@ def _summarise(cfg) -> str:
     if obs.mode == "independent":
         detail = (
             f"refine={obs.refine}, space_order={obs.space_order}, "
-            f"time_symbols={obs.time_symbols}, truth={obs.truth}"
+            f"time_symbols={obs.time_symbols}"
         )
     else:
         detail = "inverse crime"
@@ -70,7 +70,7 @@ def _summarise(cfg) -> str:
         + ("" if obs.noise.snr_db is None else f", seed={obs.noise.seed}")
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
-    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma}")
+    lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma} m")
     lines.append(f"bands ({len(cfg.continuation.bands)}):")
     for i, b in enumerate(cfg.continuation.bands):
         khz = [f / 1e3 for f in b.frequencies_hz]

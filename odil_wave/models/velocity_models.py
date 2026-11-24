@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Optional
 import torch
 import torch.nn.functional as F
@@ -5,23 +6,13 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from skimage.data import shepp_logan_phantom
-from skimage.transform import resize
 from scipy import ndimage as ndi
 
 import numpy as np
 
 from odil_wave.grid import Grid
+from odil_wave.models.shepp_logan import SheppLogan
 from odil_wave.plot_utils import length_scale
-
-# Speed-of-sound constants + phantom parameters mirroring the Stride reference
-# ``stride/stride_forward_shepp.py::shepp_logan_sos`` so the Shepp-Logan model
-# built here is numerically identical to the Stride forward ground truth.
-SOS_WATER = 1500.0  # background [m/s]
-SOS_SKULL = 3000.0  # constant skull-rim speed [m/s]
-SOFT_INTERCEPT = 1450.0  # interior = SOFT_INTERCEPT + SOFT_SLOPE * phantom
-SOFT_SLOPE = 300.0
-SHEPP_THRESHOLD = 0.05  # head = fill_holes(phantom > threshold)
 
 
 def velocity_norm(vmin: float, vcenter: float, vmax: float):
@@ -75,10 +66,10 @@ class VelocityModel:
     PML the interior edge replicated outwards (:meth:`build_full_c`).
 
     ``**profile_kwargs``: ``radius`` (m) and ``center`` (``(x, y)`` m,
-    default the interior centre) for ``overdensity``; ``c_water``,
-    ``c_skull``, ``threshold``, and ``soft_intercept`` / ``soft_slope``
-    (``shepp_logan``) or ``interior_value`` (``shepp_logan_skull``) for the
-    Shepp-Logan profiles. Defaults follow ADR 0001.
+    default the interior centre) for ``overdensity``; ``c_water``, ``c_skull``
+    and, ``shepp_logan_skull`` only, ``interior_value`` (m/s) for the
+    Shepp-Logan profiles, which sample a :class:`SheppLogan` (ADR 0004).
+    Defaults follow ADR 0001.
     """
 
     def __init__(
@@ -91,15 +82,17 @@ class VelocityModel:
         scale: float = 0.85,
         skull_alpha: float = 1.0,
         skull_sigma: float = 0.0,
+        skull_thickness: float = 6.5e-3,
         **profile_kwargs,
     ):
         """Build ``profile``'s velocity field on the full grid.
 
         ``base`` and ``contrast`` are m/s. ``scale`` is the
-        fraction of the interior the Shepp-Logan phantom occupies.
-        ``shepp_logan_skull`` only: ``skull_alpha`` in [0, 1] scales the skull
-        contrast, ``c = c_water + alpha * G_σ(c_perfect - c_water)``;
-        ``skull_sigma`` >= 0 is ``σ`` in **grid cells** (``0`` a sharp rim).
+        fraction of the interior the Shepp-Logan phantom occupies, and
+        ``skull_thickness`` its skull (m). ``shepp_logan_skull`` only:
+        ``skull_alpha`` in [0, 1] scales the skull contrast,
+        ``c = c_water + alpha * G_σ(c_perfect - c_water)``; ``skull_sigma``
+        >= 0 is ``σ`` in m (``0`` a sharp rim).
         """
         self.grid = grid
         self.profile = profile
@@ -108,6 +101,7 @@ class VelocityModel:
         self.scale = scale
         self.skull_alpha = skull_alpha
         self.skull_sigma = skull_sigma
+        self.skull_thickness = skull_thickness
         self.profile_kwargs = profile_kwargs
         self.c = self.build_full_c(self._build()[grid.interior_slice])
 
@@ -148,41 +142,20 @@ class VelocityModel:
         # 2D replicate padding needs a (batch, channel) prefix.
         return F.pad(c_interior[None, None], (p, p, p, p), mode="replicate")[0, 0]
 
-    def _shepp_logan_interior_phantom(self, scale: float, threshold: float):
-        """``(phantom, head, inner, rim)`` on the interior: a float32 phantom in
-        [0, 1] and interior-shaped bool masks. Built on the interior, as
-        ``stride/stride_forward_shepp.py::shepp_logan_sos`` does, so the morphology
-        sees the same array borders."""
-        g = self.grid
-        shape = (g.interior_nx, g.interior_ny)
-        # Rotate 90 deg so the long axis aligns with AcquisitionGeometry's y.
-        original = np.rot90(shepp_logan_phantom(), k=1).astype(np.float32)
-        phantom_shape = (
-            max(2, int(round(shape[0] * scale))),
-            max(2, int(round(shape[1] * scale))),
+    def _shepp_logan(self, **kwargs) -> SheppLogan:
+        return SheppLogan.in_interior(
+            self.grid.interior_extent, self.scale, self.skull_thickness, **kwargs
         )
-        smaller = resize(
-            original,
-            phantom_shape,
-            anti_aliasing=True,
-            mode="reflect",
-            preserve_range=True,
-        ).astype(np.float32)
-        smaller -= smaller.min()
-        if smaller.max() > 0:
-            smaller /= smaller.max()
 
-        phantom = np.zeros(shape, dtype=np.float32)
-        ox = (shape[0] - phantom_shape[0]) // 2
-        oy = (shape[1] - phantom_shape[1]) // 2
-        phantom[ox : ox + phantom_shape[0], oy : oy + phantom_shape[1]] = smaller
-
-        head = ndi.binary_fill_holes(phantom > threshold)
-        # Skull thickness scales with the phantom size, not the full grid.
-        erosion_pixels = max(2, int(round(0.02 * min(phantom_shape))))
-        inner = ndi.binary_erosion(head, iterations=erosion_pixels)
-        rim = head & ~inner
-        return phantom, head, inner, rim
+    def _rasterise_with_masks(self, phantom: SheppLogan) -> np.ndarray:
+        """The interior ``c`` of ``phantom``; sets the region masks from it."""
+        g = self.grid
+        sx, sy = g.interior_slice
+        raster = phantom.rasterise(g.x[sx].cpu().numpy(), g.y[sy].cpu().numpy())
+        self._head_mask = self._embed_mask(raster.head)
+        self._interior_mask = self._embed_mask(raster.brain)
+        self._rim_mask = self._embed_mask(raster.skull)
+        return raster.c
 
     def _embed_interior(self, interior_np: np.ndarray, fill: float) -> torch.Tensor:
         g = self.grid
@@ -223,59 +196,30 @@ class VelocityModel:
             )
 
         if self.profile == "shepp_logan":
-            scale = self.scale
-            threshold = self.profile_kwargs.get("threshold", SHEPP_THRESHOLD)
-            c_water = self.profile_kwargs.get("c_water", SOS_WATER)
-            c_skull = self.profile_kwargs.get("c_skull", SOS_SKULL)
-            soft_intercept = self.profile_kwargs.get("soft_intercept", SOFT_INTERCEPT)
-            soft_slope = self.profile_kwargs.get("soft_slope", SOFT_SLOPE)
-
-            phantom, head, inner, rim = self._shepp_logan_interior_phantom(
-                scale, threshold
-            )
-            # As stride/stride_forward_shepp.py::shepp_logan_sos.
-            model = np.full(phantom.shape, c_water, dtype=np.float32)
-            interior_values = soft_intercept + soft_slope * phantom
-            model[head] = interior_values[head]
-            model[rim] = c_skull
-
-            self._head_mask = self._embed_mask(head)
-            self._interior_mask = self._embed_mask(inner)
-            self._rim_mask = self._embed_mask(rim)
-            return self._embed_interior(model, c_water)
+            phantom = self._shepp_logan(**self.profile_kwargs)
+            c = self._rasterise_with_masks(phantom)
+            return self._embed_interior(c, phantom.c_water)
 
         if self.profile == "shepp_logan_skull":
-            scale = self.scale
-            threshold = self.profile_kwargs.get("threshold", SHEPP_THRESHOLD)
-            c_water = self.profile_kwargs.get("c_water", SOS_WATER)
-            c_skull = self.profile_kwargs.get("c_skull", SOS_SKULL)
             skull_alpha = float(self.skull_alpha)
             if skull_alpha < 0.0 or skull_alpha > 1.0:
                 raise ValueError(f"skull_alpha must be in [0, 1]; got {skull_alpha}")
             skull_sigma = float(self.skull_sigma)
             if skull_sigma < 0.0:
                 raise ValueError(f"skull_sigma must be >= 0; got {skull_sigma}")
-
-            phantom, head, inner, rim = self._shepp_logan_interior_phantom(
-                scale, threshold
+            kwargs = dict(self.profile_kwargs)
+            interior_value = kwargs.pop("interior_value", None)
+            phantom = self._shepp_logan(**kwargs)
+            c_water = phantom.c_water
+            phantom = replace(
+                phantom, c_brain=c_water if interior_value is None else interior_value
             )
-            # Perfect-skull geometry; no soft-tissue features.
-            interior_value = self.profile_kwargs.get("interior_value", c_water)
-            model = np.full(phantom.shape, c_water, dtype=np.float32)
-            if interior_value != c_water:
-                model[inner] = interior_value
-            model[rim] = c_skull
-
-            cw = np.float32(c_water)
-            contrast = model - cw
+            contrast = self._rasterise_with_masks(phantom) - c_water
             if skull_sigma > 0.0:
-                contrast = ndi.gaussian_filter(contrast, sigma=skull_sigma)
-            model = cw + np.float32(skull_alpha) * contrast
-
-            self._head_mask = self._embed_mask(head)
-            self._interior_mask = self._embed_mask(inner)
-            self._rim_mask = self._embed_mask(rim)
-            return self._embed_interior(model, c_water)
+                contrast = ndi.gaussian_filter(
+                    contrast, sigma=(skull_sigma / g.dx, skull_sigma / g.dy)
+                )
+            return self._embed_interior(c_water + skull_alpha * contrast, c_water)
 
         raise ValueError(f"Unknown velocity profile: {self.profile!r}")
 
