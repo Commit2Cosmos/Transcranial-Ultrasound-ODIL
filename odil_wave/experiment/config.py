@@ -45,6 +45,7 @@ from odil_wave.defaults import library_default
 from odil_wave.grid import TIME_SYMBOLS
 
 from .atomic import write_text_atomic
+from .constraints import check_constraints
 
 
 class ConfigError(ValueError):
@@ -186,7 +187,8 @@ class AcquisitionCfg:
       standard deviation ``sigma_s / sqrt(2)`` (used when
       ``source_spatial == "gaussian"``). The default 2.5 mm is just under
       ``1 / k_max`` = 2.59 mm at 80 kHz in 1300 m/s (1.24 h on the default grid,
-      ring clearance 5 ``sigma_s``). :func:`validate_config` warns when it is
+      ring clearance 5 ``sigma_s``). Constraint checks
+      (:mod:`~odil_wave.experiment.constraints`) warn when it is
       under-resolved, low-pass filters the top band frequency or reaches into
       the PML.
     * ``source_spatial``: ``"gaussian"`` | ``"point"``; either is a density
@@ -625,12 +627,15 @@ def apply_overrides(
 
 # Accepted values of the enum-like fields, mirroring the library (checked by
 # tests/test_config_mirrors.py): WaveEquation's stencil orders, the Regulariser
-# kinds and the VelocityModel profiles / profile kwargs.
+# kinds, the SourceSignal kinds / envelopes and the VelocityModel profiles /
+# profile kwargs.
 _SPACE_ORDERS = (2, 4, 6, 8, 10)
 _LINE_SEARCHES = ("strong_wolfe", None)
 _MODEL_PRECONDITIONERS = ("none", "pde_diagonal")
 _WAVEFIELD_PRECONDITIONERS = ("none", "initial_model")
 _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
+_SOURCE_KINDS = ("tone_burst", "ricker")
+_ENVELOPES = ("gaussian", "rectangular")
 _OBSERVATION_MODES = ("inverse_crime", "independent")
 _OBSERVATION_TRUTHS = ("inversion", "native")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
@@ -664,10 +669,11 @@ def resolve_config(
 
 
 def validate_config(cfg: "RunConfig") -> List[str]:
-    """Validate a resolved config ``cfg``.
+    """Validate a resolved config ``cfg``, including its constraint checks
+    (:func:`~odil_wave.experiment.constraints.check_constraints`).
 
-    Raises :class:`ConfigError` on hard errors; returns a list of non-fatal
-    warning strings.
+    Raises :class:`ConfigError` on hard errors and failed ``error`` checks;
+    returns a list of non-fatal warning strings, failed ``warn`` checks first.
     """
     warnings: List[str] = []
 
@@ -710,8 +716,6 @@ def validate_config(cfg: "RunConfig") -> List[str]:
         raise ConfigError(
             f"acquisition.sigma_s must be a length > 0 in metres, got {sigma!r}"
         )
-    if cfg.acquisition.source_spatial == "gaussian":
-        warnings.extend(_source_width_warnings(cfg))
 
     if cfg.grid.space_order not in _SPACE_ORDERS:
         raise ConfigError(
@@ -799,7 +803,21 @@ def validate_config(cfg: "RunConfig") -> List[str]:
     for label, model in (("truth", cfg.truth), ("init", cfg.init)):
         _validate_model_cfg(label, model, warnings)
 
-    return warnings
+    if cfg.source.kind not in _SOURCE_KINDS:
+        raise ConfigError(
+            f"source.kind must be one of {list(_SOURCE_KINDS)}, got {cfg.source.kind!r}"
+        )
+    if cfg.source.envelope not in _ENVELOPES:
+        raise ConfigError(
+            f"source.envelope must be one of {list(_ENVELOPES)}, "
+            f"got {cfg.source.envelope!r}"
+        )
+
+    failed = [c for c in check_constraints(cfg) if not c.ok]
+    errors = [c.message for c in failed if c.severity == "error"]
+    if errors:
+        raise ConfigError("; ".join(errors))
+    return [c.message for c in failed if c.severity == "warn"] + warnings
 
 
 def _validate_observation(obs: "ObservationCfg") -> List[str]:
@@ -860,47 +878,6 @@ def _validate_observation(obs: "ObservationCfg") -> List[str]:
         f"observation.mode='inverse_crime' ignores observation.{', observation.'.join(ignored)} "
         "(they apply only to mode 'independent')."
     ]
-
-
-def _source_width_warnings(cfg: "RunConfig") -> List[str]:
-    """Warnings for a Gaussian ``acquisition.sigma_s`` that is under-resolved,
-    low-pass filters the top band frequency, or reaches into the PML; each
-    names ``sigma/h``, ``k_max sigma`` and the ring's clearance to the PML."""
-    sigma = float(cfg.acquisition.sigma_s)
-    (x0, x1), (y0, y1) = cfg.grid.interior_extent
-    nx, ny = cfg.grid.interior_shape
-    h = max((x1 - x0) / (nx - 1), (y1 - y0) / (ny - 1))
-    f_max = max(float(f) for b in cfg.continuation.bands for f in b.frequencies_hz)
-    k_max = 2.0 * math.pi * f_max / float(cfg.grid.c_min)
-    rc = cfg.acquisition.ring_center
-    cx, cy = ((x0 + x1) / 2, (y0 + y1) / 2) if rc is None else map(float, rc)
-    a = cfg.acquisition.a_frac * (x1 - x0) / 2
-    b = cfg.acquisition.b_frac * (y1 - y0) / 2
-    clearance = min(cx - a - x0, x1 - cx - a, cy - b - y0, y1 - cy - b)
-    facts = (
-        f"(sigma_s/h = {sigma / h:.2f}, k_max*sigma_s = {k_max * sigma:.2f} at "
-        f"{f_max / 1e3:g} kHz, ring clearance to the PML = {clearance * 1e3:.1f} mm "
-        f"= {clearance / sigma:.1f} sigma_s)"
-    )
-    out = []
-    if sigma < h:
-        err = 4.0 * math.exp(-((math.pi * sigma / h) ** 2))
-        out.append(
-            f"acquisition.sigma_s={sigma:g} m is under-resolved (< 1.0 h): the "
-            f"source's normalisation is off by ~{err:.0e} {facts}"
-        )
-    if k_max * sigma > 1.0:
-        out.append(
-            f"acquisition.sigma_s={sigma:g} m low-pass filters the top frequency "
-            f"(k_max*sigma_s > 1, amplitude factor "
-            f"{math.exp(-((k_max * sigma) ** 2) / 4):.2f}) {facts}"
-        )
-    if clearance < 3.0 * sigma:
-        out.append(
-            f"acquisition.sigma_s={sigma:g} m: the transducer ring is within "
-            f"3 sigma_s of the PML {facts}"
-        )
-    return out
 
 
 def _validate_model_cfg(label: str, model: "ModelCfg", warnings: List[str]) -> None:

@@ -9,6 +9,7 @@ from odil_wave.experiment import (
     ConfigError,
     RunConfig,
     apply_overrides,
+    check_constraints,
     build_problem,
     deep_merge,
     default_config_dict,
@@ -217,9 +218,19 @@ def test_apply_overrides_bad_form_raises():
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-def test_validate_config_accepts_default():
-    """The default config validates without warnings."""
-    assert validate_config(resolve_config({})) == []
+def test_validate_config_warns_on_the_defaults_failed_constraint_checks():
+    """The default config validates; it fails only the dispersion and ring
+    sampling constraint checks (#124), which warn."""
+    warnings = validate_config(resolve_config({}))
+    assert len(warnings) == 2
+    assert warnings[0].startswith("numerical dispersion")
+    assert warnings[1].startswith("ring sampling")
+
+
+def test_a_failed_error_constraint_check_refuses_the_config():
+    """dt = 500 us / 49 puts 1/(2 dt) = 49 kHz below the 80 kHz band."""
+    with pytest.raises(ConfigError, match="temporal Nyquist"):
+        validate_config(resolve_config({}, ["time.init_nt=50"]))
 
 
 @pytest.mark.parametrize(
@@ -246,6 +257,7 @@ def test_source_width_warnings(overrides, expected):
     """Each Gaussian source-width warning fires in its condition only, naming
     sigma_s/h, k_max*sigma_s and the ring clearance."""
     warnings = validate_config(resolve_config({}, overrides))
+    warnings = [w for w in warnings if w.startswith("acquisition.sigma_s")]
     assert len(warnings) == len(expected)
     for w, phrase in zip(warnings, expected):
         assert phrase in w
@@ -655,7 +667,7 @@ def test_regulariser_choice_never_warns(reg):
     cfg = resolve_config(
         {"loss": {"weights": {"reg": reg}, "regulariser": {"name": "tikhonov"}}}
     )
-    assert validate_config(cfg) == []
+    assert validate_config(cfg) == validate_config(resolve_config({}))
 
 
 @pytest.mark.parametrize(
@@ -664,5 +676,8 @@ def test_regulariser_choice_never_warns(reg):
     ids=lambda p: p.name,
 )
 def test_shipped_run_configs_validate(path):
-    """Every run config in configs/ resolves and validates cleanly."""
-    assert validate_config(resolve_config(load_config_file(path))) == []
+    """Every run config in configs/ resolves and validates, warning only for
+    failed constraint checks (the default fails two until #138)."""
+    cfg = resolve_config(load_config_file(path))
+    failed = [c.message for c in check_constraints(cfg) if not c.ok]
+    assert validate_config(cfg) == failed

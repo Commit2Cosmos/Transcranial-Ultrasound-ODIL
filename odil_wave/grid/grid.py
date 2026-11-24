@@ -13,6 +13,23 @@ from odil_wave.plot_utils import length_scale, time_scale
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
 
+def time_samples(
+    t_max: float,
+    init_nt: Optional[int],
+    cfl_safety: float,
+    c_max: float,
+    dx: float,
+    dy: float,
+) -> int:
+    """Number of time samples on ``[0, t_max]`` (s): ``init_nt``, else the
+    fewest whose step is ``cfl_safety`` of the CFL limit at ``c_max`` (m/s) on
+    spacings ``dx``, ``dy`` (m)."""
+    if init_nt is not None:
+        return init_nt
+    dt_cfl = cfl_safety / (c_max * math.sqrt(1.0 / dx**2 + 1.0 / dy**2))
+    return int(math.ceil(t_max / dt_cfl)) + 1
+
+
 @dataclass(kw_only=True)
 class Grid:
     """2D space + time discretization with a PML wrapping the interior.
@@ -128,13 +145,9 @@ class Grid:
         y_max = iy_max + p * self.dy
         self.extent = ((x_min, x_max), (y_min, y_max))
 
-        if self.init_nt is None:
-            dt_cfl = self.cfl_safety / (
-                self.c_max * math.sqrt(1.0 / self.dx**2 + 1.0 / self.dy**2)
-            )
-            self.nt = int(math.ceil(self.t_max / dt_cfl)) + 1
-        else:
-            self.nt = self.init_nt
+        self.nt = time_samples(
+            self.t_max, self.init_nt, self.cfl_safety, self.c_max, self.dx, self.dy
+        )
         self.dt = self.t_max / (self.nt - 1)
 
         self.x = torch.linspace(
