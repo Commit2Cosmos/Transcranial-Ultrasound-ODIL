@@ -188,12 +188,12 @@ def build_problem(cfg: RunConfig) -> Problem:
         head_mask=head_mask,
         space_order=cfg.grid.space_order,
         damping_scale=cfg.pml.damping_scale,
-        observation=_observation_path(cfg, grid, truth_velocity, center),
+        observation=_observation_path(cfg, grid, truth_velocity),
     )
 
 
 def _observation_path(
-    cfg: RunConfig, grid: Grid, truth: VelocityModel, center: Tuple[float, float]
+    cfg: RunConfig, grid: Grid, truth: VelocityModel
 ) -> ObservationPath:
     """The ``observation`` block's :class:`ObservationPath` for the inversion
     ``grid`` and its ``truth``."""
@@ -203,15 +203,10 @@ def _observation_path(
         r = int(obs.refine)
         pml = round(float(obs.pml_thickness_factor) * int(cfg.pml.width) * r)
         fine = refined_grid(grid, r, pml)
-        if obs.truth == "native":
-            spec = dataclasses.replace(cfg.truth, skull_sigma=cfg.truth.skull_sigma * r)
-            fine_truth = _build_velocity(fine, spec, center)
-        else:
-            fine_truth = prolonged_truth(truth, fine, r)
         independent = IndependentSolve(
             grid=fine,
             source=_make_source(cfg, fine),
-            truth=fine_truth,
+            truth=prolonged_truth(truth, fine, r),
             refine=r,
             space_order=int(obs.space_order),
             time_symbols=obs.time_symbols,

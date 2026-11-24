@@ -61,7 +61,7 @@ def _summarise(cfg) -> str:
     if obs.mode == "independent":
         detail = (
             f"refine={obs.refine}, space_order={obs.space_order}, "
-            f"time_symbols={obs.time_symbols}, truth={obs.truth}"
+            f"time_symbols={obs.time_symbols}"
         )
     else:
         detail = "inverse crime"

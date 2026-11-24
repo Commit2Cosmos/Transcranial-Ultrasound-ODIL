@@ -60,7 +60,6 @@ EXPECTED_SHAPE = {
         "space_order",
         "time_symbols",
         "pml_thickness_factor",
-        "truth",
         "noise",
     ],
     "continuation": ["bands"],
@@ -508,7 +507,6 @@ PLUMBING = {
         "refine": 1,
         "space_order": 2,
         "time_symbols": "leapfrog",
-        "truth": "inversion",
     }
 }
 
@@ -629,25 +627,14 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
-    obs = _observe(tiny_run_config, [40e3], {"mode": "independent"})
+    problem = build_problem(resolve_config(deep_merge(tiny_run_config, INDEPENDENT)))
+    obs = problem.observe([40e3])
     # The inversion's own solve at the truth is ~2% off the independent data.
     assert 1e-2 < obs.rel_data_residual_truth < 5e-2
     assert obs.solve_s > 0
-
-
-def test_native_truth_is_a_different_model_from_the_prolonged_one(
-    tiny_run_config,
-):
-    """Rebuilding the phantom on the observation grid changes the data (11% on
-    the tiny config), while the tape keeps scoring the inversion-grid truth."""
-    native = deep_merge(
-        tiny_run_config, {"observation": {"mode": "independent", "truth": "native"}}
-    )
-    a = _observe(tiny_run_config, [40e3], {"mode": "independent"}).traces
-    b = build_problem(resolve_config(native))
-    assert _rel(b.observe([40e3]).traces, a) > 5e-2
+    # The tape scores the inversion-grid truth, as under the inverse crime.
     crime = build_problem(resolve_config(tiny_run_config))
-    assert torch.equal(b.truth_velocity.c, crime.truth_velocity.c)
+    assert torch.equal(problem.truth_velocity.c, crime.truth_velocity.c)
 
 
 def test_independent_observations_warn_about_a_point_source():

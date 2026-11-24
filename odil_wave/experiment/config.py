@@ -272,11 +272,6 @@ class ObservationCfg:
     * ``pml_thickness_factor``: float >= 1; the observation PML's physical
       thickness relative to the inversion's, ``round(factor * pml.width *
       refine)`` cells.
-    * ``truth``: ``"inversion"`` (the inversion-grid truth prolonged to the
-      nearest node, so the true model is representable on the inversion grid)
-      | ``"native"`` (the truth profile rebuilt on the observation grid,
-      ``skull_sigma`` scaled by ``refine``). The tape scores against the
-      inversion-grid truth either way.
     * ``noise``: :class:`NoiseCfg`.
     """
 
@@ -285,7 +280,6 @@ class ObservationCfg:
     space_order: int = 4
     time_symbols: str = "exact"
     pml_thickness_factor: float = 1.0
-    truth: str = "inversion"
     noise: NoiseCfg = field(default_factory=NoiseCfg)
 
 
@@ -650,7 +644,6 @@ _REGULARISERS = ("tv_iso", "tikhonov", "tv_aniso")
 _SOURCE_KINDS = ("tone_burst", "ricker")
 _ENVELOPES = ("gaussian", "rectangular")
 _OBSERVATION_MODES = ("inverse_crime", "independent")
-_OBSERVATION_TRUTHS = ("inversion", "native")
 _PROFILES = ("homogeneous", "overdensity", "shepp_logan", "shepp_logan_skull")
 # Profile kwargs accepted in ``truth.extra`` / ``init.extra``.
 _EXTRA_KEYS = (
@@ -856,11 +849,6 @@ def _validate_observation(obs: "ObservationCfg") -> List[str]:
         raise ConfigError(
             "observation.pml_thickness_factor must be >= 1, "
             f"got {obs.pml_thickness_factor}"
-        )
-    if obs.truth not in _OBSERVATION_TRUTHS:
-        raise ConfigError(
-            f"observation.truth must be one of {list(_OBSERVATION_TRUTHS)}, "
-            f"got {obs.truth!r}"
         )
     seed = obs.noise.seed
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
