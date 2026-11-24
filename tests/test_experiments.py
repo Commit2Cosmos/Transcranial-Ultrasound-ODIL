@@ -23,7 +23,7 @@ EXPECTED_SHAPE = {
     "grid": ["interior_shape", "interior_extent", "c_min", "c_max", "space_order"],
     "pml": ["width", "power", "R0", "damping_scale", "observation_width"],
     "time": ["t_max", "init_nt", "cfl_safety"],
-    "source": ["kind", "f0", "amplitude", "n_cycles", "envelope", "dimensionless"],
+    "source": ["kind", "f0", "amplitude", "n_cycles", "envelope"],
     "acquisition": [
         "n_transducers",
         "a_frac",

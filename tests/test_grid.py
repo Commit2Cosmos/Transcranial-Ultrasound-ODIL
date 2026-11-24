@@ -104,13 +104,6 @@ def test_bad_pml_R0_raises():
 # --------------------------------------------------------------------------- #
 # Helpers / constructors
 # --------------------------------------------------------------------------- #
-def test_natural_source_amplitude(grid):
-    """Amplitude is 2 f0^2 and requires a positive frequency."""
-    assert grid.natural_source_amplitude(10.0) == pytest.approx(200.0)
-    with pytest.raises(ValueError):
-        grid.natural_source_amplitude(0.0)
-
-
 def test_summary_is_string(grid):
     """The human-readable summary renders without error."""
     assert isinstance(grid.summary, str)

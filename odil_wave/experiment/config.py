@@ -164,12 +164,9 @@ class SourceCfg:
     Params:
     * ``kind``: ``"tone_burst"`` | ``"ricker"``.
     * ``f0``: Hz centre frequency.
-    * ``amplitude``: source amplitude scale.
+    * ``amplitude``: peak of the source waveform.
     * ``n_cycles``: tone_burst only; number of cycles in the burst.
     * ``envelope``: tone_burst only; ``"gaussian"`` | ``"rectangular"``.
-    * ``dimensionless``: true -> the physical waveform amplitude is
-      ``amplitude * 2 * f0**2`` (lands the wavefield near O(1)); false -> it is
-      ``amplitude``.
     """
 
     kind: str = "tone_burst"
@@ -177,7 +174,6 @@ class SourceCfg:
     amplitude: float = library_default(SourceSignal, "amplitude")
     n_cycles: float = library_default(SourceSignal, "n_cycles")
     envelope: str = library_default(SourceSignal, "envelope")
-    dimensionless: bool = library_default(SourceSignal, "dimensionless")
 
 
 @dataclass(frozen=True)
