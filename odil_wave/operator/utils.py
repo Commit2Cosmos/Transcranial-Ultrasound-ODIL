@@ -14,13 +14,14 @@ class WaveEquation:
     """Discrete frequency-domain acoustic residual with a stretched-coordinate
     PML (:class:`~odil_wave.operator.conditions.Pml`)::
 
-        r(ω) = λ_tt s_x s_y u - c'^2 (s_y Λ̃_x u + s_x Λ̃_y u) - f̂'
+        r(ω) = λ_tt u - c'^2 (Λ̃_x u / s_x + Λ̃_y u / s_y) - f̂' / (s_x s_y)
 
-    with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed PML
-    absorption, ``0`` disables it) and the 2nd-order centred symbol
+    (the conservative stretched form with its rows divided by ``s_x s_y``,
+    ADR 0002) with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed
+    PML absorption, ``0`` disables it) and the 2nd-order centred symbol
     ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)`` from FrequencySelection. In the
-    interior ``s = 1`` and ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow
-    ADR 0001.
+    interior, beyond ``P/2 - 1`` cells from the PML,
+    ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow ADR 0001.
 
     Amplitudes / sources are complex ``(n_shots, n_frequencies, nx, ny)``.
     """
@@ -35,7 +36,13 @@ class WaveEquation:
     def __post_init__(self):
         """Build the second differences for ``space_order`` and the PML."""
         self._lap = Laplacian(self.wavefield, space_order=self.space_order)
-        self.pml = Pml(self.wavefield, self.damping_scale)
+        self.pml = Pml(self.wavefield, self.damping_scale, space_order=self.space_order)
+
+    @property
+    def stencil_reach(self) -> int:
+        """Cells a residual row reaches along each axis: ``P - 1``, the PML's
+        staggered correction (the second difference alone reaches ``P/2``)."""
+        return self.space_order - 1
 
     def sources(self, geometry) -> torch.Tensor:
         """Every shot's source term, scaled by ``t0**2`` as :meth:`residual`
@@ -64,4 +71,4 @@ class WaveEquation:
         lambda_tt = lambda_tt.to(dtype=amp.dtype, device=amp.device)
         u_xx, u_yy = self._lap.axes(amp)
         lap = self.pml.stretched_laplacian(amp, u_xx, u_yy)
-        return self.pml.mass(lambda_tt) * amp - wsp_nd**2 * lap - source
+        return lambda_tt * amp - wsp_nd**2 * lap - self.pml.row_weight * source

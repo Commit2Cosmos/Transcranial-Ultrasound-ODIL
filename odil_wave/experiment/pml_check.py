@@ -54,7 +54,7 @@ def _check_config(cfg: RunConfig, width: int, R0: float) -> RunConfig:
     data = cfg.to_dict()
     data["pml"]["width"] = int(width)
     data["pml"]["R0"] = float(R0)
-    data["pml"]["observation_width"] = None
+    data["observation"]["mode"] = "inverse_crime"
     data["runtime"]["dtype"] = "float64"
     return RunConfig.from_dict(data)
 
@@ -90,7 +90,8 @@ def _solve(
     sx, sy = grid.interior_slice
     out = {case: [] for case in CASES}
     for k in range(freq.n_frequencies):
-        U = splu(solver.assemble_H_sparse(model.c, k).tocsc()).solve(F)
+        weight = solver.wave_eq.pml.row_weight[k].reshape(-1, 1).numpy()
+        U = splu(solver.assemble_H_sparse(model.c, k).tocsc()).solve(weight * F)
         for n, case in enumerate(CASES):
             out[case].append(U[:, n].reshape(grid.shape)[sx, sy])
     p = grid.pml_width

@@ -11,7 +11,7 @@ from scipy.sparse.linalg import SuperLU, splu
 
 from odil_wave.defaults import library_default
 from odil_wave.wavefield import Wavefield
-from .spatial import second_difference_stencil
+from .spatial import STAGGERED_D1_COEFFS, second_difference_stencil
 from .utils import WaveEquation
 
 
@@ -57,41 +57,48 @@ def second_difference_1d(n: int, space_order: int, h_nd: float) -> sp.csr_matrix
     )
 
 
+def _staggered_difference_matrix(
+    rows: int, cols: int, coeffs: Tuple[float, ...]
+) -> sp.csr_matrix:
+    """The ``(rows, cols)`` staggered differences, row ``k`` centred between
+    columns ``k + P/2 - 1`` and ``k + P/2``, unit spacing."""
+    half = len(coeffs)
+    return sp.diags(
+        [-c for c in reversed(coeffs)] + list(coeffs),
+        list(range(2 * half)),
+        shape=(rows, cols),
+        format="csr",
+    )
+
+
 @functools.lru_cache(maxsize=16)
-def _one_sided_differences_1d(n: int) -> Tuple[sp.csr_matrix, sp.csr_matrix]:
-    """``(D⁺, D⁻)``: nodes to the ``n + 1`` faces (ghosts included, reflect)
-    and back, unit spacing."""
-    k = np.arange(n + 1)
-    d_plus = sp.csr_matrix(
-        (
-            np.concatenate([np.ones(n + 1), -np.ones(n + 1)]),
-            (
-                np.concatenate([k, k]),
-                np.concatenate([_reflect_index(k, n), _reflect_index(k - 1, n)]),
-            ),
-        ),
-        shape=(n + 1, n),
+def _staggered_differences_1d(
+    n: int, space_order: int
+) -> Tuple[sp.csr_matrix, sp.csr_matrix]:
+    """``(D⁺, D⁻)``: order-P staggered, nodes to the ``n + P - 1`` faces (ghosts
+    included, reflect) and back, unit spacing."""
+    coeffs = STAGGERED_D1_COEFFS[space_order]
+    p = space_order
+    nodes = np.arange(1 - p, n - 1 + p)
+    reflect = sp.csr_matrix(
+        (np.ones(len(nodes)), (np.arange(len(nodes)), _reflect_index(nodes, n))),
+        shape=(len(nodes), n),
     )
-    i = np.arange(n)
-    d_minus = sp.csr_matrix(
-        (
-            np.concatenate([np.ones(n), -np.ones(n)]),
-            (np.concatenate([i, i]), np.concatenate([i + 1, i])),
-        ),
-        shape=(n, n + 1),
-    )
-    return d_plus, d_minus
+    d_plus = _staggered_difference_matrix(n + p - 1, len(nodes), coeffs) @ reflect
+    d_minus = _staggered_difference_matrix(n, n + p - 1, coeffs)
+    return d_plus.tocsr(), d_minus
 
 
 def stretched_second_difference_1d(
     n: int, space_order: int, h_nd: float, a_faces: np.ndarray
 ) -> sp.csr_matrix:
     """Sparse ``Λ̃ = Λ + D⁻ diag(a) D⁺ / h²`` along one axis, ``a_faces`` the
-    PML's ``1/s - 1`` on the ``n + 1`` faces (see
+    PML's ``1/s - 1`` on the ``n + P - 1`` faces (see
     :class:`~odil_wave.operator.conditions.Pml`)."""
-    d_plus, d_minus = _one_sided_differences_1d(n)
+    lap = second_difference_1d(n, space_order, h_nd)
+    d_plus, d_minus = _staggered_differences_1d(n, space_order)
     corr = d_minus @ sp.diags(a_faces) @ d_plus / h_nd**2
-    return (second_difference_1d(n, space_order, h_nd) + corr).tocsr()
+    return (lap + corr).tocsr()
 
 
 class HelmholtzSolver:
@@ -119,7 +126,8 @@ class HelmholtzSolver:
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
         """Sparse H at full-grid ``c`` and frequency index ``freq_idx``: the
-        matrix of the matrix-free residual."""
+        matrix of the matrix-free residual, so a source ``f`` enters its
+        right-hand side as ``wave_eq.pml.row_weight * f``."""
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
@@ -147,13 +155,13 @@ class HelmholtzSolver:
             ),
         )
         # Row-major (nx, ny) flattening: x is the slow index.
-        sx_nodes = np.repeat(s_x, ny)
-        sy_nodes = np.tile(s_y, nx)
-        lap = sp.diags(sy_nodes) @ Lx + sp.diags(sx_nodes) @ Ly
+        lap = (
+            sp.diags(1.0 / np.repeat(s_x, ny)) @ Lx
+            + sp.diags(1.0 / np.tile(s_y, nx)) @ Ly
+        )
 
         cd = np_complex_dtype(self.wavefield.cdtype)
-        mass = lam_tt * sx_nodes * sy_nodes
-        H = (sp.diags(mass) - sp.diags(c_nd2) @ lap).astype(cd)
+        H = (lam_tt * sp.identity(n) - sp.diags(c_nd2) @ lap).astype(cd)
         assert H.shape == (n, n)
         return H.tocsr()
 
@@ -175,6 +183,7 @@ class HelmholtzSolver:
         c = wf.velocity_model.c.to(device=device)
 
         sources = self.wave_eq.sources(self.geometry)
+        row_weight = self.wave_eq.pml.row_weight
         amp = torch.zeros(n_shots, nf, Nx, Ny, dtype=cdtype, device=device)
 
         assemble_times: list[float] = []
@@ -198,7 +207,7 @@ class HelmholtzSolver:
 
             # Batched RHS: columns are shots  (n, n_shots)
             F = (
-                sources[:, k]
+                (row_weight[k] * sources[:, k])
                 .detach()
                 .cpu()
                 .numpy()

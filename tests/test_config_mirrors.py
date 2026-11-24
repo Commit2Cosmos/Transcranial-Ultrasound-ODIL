@@ -5,7 +5,7 @@ from typing import get_args
 
 import pytest
 
-from odil_wave import Regulariser, WaveEquation
+from odil_wave import Regulariser, SourceSignal, WaveEquation
 from odil_wave.experiment import config
 from odil_wave.loss.regulariser import RegKind
 from odil_wave.optimisation.preconditioners import (
@@ -47,3 +47,14 @@ def test_profiles_build_a_velocity_model(profile, grid):
 def test_unknown_profile_is_rejected(grid):
     with pytest.raises(ValueError):
         make_model(grid, profile="not_a_profile")
+
+
+@pytest.mark.parametrize("kind", config._SOURCE_KINDS)
+@pytest.mark.parametrize("envelope", config._ENVELOPES)
+def test_source_kinds_and_envelopes_build_a_source(kind, envelope, grid):
+    SourceSignal(grid, kind=kind, f0=40e3, n_cycles=2.0, envelope=envelope)
+
+
+def test_unknown_source_kind_is_rejected(grid):
+    with pytest.raises(ValueError):
+        SourceSignal(grid, kind="chirp", f0=40e3)

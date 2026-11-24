@@ -10,11 +10,13 @@ run, …) are in `GLOSSARY.md`.
 | module | owns |
 |---|---|
 | `config.py` | The run config schema; its dataclass defaults are the **default config** and their docstrings document every field (ADR 0001) |
-| `problem.py` | Builds the grid, source, acquisition, models and observed data once per run |
+| `problem.py` | Builds the grid, source, acquisition and models once per run, and each band |
+| `observation.py` | Each band's observed data: the inverse crime or independent observations, and their noise |
 | `runner.py` | `run_inverse`: drives the bands, writes `band_summary.json` and `run_summary.json`; `on_log` / `on_band_end` callbacks |
 | `rundir.py` | Where a run is written, the clean-tree / scratch policy, `metadata.json` provenance, schema versions |
 | `saved.py` | Every array and summary a run saves, and `SavedRun` to read them back |
 | `tape.py` | `tape.csv`: `COLUMNS` lists each column and what it measures |
+| `constraints.py` | Constraint checks on a config and their thresholds |
 | `health.py` | Optimiser-health warnings and their thresholds |
 | `postprocess.py` | A run's figures (`RUN_PLOTS`), drawn from the run directory only |
 | `on_demand.py` | Notebook plots of a saved run, not saved |
@@ -46,6 +48,11 @@ Overrides are dotted keys, parsed as JSON with a bare-string fallback. A run
 needs a clean git tree; `--scratch` allows a dirty one and saves `git.diff`.
 No experiment record may cite a scratch run. Ctrl-C ends a run as
 `interrupted`, keeping its tape and completed bands.
+
+`--dry-run` and every run's log print the constraint checks as a table, and
+`metadata.json` records them under `constraint_report`. A failed `error`
+check refuses the run; a failed `warn` check is printed and also recorded in
+`config_warnings`.
 
 From Python:
 

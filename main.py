@@ -46,18 +46,28 @@ def _summarise(cfg) -> str:
     )
     lines.append(
         f"grid            : interior={cfg.grid.interior_shape}, pml={cfg.pml.width}, "
-        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.time.init_nt}"
+        f"c=[{cfg.grid.c_min}, {cfg.grid.c_max}], init_nt={cfg.time.init_nt}, "
+        f"space_order={cfg.grid.space_order}"
     )
     lines.append(f"source          : {cfg.source.kind}  f0={cfg.source.f0} Hz")
     lines.append(
         f"acquisition     : n_transducers={cfg.acquisition.n_transducers}, "
-        f"ring={cfg.acquisition.ring_center}"
+        f"ring={cfg.acquisition.ring_center}, "
+        f"source_spatial={cfg.acquisition.source_spatial}, "
+        f"sigma_s={cfg.acquisition.sigma_s}"
     )
     lines.append(f"truth / init    : {cfg.truth.profile} / {cfg.init.profile}")
-    obs_pml = cfg.pml.observation_width
+    obs = cfg.observation
+    if obs.mode == "independent":
+        detail = (
+            f"refine={obs.refine}, space_order={obs.space_order}, "
+            f"time_symbols={obs.time_symbols}, truth={obs.truth}"
+        )
+    else:
+        detail = "inverse crime"
     lines.append(
-        f"observation pml : {cfg.pml.width if obs_pml is None else obs_pml}"
-        f"{' (inverse crime)' if obs_pml in (None, cfg.pml.width) else ''}"
+        f"observation     : {detail}, snr_db={obs.noise.snr_db}"
+        + ("" if obs.noise.snr_db is None else f", seed={obs.noise.seed}")
     )
     lines.append(f"loss            : weights={cfg.loss.weights}")
     lines.append(f"ssim_brain      : sigma={cfg.metrics.ssim.sigma} m")
@@ -201,6 +211,10 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
     # import lazily so --help stays instant.
     import yaml
 
+    from odil_wave.experiment.constraints import (
+        check_constraints,
+        format_constraint_report,
+    )
     from odil_wave.experiment.config import (
         ConfigError,
         default_config_dict,
@@ -225,6 +239,8 @@ def main(argv: Optional[List[str]] = None, *, repo_root: Optional[Path] = None) 
         return 2
 
     print(_summarise(cfg))
+    if args.dry_run:  # a run prints the report in its own log (run_inverse)
+        print(format_constraint_report(check_constraints(cfg)))
     for w in warnings:
         print(f"[warning] {w}")
 

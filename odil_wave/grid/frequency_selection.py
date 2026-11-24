@@ -28,6 +28,11 @@ def discrete_lambda_tt(omega_nd: torch.Tensor, dt_nd: float) -> torch.Tensor:
     return -(4.0 / dt_nd**2) * torch.sin(0.5 * omega_nd * dt_nd) ** 2
 
 
+# The time-derivative symbols a FrequencySelection can carry: the leapfrog
+# scheme's centred differences, or the continuous ``iω`` and ``-ω²``.
+TIME_SYMBOLS = ("leapfrog", "exact")
+
+
 def _map_frequency_to_bin(freqs_all: torch.Tensor, f_hz: float) -> tuple[int, float]:
     """Nearest FFT bin for a requested physical frequency (avoids the 0 Hz bin)."""
     f = float(f_hz)
@@ -42,7 +47,9 @@ class FrequencySelection:
     """FFT bins and matching physical / normalised frequencies.
 
     All frequency-domain sources and observations must use the same instance
-    (same bins).
+    (same bins). ``time_symbols`` picks ``lambda_t`` / ``lambda_tt``:
+    ``"leapfrog"`` (the inversion's) or ``"exact"`` (``iω``, ``-ω²``); defaults
+    follow ADR 0001.
     """
 
     grid: Grid
@@ -54,6 +61,7 @@ class FrequencySelection:
     dt: float
     dt_nd: float
     requested_frequencies: Optional[torch.Tensor] = None
+    time_symbols: str = "leapfrog"
     lambda_t: torch.Tensor = field(init=False, repr=False)
     lambda_tt: torch.Tensor = field(init=False, repr=False)
 
@@ -94,8 +102,17 @@ class FrequencySelection:
             )
         if self.fft_bins.numel() == 0:
             raise ValueError("FrequencySelection must contain at least one bin.")
-        self.lambda_t = discrete_lambda_t(self.omega_nd, self.dt_nd)
-        self.lambda_tt = discrete_lambda_tt(self.omega_nd, self.dt_nd)
+        if self.time_symbols == "leapfrog":
+            self.lambda_t = discrete_lambda_t(self.omega_nd, self.dt_nd)
+            self.lambda_tt = discrete_lambda_tt(self.omega_nd, self.dt_nd)
+        elif self.time_symbols == "exact":
+            self.lambda_t = 1j * self.omega_nd
+            self.lambda_tt = -(self.omega_nd**2)
+        else:
+            raise ValueError(
+                f"time_symbols must be one of {list(TIME_SYMBOLS)}, "
+                f"got {self.time_symbols!r}"
+            )
 
     @property
     def n_frequencies(self) -> int:
@@ -121,6 +138,7 @@ class FrequencySelection:
         fft_bins: Union[Sequence[int], torch.Tensor],
         *,
         requested_frequencies: Optional[Union[Sequence[float], torch.Tensor]] = None,
+        time_symbols: str = "leapfrog",
     ) -> "FrequencySelection":
         """Build from integer rFFT / FFT bin indices on ``grid.t``."""
         bins = torch.as_tensor(fft_bins, dtype=torch.long, device=grid.device).reshape(
@@ -149,6 +167,7 @@ class FrequencySelection:
             dt=dt,
             dt_nd=float(grid.dt_nd),
             requested_frequencies=requested_frequencies,
+            time_symbols=time_symbols,
         )
 
     @classmethod

@@ -160,7 +160,9 @@ def test_a_completed_run_summarises_its_final_metrics(git_repo, quick_config, tm
     summary = run_summary(out)
     assert summary["status"] == "completed"
     assert summary["wall_s"] > 0
-    assert summary["warnings"] == []
+    # the tiny config's only warning: its 6-cell PML fails the 12-cell check
+    [warning] = summary["warnings"]
+    assert warning.startswith("PML width")
     assert summary["error"] is None
     metrics = summary["metrics_summary"]
     assert set(metrics) >= {"start_metrics", "final_metrics", "per_band"}
@@ -206,3 +208,28 @@ def test_ctrl_c_ends_the_run_as_interrupted(git_repo, tmp_path):
     assert [p.name[:7] for p in (out / "bands").iterdir()] == ["band_00"]
     with open(out / "tape.csv", newline="") as f:
         assert {r["band_index"] for r in csv.DictReader(f)} == {"0"}
+
+
+def test_metadata_records_every_constraint_check(git_repo, quick_config):
+    assert main.main(["--config", str(quick_config)], repo_root=git_repo) == 0
+
+    [run_dir] = run_dirs(git_repo)
+    report = json.loads((run_dir / "metadata.json").read_text())["constraint_report"]
+    by_name = {row["name"]: row for row in report}
+    assert set(by_name) >= {
+        "dispersion",
+        "ring_sampling",
+        "temporal_nyquist",
+        "pml_width",
+    }
+    # the tiny config's 6-cell PML fails the 12-cell check
+    assert by_name["pml_width"] == {
+        "name": "pml_width",
+        "quantity": "pml.width (cells)",
+        "value": 6,
+        "op": ">=",
+        "threshold": 12,
+        "severity": "warn",
+        "message": by_name["pml_width"]["message"],
+        "ok": False,
+    }

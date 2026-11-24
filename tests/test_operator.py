@@ -15,6 +15,7 @@ from odil_wave.wavefield import Wavefield
 
 from odil_wave.operator.conditions import Pml
 from odil_wave.operator.spatial import (
+    STAGGERED_D1_COEFFS,
     Laplacian,
     _apply_conv,
     second_difference_stencil,
@@ -75,20 +76,19 @@ def tiny_setup():
 def test_pml_zero_weight_leaves_the_operator_unstretched():
     grid = _make_grid(pml_width=2)
     wf = _make_wavefield(grid)
-    pml = Pml(wf, weight=0.0)
+    pml = Pml(wf, weight=0.0, space_order=2)
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     u_xx = torch.randn_like(u)
     u_yy = torch.randn_like(u)
-    lambda_tt = torch.tensor(-3.0 + 0j, dtype=torch.complex64).view(1, 1, 1, 1)
     assert torch.equal(pml.stretched_laplacian(u, u_xx, u_yy), u_xx + u_yy)
-    assert torch.equal(pml.mass(lambda_tt), lambda_tt.expand(1, 1, grid.nx, grid.ny))
+    assert torch.equal(pml.row_weight, torch.ones_like(pml.row_weight))
 
 
 def test_pml_is_inactive_in_the_interior():
     """``s = 1`` at interior nodes and ``1/s - 1 = 0`` on the faces around
     them, so interior rows see the unstretched operator."""
     grid = _make_grid(pml_width=3)
-    pml = Pml(_make_wavefield(grid), weight=1.0)
+    pml = Pml(_make_wavefield(grid), weight=1.0, space_order=2)
     sx, sy = grid.interior_slice
     assert torch.equal(pml.s_x[:, sx], torch.ones_like(pml.s_x[:, sx]))
     assert torch.equal(pml.s_y[:, :, sy], torch.ones_like(pml.s_y[:, :, sy]))
@@ -99,13 +99,18 @@ def test_pml_is_inactive_in_the_interior():
     assert (pml.a_x[:, :p] != 0).all() and (pml.a_x[:, -p:] != 0).all()
 
 
+def test_pml_unsupported_order_raises():
+    with pytest.raises(ValueError, match="space order"):
+        Pml(_make_wavefield(_make_grid()), weight=1.0, space_order=3)
+
+
 def test_pml_at_zero_hertz_raises():
     grid = _make_grid(pml_width=2)
     freq = FrequencySelection.from_bins(grid, [0, 3])
     wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=make_model(grid))
     with pytest.raises(ValueError, match="0 Hz"):
-        Pml(wf, weight=1.0)
-    Pml(wf, weight=0.0)
+        Pml(wf, weight=1.0, space_order=2)
+    Pml(wf, weight=0.0, space_order=2)
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +143,17 @@ def test_second_difference_stencil_unsupported_order_raises(space_order):
     """Orders without a coefficient table are rejected."""
     with pytest.raises(ValueError):
         second_difference_stencil(space_order, 1.0)
+
+
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8, 10])
+def test_staggered_first_differences_are_exact_to_their_order(space_order):
+    """On ``x**k`` about a face, ``k <= P``, the staggered difference gives the
+    exact derivative there: 1 for ``k = 1``, else 0."""
+    offsets = np.arange(1, space_order // 2 + 1) - 0.5
+    coeffs = np.array(STAGGERED_D1_COEFFS[space_order])
+    for k in range(space_order + 1):
+        d = coeffs @ (offsets**k - (-offsets) ** k)
+        assert d == pytest.approx(float(k == 1), abs=1e-12)
 
 
 @pytest.mark.parametrize("space_order,pad", [(2, 1), (4, 2), (6, 3), (8, 4), (10, 5)])
@@ -189,9 +205,10 @@ def test_wave_equation_residual_is_zero_for_zero_amplitude_and_source():
     assert torch.allclose(r, torch.zeros_like(r))
 
 
-def _conservative_pml_residual(grid, wf, amp, c, source, weight):
+def _conservative_pml_residual(grid, wf, amp, c, source, weight, row_weighted):
     """Order-2 ``λ_tt s_x s_y u - c'^2 [s_y D⁻(D⁺u / s_x) + s_x D⁻(D⁺u / s_y)] - f``
-    by explicit loops, ``1/s`` on the faces, mirrored at the outer wall."""
+    by explicit loops, ``1/s`` on the faces, mirrored at the outer wall; with
+    ``row_weighted`` every row divided by ``s_x s_y``."""
     freq = wf.frequency_selection
     iw = 1j * float(freq.omega_nd[0])
     ltt = float(freq.lambda_tt[0])
@@ -216,6 +233,8 @@ def _conservative_pml_residual(grid, wf, amp, c, source, weight):
                 - k2 * (sy[j] * dxx / grid.dx_nd**2 + sx[i] * dyy / grid.dy_nd**2)
                 - source[0, 0, i, j].item()
             )
+            if row_weighted:
+                r[i, j] /= sx[i] * sy[j]
     return r
 
 
@@ -228,13 +247,27 @@ def test_wave_equation_residual_is_the_conservative_stretched_form():
     source = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
     c = wf.velocity_model.c
     r = we.residual(amp, c, source)
-    expected = _conservative_pml_residual(grid, wf, amp, c, source, 1.7)
+    expected = _conservative_pml_residual(
+        grid, wf, amp, c, source, 1.7, row_weighted=True
+    )
     assert np.allclose(r[0, 0].numpy(), expected, rtol=1e-10, atol=1e-8)
 
 
-@pytest.mark.parametrize("space_order", [2, 4])
+def test_pml_rows_have_a_unit_mass_coefficient():
+    """Rows divided by ``s_x s_y`` (#165): with ``c = 0`` the operator is
+    ``λ_tt`` at every node, so a thin PML doesn't spread its diagonal."""
+    grid = _make_grid(pml_width=4, dtype=torch.float64)
+    wf = _make_wavefield(grid)
+    solver = HelmholtzSolver(wf, None, space_order=2, damping_scale=1.0)
+    H = solver.assemble_H_sparse(torch.zeros(grid.shape, dtype=grid.dtype), 0)
+    ltt = float(wf.frequency_selection.lambda_tt[0])
+    assert np.allclose(H.diagonal(), ltt, rtol=1e-12)
+
+
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8])
 def test_pml_leaves_interior_rows_unchanged(space_order):
-    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on."""
+    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on,
+    beyond the ``P/2 - 1`` cells the staggered correction reaches in."""
     grid = _make_grid(pml_width=4, dtype=torch.float64)
     wf = _make_wavefield(grid)
     torch.manual_seed(1)
@@ -247,7 +280,9 @@ def test_pml_leaves_interior_rows_unchanged(space_order):
     u_xx, u_yy = Laplacian(wf, space_order=space_order).axes(amp)
     _, lambda_tt = wf.frequency_selection.symbols_broadcast()
     plain = lambda_tt * amp - (c / grid.c0) ** 2 * (u_xx + u_yy) - source
-    sx, sy = grid.interior_slice
+    p, band = grid.pml_width, space_order // 2 - 1
+    sx = slice(p + band, grid.nx - p - band)
+    sy = slice(p + band, grid.ny - p - band)
     assert torch.equal(r[..., sx, sy], plain[..., sx, sy])
     assert not torch.allclose(r, plain)
 
@@ -313,7 +348,7 @@ def test_second_difference_1d_unsupported_order_raises():
         second_difference_1d(5, 3, 1.0)
 
 
-@pytest.mark.parametrize("space_order", [2, 4])
+@pytest.mark.parametrize("space_order", [2, 4, 6, 8])
 def test_assemble_h_sparse_matches_wave_equation_residual(space_order):
     """Sparse and matrix-free operators agree, PML included."""
     grid = _make_grid(pml_width=4, dtype=torch.float64)
@@ -347,3 +382,19 @@ def test_helmholtz_solver_solve_smoke(tiny_setup):
     r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
     src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())
     assert r_rms / max(src_rms, 1e-30) < 1e-3  # well-converged direct solve
+
+
+def test_helmholtz_solve_satisfies_the_unweighted_pml_equation():
+    """Row weighting leaves the solution alone: it solves the conservative
+    stretched form with the geometry's own source field."""
+    grid = _make_grid(pml_width=3, dtype=torch.float64)
+    vm = make_model(grid)
+    source = make_source(grid, kind="ricker", f0=8e4)
+    freq = FrequencySelection.from_frequencies(grid, [8e4])
+    geom = make_geometry(grid, source, freq, n_transducers=4, source_spatial="gaussian")
+    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
+    solver = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0)
+    u = solver.solve()[0].amplitude.view(1, 1, grid.nx, grid.ny)
+    f = (geom.source_field(0) * grid.t0**2).to(wf.cdtype).view(1, 1, grid.nx, grid.ny)
+    r = _conservative_pml_residual(grid, wf, u, vm.c, f, 1.0, row_weighted=False)
+    assert np.abs(r).max() < 1e-8 * np.abs(f.numpy()).max()
