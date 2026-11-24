@@ -21,7 +21,7 @@ dependencies = [
     "pyyaml",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     # pinned to the .pre-commit-config.yaml revs so local runs match CI
     "ruff==0.17.2",

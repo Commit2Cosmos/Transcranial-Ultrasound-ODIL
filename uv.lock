@@ -1312,7 +1312,7 @@ dependencies = [
     { name = "torch" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "ipykernel" },
     { name = "nbconvert" },
@@ -1324,20 +1324,23 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ipykernel", marker = "extra == 'dev'" },
     { name = "matplotlib" },
-    { name = "nbconvert", marker = "extra == 'dev'" },
     { name = "numpy" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-xdist", marker = "extra == 'dev'" },
     { name = "pyyaml" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.17.2" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "torch" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ipykernel" },
+    { name = "nbconvert" },
+    { name = "pre-commit", specifier = ">=3.0" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = "==0.17.2" },
+]
 
 [[package]]
 name = "packaging"
