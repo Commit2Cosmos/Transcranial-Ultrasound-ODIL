@@ -80,9 +80,8 @@ def test_pml_zero_weight_leaves_the_operator_unstretched():
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     u_xx = torch.randn_like(u)
     u_yy = torch.randn_like(u)
-    lambda_tt = torch.tensor(-3.0 + 0j, dtype=torch.complex64).view(1, 1, 1, 1)
     assert torch.equal(pml.stretched_laplacian(u, u_xx, u_yy), u_xx + u_yy)
-    assert torch.equal(pml.mass(lambda_tt), lambda_tt.expand(1, 1, grid.nx, grid.ny))
+    assert torch.equal(pml.row_weight, torch.ones_like(pml.row_weight))
 
 
 def test_pml_is_inactive_in_the_interior():
@@ -206,9 +205,10 @@ def test_wave_equation_residual_is_zero_for_zero_amplitude_and_source():
     assert torch.allclose(r, torch.zeros_like(r))
 
 
-def _conservative_pml_residual(grid, wf, amp, c, source, weight):
+def _conservative_pml_residual(grid, wf, amp, c, source, weight, row_weighted):
     """Order-2 ``λ_tt s_x s_y u - c'^2 [s_y D⁻(D⁺u / s_x) + s_x D⁻(D⁺u / s_y)] - f``
-    by explicit loops, ``1/s`` on the faces, mirrored at the outer wall."""
+    by explicit loops, ``1/s`` on the faces, mirrored at the outer wall; with
+    ``row_weighted`` every row divided by ``s_x s_y``."""
     freq = wf.frequency_selection
     iw = 1j * float(freq.omega_nd[0])
     ltt = float(freq.lambda_tt[0])
@@ -233,6 +233,8 @@ def _conservative_pml_residual(grid, wf, amp, c, source, weight):
                 - k2 * (sy[j] * dxx / grid.dx_nd**2 + sx[i] * dyy / grid.dy_nd**2)
                 - source[0, 0, i, j].item()
             )
+            if row_weighted:
+                r[i, j] /= sx[i] * sy[j]
     return r
 
 
@@ -245,8 +247,21 @@ def test_wave_equation_residual_is_the_conservative_stretched_form():
     source = torch.randn(1, 1, grid.nx, grid.ny, dtype=wf.cdtype)
     c = wf.velocity_model.c
     r = we.residual(amp, c, source)
-    expected = _conservative_pml_residual(grid, wf, amp, c, source, 1.7)
+    expected = _conservative_pml_residual(
+        grid, wf, amp, c, source, 1.7, row_weighted=True
+    )
     assert np.allclose(r[0, 0].numpy(), expected, rtol=1e-10, atol=1e-8)
+
+
+def test_pml_rows_have_a_unit_mass_coefficient():
+    """Rows divided by ``s_x s_y`` (#165): with ``c = 0`` the operator is
+    ``λ_tt`` at every node, so a thin PML doesn't spread its diagonal."""
+    grid = _make_grid(pml_width=4, dtype=torch.float64)
+    wf = _make_wavefield(grid)
+    solver = HelmholtzSolver(wf, None, space_order=2, damping_scale=1.0)
+    H = solver.assemble_H_sparse(torch.zeros(grid.shape, dtype=grid.dtype), 0)
+    ltt = float(wf.frequency_selection.lambda_tt[0])
+    assert np.allclose(H.diagonal(), ltt, rtol=1e-12)
 
 
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8])
@@ -367,3 +382,19 @@ def test_helmholtz_solver_solve_smoke(tiny_setup):
     r_rms = float(torch.mean(torch.abs(r) ** 2).sqrt())
     src_rms = float(torch.mean(torch.abs(sources) ** 2).sqrt())
     assert r_rms / max(src_rms, 1e-30) < 1e-3  # well-converged direct solve
+
+
+def test_helmholtz_solve_satisfies_the_unweighted_pml_equation():
+    """Row weighting leaves the solution alone: it solves the conservative
+    stretched form with the geometry's own source field."""
+    grid = _make_grid(pml_width=3, dtype=torch.float64)
+    vm = make_model(grid)
+    source = make_source(grid, kind="ricker", f0=8e4)
+    freq = FrequencySelection.from_frequencies(grid, [8e4])
+    geom = make_geometry(grid, source, freq, n_transducers=4, source_spatial="gaussian")
+    wf = Wavefield(grid=grid, frequency_selection=freq, velocity_model=vm)
+    solver = HelmholtzSolver(wf, geom, space_order=2, damping_scale=1.0)
+    u = solver.solve()[0].amplitude.view(1, 1, grid.nx, grid.ny)
+    f = (geom.source_field(0) * grid.t0**2).to(wf.cdtype).view(1, 1, grid.nx, grid.ny)
+    r = _conservative_pml_residual(grid, wf, u, vm.c, f, 1.0, row_weighted=False)
+    assert np.abs(r).max() < 1e-8 * np.abs(f.numpy()).max()

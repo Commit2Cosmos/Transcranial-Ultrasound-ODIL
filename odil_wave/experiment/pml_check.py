@@ -90,7 +90,8 @@ def _solve(
     sx, sy = grid.interior_slice
     out = {case: [] for case in CASES}
     for k in range(freq.n_frequencies):
-        U = splu(solver.assemble_H_sparse(model.c, k).tocsc()).solve(F)
+        weight = solver.wave_eq.pml.row_weight[k].reshape(-1, 1).numpy()
+        U = splu(solver.assemble_H_sparse(model.c, k).tocsc()).solve(weight * F)
         for n, case in enumerate(CASES):
             out[case].append(U[:, n].reshape(grid.shape)[sx, sy])
     p = grid.pml_width

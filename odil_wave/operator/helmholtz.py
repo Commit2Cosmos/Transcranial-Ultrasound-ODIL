@@ -126,7 +126,8 @@ class HelmholtzSolver:
 
     def assemble_H_sparse(self, c: torch.Tensor, freq_idx: int) -> sp.csr_matrix:
         """Sparse H at full-grid ``c`` and frequency index ``freq_idx``: the
-        matrix of the matrix-free residual."""
+        matrix of the matrix-free residual, so a source ``f`` enters its
+        right-hand side as ``wave_eq.pml.row_weight * f``."""
         grid = self.wavefield.grid
         freq = self.wavefield.frequency_selection
         nx, ny = grid.nx, grid.ny
@@ -154,13 +155,13 @@ class HelmholtzSolver:
             ),
         )
         # Row-major (nx, ny) flattening: x is the slow index.
-        sx_nodes = np.repeat(s_x, ny)
-        sy_nodes = np.tile(s_y, nx)
-        lap = sp.diags(sy_nodes) @ Lx + sp.diags(sx_nodes) @ Ly
+        lap = (
+            sp.diags(1.0 / np.repeat(s_x, ny)) @ Lx
+            + sp.diags(1.0 / np.tile(s_y, nx)) @ Ly
+        )
 
         cd = np_complex_dtype(self.wavefield.cdtype)
-        mass = lam_tt * sx_nodes * sy_nodes
-        H = (sp.diags(mass) - sp.diags(c_nd2) @ lap).astype(cd)
+        H = (lam_tt * sp.identity(n) - sp.diags(c_nd2) @ lap).astype(cd)
         assert H.shape == (n, n)
         return H.tocsr()
 
@@ -182,6 +183,7 @@ class HelmholtzSolver:
         c = wf.velocity_model.c.to(device=device)
 
         sources = self.wave_eq.sources(self.geometry)
+        row_weight = self.wave_eq.pml.row_weight
         amp = torch.zeros(n_shots, nf, Nx, Ny, dtype=cdtype, device=device)
 
         assemble_times: list[float] = []
@@ -205,7 +207,7 @@ class HelmholtzSolver:
 
             # Batched RHS: columns are shots  (n, n_shots)
             F = (
-                sources[:, k]
+                (row_weight[k] * sources[:, k])
                 .detach()
                 .cpu()
                 .numpy()
