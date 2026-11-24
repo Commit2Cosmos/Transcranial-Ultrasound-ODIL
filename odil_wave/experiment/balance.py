@@ -9,6 +9,9 @@ fixed). On the first band it evaluates the solver's own objective twice:
 * the (unweighted) data term at the warm start ``(u = H⁻¹(c_init), c_init)``,
   where the PDE term vanishes.
 
+``H`` is the inversion grid's operator; under ``observation.mode:
+independent`` the data term also holds the observations' modelling error.
+
 When the balance is grid independent (ADR-0002) their ratio agrees across
 cases up to discretisation error. Deterministic, no inversion; it writes no
 files::
@@ -28,6 +31,9 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 import torch
+
+from odil_wave.operator import HelmholtzSolver
+from odil_wave.wavefield import Wavefield
 
 from .config import ConfigError, RunConfig, load_config_file, resolve_config
 from .problem import build_problem
@@ -94,17 +100,7 @@ def scaled_config(cfg: RunConfig, case: GridCase) -> RunConfig:
 
 
 def balance_check(cfg: RunConfig, cases: Sequence[GridCase]) -> List[BalanceRow]:
-    """Measure the PDE/data balance of ``cfg`` on each of ``cases``.
-
-    Raises :class:`ConfigError` when ``pml.observation_width`` differs from
-    ``pml.width``: that modelling error would mix into the data term.
-    """
-    obs = cfg.pml.observation_width
-    if obs is not None and int(obs) != int(cfg.pml.width):
-        raise ConfigError(
-            "balance check needs observations on the inversion grid; got "
-            f"pml.observation_width={obs} != pml.width={cfg.pml.width}"
-        )
+    """Measure the PDE/data balance of ``cfg`` on each of ``cases``."""
     return [_measure(scaled_config(cfg, case), case) for case in cases]
 
 
@@ -117,10 +113,17 @@ def _measure(cfg: RunConfig, case: GridCase) -> BalanceRow:
 
     u_re, u_im, z_m = opt.init_params()
     data_term = opt.objective_terms(u_re, u_im, z_m).data
-    # Inverse crime (no observation PML): the observed fields are
-    # H⁻¹(c_true) on the inversion grid.
+    truth = Wavefield(
+        problem.grid, band.frequency_selection, velocity_model=problem.truth_velocity
+    )
+    solved = HelmholtzSolver(
+        truth,
+        band.geometry,
+        space_order=problem.space_order,
+        damping_scale=problem.damping_scale,
+    ).solve()
     with torch.no_grad():
-        u_true = torch.stack([w.amplitude for w in band.true_wavefields])
+        u_true = torch.stack([w.amplitude for w in solved])
         u_true = u_true.to(dtype=opt.cdtype, device=opt.device) / opt.u_ref
     pde_term = opt.objective_terms(*opt.wavefield_precond.v_of_u_tilde(u_true), z_m).pde
 

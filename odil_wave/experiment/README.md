@@ -10,7 +10,8 @@ run, …) are in `GLOSSARY.md`.
 | module | owns |
 |---|---|
 | `config.py` | The run config schema; its dataclass defaults are the **default config** and their docstrings document every field (ADR 0001) |
-| `problem.py` | Builds the grid, source, acquisition, models and observed data once per run |
+| `problem.py` | Builds the grid, source, acquisition and models once per run, and each band |
+| `observation.py` | Each band's observed data: the inverse crime or independent observations, and their noise |
 | `runner.py` | `run_inverse`: drives the bands, writes `band_summary.json` and `run_summary.json`; `on_log` / `on_band_end` callbacks |
 | `rundir.py` | Where a run is written, the clean-tree / scratch policy, `metadata.json` provenance, schema versions |
 | `saved.py` | Every array and summary a run saves, and `SavedRun` to read them back |

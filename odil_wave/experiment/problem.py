@@ -1,22 +1,19 @@
 """Construct the physical FWI problem once from a resolved config.
 
 ``build_problem(cfg)`` builds the grid, source, acquisition layout, truth /
-initial velocity models and the (frequency-independent) broadband truth field,
-so every solver operates on an identical problem. :meth:`Problem.make_band`
-builds each band (:class:`~odil_wave.band.Band`) from its initial model.
-Observed data are always a Helmholtz solve on the truth model.
-
-By default (``pml.observation_width`` null) observations are generated on the
-inversion grid with the inversion operator: the inverse crime. When
-``pml.observation_width`` differs from ``pml.width``, observations are instead
-synthesised on a separate forward grid with that PML width and reduced to
-receiver traces for the inverse solve (a deliberate modelling error).
+initial velocity models and the run's
+:class:`~odil_wave.experiment.observation.ObservationPath`, so every solver
+operates on an identical problem. :meth:`Problem.observe` generates a band's
+observed data (the ``observation`` block picks the inverse crime or an
+independent solve); :meth:`Problem.make_band` builds each band
+(:class:`~odil_wave.band.Band`) from them and its initial model.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 
@@ -24,11 +21,16 @@ from odil_wave.band import Band
 from odil_wave.geometry import AcquisitionGeometry
 from odil_wave.grid import FrequencySelection, Grid
 from odil_wave.models import VelocityModel
-from odil_wave.operator import HelmholtzSolver
-from odil_wave.wavefield import Wavefield
 from odil_wave.source import SourceSignal
 
 from .config import ModelCfg, RunConfig
+from .observation import (
+    IndependentSolve,
+    ObservationPath,
+    Observations,
+    prolonged_truth,
+    refined_grid,
+)
 
 
 @dataclass
@@ -46,68 +48,36 @@ class Problem:
     head_mask: Optional[torch.Tensor]
     space_order: int
     damping_scale: float
-    # Optional thicker-PML forward grid used only to synthesise observations.
-    forward_grid: Optional[Grid] = None
-    forward_truth: Optional[VelocityModel] = None
-    forward_source: Optional[SourceSignal] = None
-
-    @property
-    def observation_grid(self) -> Grid:
-        """Grid used to synthesise observed data (forward if PML-split)."""
-        return self.forward_grid if self.forward_grid is not None else self.grid
-
-    @property
-    def observation_truth(self) -> VelocityModel:
-        """Truth model used to synthesise data (forward truth if PML-split)."""
-        return (
-            self.forward_truth
-            if self.forward_truth is not None
-            else self.truth_velocity
-        )
-
-    @property
-    def observation_source(self) -> SourceSignal:
-        """Source used to synthesise data (forward source if PML-split)."""
-        return self.forward_source if self.forward_source is not None else self.source
-
-    @property
-    def pml_split(self) -> bool:
-        """True when observations use a different PML width than the inverse."""
-        return self.forward_grid is not None
+    observation: ObservationPath
 
     # -- per-band construction -------------------------------------------- #
+    def observe(self, frequencies_hz: Sequence[float]) -> Observations:
+        """Observed data at ``frequencies_hz``, on the inversion grid."""
+        freq = FrequencySelection.from_frequencies(self.grid, list(frequencies_hz))
+        geom = self.acquisition_geometry(self.grid, self.source, freq)
+        return self.observation.observe(geom)
+
     def make_band(
-        self, frequencies_hz: Sequence[float], initial_model: VelocityModel
+        self,
+        frequencies_hz: Sequence[float],
+        initial_model: VelocityModel,
+        observations: Optional[Observations] = None,
     ) -> Band:
         """The band inverting ``frequencies_hz`` jointly from ``initial_model``.
 
-        Observed data are reduced to traces on the observation grid. The
-        warm start keeps its factors only when the wavefield preconditioner
-        reuses them.
+        ``observations`` are :meth:`observe`'s at ``frequencies_hz``, ``None``
+        to generate them. The warm start keeps its factors only when the
+        wavefield preconditioner reuses them.
         """
-        freqs = list(frequencies_hz)
-        freq = FrequencySelection.from_frequencies(self.grid, freqs)
-        geom = self.acquisition_geometry(self.grid, self.source, freq)
-        if self.pml_split:
-            # Same physical frequencies; bins must match (shared nt/dt).
-            obs_freq = FrequencySelection.from_frequencies(self.observation_grid, freqs)
-            obs_geom = self.acquisition_geometry(
-                self.observation_grid, self.observation_source, obs_freq
-            )
-        else:
-            obs_freq, obs_geom = freq, geom
-        true_wavefields = self._observed(obs_freq, obs_geom)
-        traces = obs_geom.extract_observations(
-            torch.stack([wf.amplitude for wf in true_wavefields])
-        )
+        obs = self.observe(frequencies_hz) if observations is None else observations
         return Band(
-            geom,
+            obs.geometry,
             initial_model,
-            traces,
+            obs.traces,
             space_order=self.space_order,
             damping_scale=self.damping_scale,
             keep_factors=self.cfg.optimiser.wavefield_preconditioner != "none",
-            true_wavefields=true_wavefields,
+            true_wavefields=obs.true_wavefields,
             verbose=self.cfg.runtime.verbose,
         )
 
@@ -130,16 +100,6 @@ class Problem:
             ring_center=self.center,
             source_spatial=acq.source_spatial,
         )
-
-    def _observed(
-        self, freq: FrequencySelection, geom: AcquisitionGeometry
-    ) -> List[Wavefield]:
-        """Observed complex wavefields (one per shot) on this band's bins."""
-        wf = Wavefield(geom.grid, freq, velocity_model=self.observation_truth)
-        solver = HelmholtzSolver(
-            wf, geom, space_order=self.space_order, damping_scale=self.damping_scale
-        )
-        return solver.solve(verbose=self.cfg.runtime.verbose)
 
 
 def _build_velocity(
@@ -170,16 +130,15 @@ def _resolve_center(cfg: RunConfig, grid: Grid) -> Tuple[float, float]:
     return (float(rc[0]), float(rc[1]))
 
 
-def _make_grid(cfg: RunConfig, pml_width: int) -> Grid:
-    """The config's :class:`Grid` with ``pml_width`` cells of PML (inverse or
-    forward grid)."""
+def _make_grid(cfg: RunConfig) -> Grid:
+    """The config's inversion :class:`Grid`."""
     g, pml, tm = cfg.grid, cfg.pml, cfg.time
     return Grid(
         interior_shape=tuple(g.interior_shape),
         interior_extent=tuple(tuple(e) for e in g.interior_extent),
         c_min=g.c_min,
         c_max=g.c_max,
-        pml_width=int(pml_width),
+        pml_width=int(pml.width),
         pml_power=pml.power,
         pml_R0=pml.R0,
         t_max=tm.t_max,
@@ -208,33 +167,13 @@ def build_problem(cfg: RunConfig) -> Problem:
     if cfg.runtime.torch_num_threads is not None:
         torch.set_num_threads(int(cfg.runtime.torch_num_threads))
 
-    grid = _make_grid(cfg, cfg.pml.width)
+    grid = _make_grid(cfg)
     center = _resolve_center(cfg, grid)
     source = _make_source(cfg, grid)
 
     truth_velocity = _build_velocity(grid, cfg.truth, center)
     init_velocity = _build_velocity(grid, cfg.init, center)
     head_mask = truth_velocity.head_mask  # interior-shaped bool tensor or None
-
-    forward_grid = None
-    forward_truth = None
-    forward_source = None
-    obs_pml = cfg.pml.observation_width
-    if obs_pml is not None and int(obs_pml) != int(cfg.pml.width):
-        forward_grid = _make_grid(cfg, int(obs_pml))
-        # Shared time base required so FFT bins line up across the split.
-        if (
-            int(forward_grid.nt) != int(grid.nt)
-            or abs(float(forward_grid.dt) - float(grid.dt)) > 1e-18
-        ):
-            raise ValueError(
-                "observation/inverse grids must share nt and dt for the PML "
-                f"split; got fwd nt={forward_grid.nt} dt={float(forward_grid.dt)} "
-                f"vs inv nt={grid.nt} dt={float(grid.dt)}. "
-                "Set time.init_nt so both use the same time stepping."
-            )
-        forward_truth = _build_velocity(forward_grid, cfg.truth, center)
-        forward_source = _make_source(cfg, forward_grid)
 
     return Problem(
         cfg=cfg,
@@ -248,9 +187,42 @@ def build_problem(cfg: RunConfig) -> Problem:
         head_mask=head_mask,
         space_order=cfg.grid.space_order,
         damping_scale=cfg.pml.damping_scale,
-        forward_grid=forward_grid,
-        forward_truth=forward_truth,
-        forward_source=forward_source,
+        observation=_observation_path(cfg, grid, truth_velocity, center),
+    )
+
+
+def _observation_path(
+    cfg: RunConfig, grid: Grid, truth: VelocityModel, center: Tuple[float, float]
+) -> ObservationPath:
+    """The ``observation`` block's :class:`ObservationPath` for the inversion
+    ``grid`` and its ``truth``."""
+    obs = cfg.observation
+    independent = None
+    if obs.mode == "independent":
+        r = int(obs.refine)
+        pml = round(float(obs.pml_thickness_factor) * int(cfg.pml.width) * r)
+        fine = refined_grid(grid, r, pml)
+        if obs.truth == "native":
+            spec = dataclasses.replace(cfg.truth, skull_sigma=cfg.truth.skull_sigma * r)
+            fine_truth = _build_velocity(fine, spec, center)
+        else:
+            fine_truth = prolonged_truth(truth, fine, r)
+        independent = IndependentSolve(
+            grid=fine,
+            source=_make_source(cfg, fine),
+            truth=fine_truth,
+            refine=r,
+            space_order=int(obs.space_order),
+            time_symbols=obs.time_symbols,
+        )
+    return ObservationPath(
+        truth,
+        space_order=cfg.grid.space_order,
+        damping_scale=cfg.pml.damping_scale,
+        independent=independent,
+        snr_db=obs.noise.snr_db,
+        seed=int(obs.noise.seed),
+        verbose=cfg.runtime.verbose,
     )
 
 
@@ -265,8 +237,6 @@ def grid_summary(problem: Problem) -> dict:
         "dy": float(grid.dy),
         "dt": float(grid.dt),
         "pml_width": int(grid.pml_width),
-        "pml_width_inverse": int(grid.pml_width),
-        "pml_width_forward": int(problem.observation_grid.pml_width),
         "extent": [list(map(float, ax)) for ax in grid.extent],
         "interior_extent": [list(map(float, ax)) for ax in grid.interior_extent],
         "c_min": (None if grid.c_min is None else float(grid.c_min)),
@@ -275,4 +245,19 @@ def grid_summary(problem: Problem) -> dict:
             None if problem.head_mask is None else int(problem.head_mask.sum())
         ),
     }
+    return out
+
+
+def observation_summary(problem: Problem) -> dict:
+    """The observation settings and ``inverse_crime`` flag recorded in run
+    metadata."""
+    path = problem.observation
+    out = {
+        **dataclasses.asdict(problem.cfg.observation),
+        "inverse_crime": path.inverse_crime,
+    }
+    if path.independent is not None:
+        g = path.independent.grid
+        out["grid_full_shape"] = [int(g.nx), int(g.ny)]
+        out["grid_pml_width"] = int(g.pml_width)
     return out
