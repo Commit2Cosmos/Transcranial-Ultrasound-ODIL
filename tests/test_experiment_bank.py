@@ -60,12 +60,6 @@ def test_check_passes_on_sequential_complete_records(bank_dir):
     assert _check(bank_dir) == 0
 
 
-def test_check_passes_on_a_record_with_no_status(bank_dir):
-    """The bank holds current records only, so a record has no status."""
-    _write_record(bank_dir, "0001-tv-weight")
-    assert _check(bank_dir) == 0
-
-
 @pytest.mark.parametrize("field", ["answer", "commit", "variables"])
 def test_check_fails_on_a_missing_frontmatter_field(bank_dir, field, capsys):
     _write_record(bank_dir, "0001-tv-weight")

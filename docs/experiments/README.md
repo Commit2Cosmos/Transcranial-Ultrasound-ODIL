@@ -60,8 +60,8 @@ with its own id. The number is free once no spec, `exp/*` branch name or
 
 ## Maintaining the bank
 
-1. **Index.** After writing or updating a record, run
-   `uv run python -m odil_wave.experiment.bank` to regenerate the table below.
+After writing or updating a record, run
+`uv run python -m odil_wave.experiment.bank` to regenerate the index below.
 
 ## Index
 

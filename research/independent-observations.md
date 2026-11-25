@@ -213,7 +213,7 @@ Behaviour:
 
 Acceptance criteria to carry into #139:
 
-- `mode: inverse_crime` reproduces today's `d_obs` bit-for-bit, and the shipped `current` records are unaffected.
+- `mode: inverse_crime` reproduces today's `d_obs` bit-for-bit, and the banked records are unaffected.
 - With `refine: 1`, `space_order` equal to the inversion's, `time_symbols: leapfrog` and `truth: inversion`, `independent` mode also reproduces `d_obs`. This guards the plumbing.
 - A test that transducer physical positions match between grids.
 - A test that the r = 3 vs r = 2 observation gap is below a pinned tolerance (the pilot gives 5% at the default config; float32 may differ).

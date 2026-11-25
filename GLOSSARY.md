@@ -65,7 +65,7 @@ The metrics recorded at the start of each frequency band, after the band's warm 
 _Avoid_: baseline row
 
 **Experiment record**:
-The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support.
+The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support. A snapshot pinned to its commit; the user deletes it once they judge it stale.
 _Avoid_: report, results file
 
 **Experiment bank**:
