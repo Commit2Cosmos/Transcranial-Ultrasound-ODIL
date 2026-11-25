@@ -61,7 +61,7 @@ Formulation
       s[i]    = sqrt(T / max(H_zz[i], eps_precond * median(H_zz)))
 
   with ``k = (c / c0)^2``, evaluated once per band at the warm start (never
-  refreshed, which would invalidate the L-BFGS history). The data term and the
+  refreshed, which would make the L-BFGS history stale). The data term and the
   regulariser are left out of both curvatures. ``z_scale`` cancels from
   ``z_scale * s``. ``H_zz`` comes from
   :meth:`JointFreqODIL.model_curvature`, ``T`` from

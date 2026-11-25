@@ -2,8 +2,9 @@
 
 One **experiment record** per launched experiment (see `GLOSSARY.md`), including
 aborted and inconclusive ones, so negative results are banked; only a voided
-launch (below) gets none. Read the index below first; take context primarily
-from `current` records.
+launch (below) gets none. The bank holds only records the user still
+considers current; a record is a snapshot pinned to its `commit`. Read the
+index below first.
 
 - **Record**: `NNNN-slug.md`, copied from [`TEMPLATE.md`](TEMPLATE.md). The
   **experiment id** `NNNN-slug` is 4-digit and unique, reserved at launch,
@@ -18,9 +19,8 @@ from `current` records.
   regenerated with `--reproduce` / `--postprocess`.
 - **Lifecycle**: the body is frozen once the record's PR merges (typo fixes
   allowed); a wrong analysis is fixed by a new record whose Context names the
-  old one. After merge only `status` and new Validity entries change.
-  `invalidated`: a later code change broke one of its supported conclusions; an
-  invalidated record is never checked or edited again and remains as context.
+  old one. Only the user deletes a record, when they judge it stale; git
+  history keeps it. Agents never delete or annotate records.
 - **Index**: generated from the frontmatter by
   `uv run python -m odil_wave.experiment.bank`. `--check` validates only
   (required fields, unique id numbers) and runs in CI through
@@ -31,7 +31,7 @@ from `current` records.
 A launch is **voided** when its runs no longer test its Protocol before any
 record of it reaches `main`, e.g. because the default config changed under its
 Baseline. Runs that test the Protocol but stopped are recorded as `aborted`
-instead; a banked record is invalidated, never voided.
+instead.
 
 1. Delete its spec, any drafted record and results, and its launch tag, locally
    and on `origin`. Delete its `exp/*` branch too unless another experiment
@@ -60,23 +60,12 @@ with its own id. The number is free once no spec, `exp/*` branch name or
 
 ## Maintaining the bank
 
-1. **Invalidation note.** A PR that touches `odil_wave/`, `configs/` or
-   `main.py` adds one Validity line to each `current` record whose conclusions
-   it may change: `YYYY-MM-DD · note · <PR> · <what may no longer hold, and
-   why>`. `status` is unchanged; no line when nothing is affected. To settle
-   whether a change alters results at all,
-   `python -m odil_wave.experiment.compare main` runs the tiny config at `main`
-   and on your tree and compares the results exactly.
-2. **Only the user writes `invalidated`**:
-   `YYYY-MM-DD · invalidated by <PR or commit> · <why>`, flipping `status` to
-   `invalidated`. Doubt that needs data is settled by a new experiment.
-3. **Index.** After writing or updating a record, run
+1. **Index.** After writing or updating a record, run
    `uv run python -m odil_wave.experiment.bank` to regenerate the table below.
 
 ## Index
 
 <!-- index:start -->
-| id | question | variable | status | answer |
-|---|---|---|---|---|
-| [0002-wavefield-preconditioner](0002-wavefield-preconditioner.md) | Does the wavefield preconditioner pay off in the joint solve? | optimiser.wavefield_preconditioner | current | Yes at equal outer budget (final rel_wavefield_error 0.23×, rmse_skull −25%, rmse_brain −30%); at equal wall time it misses the 0.5× threshold narrowly (0.54×), so the cost criterion is not met |
+| id | question | variables | answer |
+|---|---|---|---|
 <!-- index:end -->

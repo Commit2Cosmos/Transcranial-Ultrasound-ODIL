@@ -1,6 +1,6 @@
 # Stage 3: Record
 
-Draft the experiment record, get the user's sign-off, and commit it with its results on the experiment's `exp/*` branch. Record conventions (frontmatter, sections, Validity formats) are in `docs/experiments/README.md` and `TEMPLATE.md`.
+Draft the experiment record, get the user's sign-off, and commit it with its results on the experiment's `exp/*` branch. Record conventions (frontmatter, sections) are in `docs/experiments/README.md` and `TEMPLATE.md`.
 
 ## 1. Check the runs
 
@@ -18,7 +18,7 @@ Check out the experiment's branch. Find the experiment directory, `outputs/exper
 
 Copy `TEMPLATE.md` to `docs/experiments/NNNN-slug.md` and draft every part:
 
-- **Frontmatter** from `experiment.json` (`commit`, `device`, `variable` = `sweep_keys`, comma-separated), the Protocol issue (`issue`, `title`, `baseline`) and the outcome; `experiment_dir` is the directory's repo-relative path.
+- **Frontmatter** from `experiment.json` (`commit`, `device`, `variables` = `sweep_keys`, comma-separated), the Protocol issue (`issue`, `title`, `baseline`) and the outcome; `experiment_dir` is the directory's repo-relative path.
 - **Question, Hypothesis, Design, Assumptions and limitations**: copied from the Protocol issue body.
 - **Deviations from protocol**: failed or missing runs, a device other than the spec's, and any edit to the issue body after the launch comment. GitHub's edit history shows those: `gh api graphql -f query='{repository(owner:"Commit2Cosmos",name:"Transcranial-Ultrasound-ODIL"){issue(number:<n>){lastEditedAt}}}'` later than the comment means an edit. "None." otherwise.
 - **Results**: the `summary.csv` table (label, the swept-key columns, `is_baseline`, status, the metrics the conclusions weigh, `n_evaluations`, `wall_s`), the baseline run's first start row (first row of `runs/<baseline dir>/tape.csv`) as reference, then up to 3 PNGs from the experiment's `figures/`.

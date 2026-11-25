@@ -6,7 +6,7 @@ Open the PR that lands an `exp/*` branch's records.
 
 Ask the user. A branch with no feature under test takes the kept path.
 
-- **Feature kept**: one PR from the `exp/*` branch, carrying code and records, reviewed as a normal code PR. The bank duty in `docs/experiments/README.md`, "Maintaining the bank", applies to its code against the `current` records on `main`. Any merge strategy.
+- **Feature kept**: one PR from the `exp/*` branch, carrying code and records, reviewed as a normal code PR. Any merge strategy.
 - **Feature dropped**: a docs-only PR from a fresh branch off `origin/main`, carrying only the branch's changes under `configs/experiments/` and `docs/experiments/`:
 
   ```bash

@@ -2,14 +2,13 @@
 id: NNNN-slug                # the experiment id, reserved at launch; the filename without .md
 title: ""                    # the question, short; the index's question column
 date: YYYY-MM-DD             # the day the record was written
-status: current              # current | invalidated
 outcome: answered            # answered | inconclusive | aborted
 issue: 0                     # the protocol issue number
 commit: ""                   # the SHA the runs used (the launch/NNNN-slug tag)
 spec: configs/experiments/NNNN-slug.yaml
 experiment_dir: outputs/experiments/NNNN-slug   # local, gitignored; regenerate with --reproduce
 device: cpu                  # cpu | cuda | mps
-variable: ""                 # the swept key(s), comma-separated, e.g. loss.weights.reg
+variables: ""                # the swept key(s), comma-separated, e.g. loss.weights.reg
 baseline: ""                 # the baseline run config, or where it came from
 answer: ""                   # the answer, in one line
 ---
@@ -55,14 +54,3 @@ Departures from the hypothesis, with the likely cause and a possible fix.
 ## Follow-ups
 
 Candidate next experiments, each with a proposed baseline (ids are given only at launch).
-
-## Validity
-
-Current.
-
-<!--
-Replace "Current." with the first dated entry; later entries go below it. Formats:
-- YYYY-MM-DD · note · <PR> · <what may no longer hold, and why>
-- YYYY-MM-DD · invalidated by <PR or commit> · <why>
-Only the user writes `invalidated`; it flips `status` and is the last entry.
--->

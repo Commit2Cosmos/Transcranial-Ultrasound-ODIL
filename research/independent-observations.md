@@ -267,7 +267,7 @@ Acceptance criteria to carry into #139:
 
 **#51 (noise, seeds, repeats):** `noise.seed` and `noise.snr_db` make noise and repeats expressible. Experiment specs can sweep the seed [I].
 
-**Experiment records:** `mode: inverse_crime` stays the default, so no `current` record is invalidated by #139 itself. Flipping the default later invalidates every record that relies on exact data (`docs/experiments/README.md`) [R].
+**Experiment records:** `mode: inverse_crime` stays the default, so no record goes stale through #139 itself. Flipping the default later makes every record that relies on exact data stale (`docs/experiments/README.md`) [R].
 
 ---
 

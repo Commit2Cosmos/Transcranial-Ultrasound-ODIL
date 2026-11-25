@@ -18,4 +18,5 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 
 ### Experiments
 
-A PR touching `odil_wave/`, `configs/` or `main.py` adds a one-line note to each `current` record in `docs/experiments/` it may affect: see "Maintaining the bank" in its README.
+- Before/after metrics of a code change: `python -m odil_wave.experiment.compare <ref> --keep DIR`.
+- Run `main.py` and `compare` one at a time, never in parallel (parallel runs: #185).

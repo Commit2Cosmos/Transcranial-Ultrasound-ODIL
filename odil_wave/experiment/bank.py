@@ -23,14 +23,13 @@ REQUIRED_FIELDS = (
     "id",
     "title",
     "date",
-    "status",
     "outcome",
     "issue",
     "commit",
     "spec",
     "experiment_dir",
     "device",
-    "variable",
+    "variables",
     "baseline",
     "answer",
 )
@@ -103,19 +102,19 @@ def check(bank_dir: Path) -> List[str]:
 
 
 def index_table(records: List[Record]) -> str:
-    """The bank's index: id | question (the title) | variable | status | answer."""
+    """The bank's index: id | question (the title) | variables | answer."""
 
     def cell(value: Any) -> str:
         return str(value).replace("|", "\\|").replace("\n", " ")
 
     lines = [
-        "| id | question | variable | status | answer |",
-        "|---|---|---|---|---|",
+        "| id | question | variables | answer |",
+        "|---|---|---|---|",
     ]
     for rec in records:
         f = rec.front
         cells = [f"[{rec.name}]({rec.name}.md)"] + [
-            cell(f[key]) for key in ("title", "variable", "status", "answer")
+            cell(f[key]) for key in ("title", "variables", "answer")
         ]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
