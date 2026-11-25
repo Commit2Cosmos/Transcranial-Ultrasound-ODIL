@@ -16,8 +16,13 @@ dependency change counts as a change. Both are scratch runs. Results are every
 resolved config and ``run_summary.json`` (which repeats the band summaries)
 are not results.
 
-Exit codes: ``0`` identical results, ``1`` they differ (each difference is
-printed), ``2`` a run could not start or failed.
+Anything only the tree run has (a result file, ``tape.csv`` column, ``.npz``
+array or JSON key) is printed as new and is not a difference; anything only
+the ref run has, and any changed value, is.
+
+Exit codes: ``0`` identical results, new results aside (each new one is
+printed), ``1`` they differ (each difference is printed), ``2`` a run could
+not start or failed.
 """
 
 from __future__ import annotations
@@ -30,8 +35,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -45,27 +51,44 @@ def _ignored(key: str) -> bool:
     return key == "run_id" or key.endswith("_s")
 
 
-def compare_run_dirs(a: Path, b: Path) -> List[str]:
-    """Every difference between the results of run directories ``a`` and ``b``,
-    one ``"<path relative to the run>: <what>"`` line each; empty when the
-    results are identical."""
-    a, b = Path(a), Path(b)
-    diffs: List[str] = []
-    for rel in sorted(_result_files(a) | _result_files(b)):
-        pa, pb = a / rel, b / rel
-        if not pb.exists():
-            diffs.append(f"{rel}: only in the first run")
-        elif not pa.exists():
-            diffs.append(f"{rel}: only in the second run")
-        elif rel.name == "tape.csv":
-            diffs += [f"{rel}: {d}" for d in _compare_tape(pa, pb)]
-        elif rel.suffix == ".npz":
-            diffs += [f"{rel}: {d}" for d in _compare_npz(pa, pb)]
+@dataclass
+class Comparison:
+    """The results of a ref run against a tree run: ``differences`` (changed
+    values and anything only the ref run has) and ``new`` (anything only the
+    tree run has), one ``"<path relative to the run>: <what>"`` line each."""
+
+    differences: List[str] = field(default_factory=list)
+    new: List[str] = field(default_factory=list)
+
+    def __add__(self, other: Comparison) -> Comparison:
+        return Comparison(self.differences + other.differences, self.new + other.new)
+
+
+def compare_run_dirs(ref: Path, tree: Path) -> Comparison:
+    """Compare the results of run directories ``ref`` and ``tree``; both lists
+    are empty when the results are identical."""
+    ref, tree = Path(ref), Path(tree)
+    total = Comparison()
+    for rel in sorted(_result_files(ref) | _result_files(tree)):
+        in_ref, in_tree = ref / rel, tree / rel
+        if not in_tree.exists():
+            total += Comparison(differences=[f"{rel}: only in the ref run"])
+        elif not in_ref.exists():
+            total += Comparison(new=[str(rel)])
         else:
-            data_a = json.loads(pa.read_text())
-            data_b = json.loads(pb.read_text())
-            diffs += [f"{rel}: {d}" for d in _compare_json(data_a, data_b, "")]
-    return diffs
+            if rel.name == "tape.csv":
+                found = _compare_tape(in_ref, in_tree)
+            elif rel.suffix == ".npz":
+                found = _compare_npz(in_ref, in_tree)
+            else:
+                found = _compare_json(
+                    json.loads(in_ref.read_text()), json.loads(in_tree.read_text()), ""
+                )
+            total += Comparison(
+                [f"{rel}: {d}" for d in found.differences],
+                [f"{rel}: {n}" for n in found.new],
+            )
+    return total
 
 
 def _result_files(run_dir: Path) -> set:
@@ -84,38 +107,45 @@ def _delta(x: str, y: str) -> str:
     return f" (|Δ| {d:.3g})" if math.isfinite(d) else ""
 
 
-def _compare_tape(a: Path, b: Path) -> List[str]:
-    """Columns whose values differ, with the first differing row."""
-    with open(a, newline="") as f:
-        rows_a = list(csv.DictReader(f))
-    with open(b, newline="") as f:
-        rows_b = list(csv.DictReader(f))
-    if len(rows_a) != len(rows_b):
-        return [f"{len(rows_a)} rows vs {len(rows_b)}"]
-    columns = list(rows_a[0]) if rows_a else []
-    if rows_b and list(rows_b[0]) != columns:
-        return [f"columns differ: {columns} vs {list(rows_b[0])}"]
-    diffs = []
-    for col in columns:
-        if _ignored(col):
+def _read_tape(path: Path) -> Tuple[List[dict], List[str]]:
+    """Rows and result columns (identity and timings left out) of a tape."""
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    return rows, [c for c in reader.fieldnames or [] if not _ignored(c)]
+
+
+def _compare_tape(ref: Path, tree: Path) -> Comparison:
+    """Tape columns, with the first differing row of each changed one."""
+    rows_ref, columns_ref = _read_tape(ref)
+    rows_tree, columns_tree = _read_tape(tree)
+    diffs = [f"{c}: only in the ref run" for c in columns_ref if c not in columns_tree]
+    new = [c for c in columns_tree if c not in columns_ref]
+    if len(rows_ref) != len(rows_tree):
+        diffs.append(f"{len(rows_ref)} rows vs {len(rows_tree)}")
+        return Comparison(diffs, new)
+    for col in columns_ref:
+        if col not in columns_tree:
             continue
-        bad = [i for i, (x, y) in enumerate(zip(rows_a, rows_b)) if x[col] != y[col]]
+        bad = [
+            i for i, (x, y) in enumerate(zip(rows_ref, rows_tree)) if x[col] != y[col]
+        ]
         if bad:
-            x, y = rows_a[bad[0]][col], rows_b[bad[0]][col]
+            x, y = rows_ref[bad[0]][col], rows_tree[bad[0]][col]
             diffs.append(
-                f"{col} differs in {len(bad)}/{len(rows_a)} rows; first at row "
+                f"{col} differs in {len(bad)}/{len(rows_ref)} rows; first at row "
                 f"{bad[0]}: {x} vs {y}{_delta(x, y)}"
             )
-    return diffs
+    return Comparison(diffs, new)
 
 
-def _compare_npz(a: Path, b: Path) -> List[str]:
-    """Arrays that are missing from one file or differ in shape, dtype or value."""
-    with np.load(a) as za, np.load(b) as zb:
-        diffs = [f"{k}: only in the first run" for k in sorted(set(za) - set(zb))]
-        diffs += [f"{k}: only in the second run" for k in sorted(set(zb) - set(za))]
-        for k in sorted(set(za) & set(zb)):
-            x, y = za[k], zb[k]
+def _compare_npz(ref: Path, tree: Path) -> Comparison:
+    """Arrays, by name; a shape or dtype change is a difference."""
+    with np.load(ref) as zr, np.load(tree) as zt:
+        diffs = [f"{k}: only in the ref run" for k in sorted(set(zr) - set(zt))]
+        new = sorted(set(zt) - set(zr))
+        for k in sorted(set(zr) & set(zt)):
+            x, y = zr[k], zt[k]
             if x.shape != y.shape or x.dtype != y.dtype:
                 diffs.append(
                     f"{k}: {x.dtype}{list(x.shape)} vs {y.dtype}{list(y.shape)}"
@@ -126,33 +156,32 @@ def _compare_npz(a: Path, b: Path) -> List[str]:
                     diffs.append(f"{k} differs (max |Δ| {d:.3g})")
                 else:
                     diffs.append(f"{k} differs")
-    return diffs
+    return Comparison(diffs, new)
 
 
-def _compare_json(x: Any, y: Any, path: str) -> List[str]:
-    """Dotted paths whose values differ, skipping identity and timings."""
-    if isinstance(x, dict) and isinstance(y, dict):
-        diffs = []
-        for k in sorted(set(x) | set(y), key=str):
+def _compare_json(ref: Any, tree: Any, path: str) -> Comparison:
+    """JSON values by dotted path, skipping identity and timings."""
+    if isinstance(ref, dict) and isinstance(tree, dict):
+        total = Comparison()
+        for k in sorted(set(ref) | set(tree), key=str):
             if _ignored(str(k)):
                 continue
             sub = f"{path}.{k}" if path else str(k)
-            if k not in y:
-                diffs.append(f"{sub}: only in the first run")
-            elif k not in x:
-                diffs.append(f"{sub}: only in the second run")
+            if k not in tree:
+                total += Comparison(differences=[f"{sub}: only in the ref run"])
+            elif k not in ref:
+                total += Comparison(new=[sub])
             else:
-                diffs += _compare_json(x[k], y[k], sub)
-        return diffs
-    if isinstance(x, list) and isinstance(y, list) and len(x) == len(y):
-        return [
-            d
-            for i, (u, v) in enumerate(zip(x, y))
-            for d in _compare_json(u, v, f"{path}[{i}]")
-        ]
-    if x != y and not (x != x and y != y):  # NaN equals NaN here
-        return [f"{path}: {x!r} vs {y!r}{_delta(str(x), str(y))}"]
-    return []
+                total += _compare_json(ref[k], tree[k], sub)
+        return total
+    if isinstance(ref, list) and isinstance(tree, list) and len(ref) == len(tree):
+        total = Comparison()
+        for i, (u, v) in enumerate(zip(ref, tree)):
+            total += _compare_json(u, v, f"{path}[{i}]")
+        return total
+    if ref != tree and not (ref != ref and tree != tree):  # NaN equals NaN here
+        return Comparison([f"{path}: {ref!r} vs {tree!r}{_delta(str(ref), str(tree))}"])
+    return Comparison()
 
 
 def _run(cwd: Path, config: Path, overrides: Sequence[str], out: Path) -> int:
@@ -212,16 +241,26 @@ def compare(
                     return 2
         finally:
             run_git(repo_root, "worktree", "remove", "--force", str(worktree))
-        diffs = compare_run_dirs(runs / "ref", runs / "tree")
+        comparison = compare_run_dirs(runs / "ref", runs / "tree")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if not diffs:
+    return report(comparison, ref)
+
+
+def report(comparison: Comparison, ref: str) -> int:
+    """Print ``comparison`` of ``ref`` against this tree and return the exit
+    code (see the module docstring)."""
+    if comparison.differences:
+        print(f"results differ: {ref} vs this tree")
+    elif comparison.new:
+        print(f"results unchanged, new results added: {ref} vs this tree")
+    else:
         print(f"identical results: {ref} vs this tree")
-        return 0
-    print(f"results differ: {ref} vs this tree")
-    for d in diffs:
+    for d in comparison.differences:
         print(f"  {d}")
-    return 1
+    for n in comparison.new:
+        print(f"  new: {n}")
+    return 1 if comparison.differences else 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
