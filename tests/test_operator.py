@@ -274,7 +274,7 @@ def test_pml_rows_have_a_unit_mass_coefficient():
 
 @pytest.mark.parametrize("space_order", [2, 4, 6, 8])
 def test_pml_leaves_interior_rows_unchanged(space_order):
-    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` exactly, PML on,
+    """Interior rows are ``λ_tt u - c'^2 (u_xx + u_yy) - f`` to round-off, PML on,
     beyond the ``P/2 - 1`` cells the staggered correction reaches in."""
     grid = _make_grid(pml_width=4, dtype=torch.float64)
     wf = _make_wavefield(grid)
