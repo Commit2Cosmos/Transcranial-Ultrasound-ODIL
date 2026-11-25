@@ -21,7 +21,7 @@ jobs:
         run: uv sync --locked
 
       - name: Run tests
-        run: uv run pytest tests/ -q
+        run: uv run pytest tests/ -q -n auto
   lint:
     runs-on: ubuntu-latest
 
