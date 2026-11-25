@@ -17,6 +17,7 @@ from odil_wave.experiment import (
     resolve_config,
     validate_config,
 )
+from odil_wave.experiment.observation import add_noise
 
 # The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
 EXPECTED_SHAPE = {
@@ -621,9 +622,22 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
     reseeded = _observe(
         tiny_run_config, [40e3], {"noise": {"snr_db": 20.0, "seed": 4}}
     ).traces
-    # A frequency shared by two bands gets the same realisation.
-    assert torch.equal(pair[:, 1], alone[:, 0])
+    # A frequency shared by two bands gets the same draw; the solver's traces
+    # differ at round-off between band compositions on some CPUs.
+    assert _rel(pair[:, 1], alone[:, 0]) < 1e-10
     assert _rel(reseeded, alone) > 0.05
+
+
+def test_noise_draw_depends_only_on_its_bin():
+    def noisy_at_bin_12(bins):
+        # Unit traces make every RMS, hence sigma, exact whatever the summation order.
+        clean = torch.ones(4, len(bins), 5, dtype=torch.complex128)
+        noisy = add_noise(clean, torch.tensor(bins), snr_db=20.0, seed=3)
+        return noisy[:, bins.index(12)]
+
+    with_bin_7 = noisy_at_bin_12([7, 12])
+    assert torch.equal(noisy_at_bin_12([12]), with_bin_7)
+    assert torch.equal(noisy_at_bin_12([12, 7]), with_bin_7)
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
