@@ -19,3 +19,8 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 ### Experiments
 
 A PR touching `odil_wave/`, `configs/` or `main.py` adds a one-line note to each `current` record in `docs/experiments/` it may affect: see "Maintaining the bank" in its README.
+
+### Checks
+
+- One test file, e.g. `uv run pytest tests/<file>.py -q`: after each change to the code it covers.
+- Full suite, `uv run pytest tests/ -q -n auto` (~60 s): once before opening the PR.
