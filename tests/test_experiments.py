@@ -17,6 +17,7 @@ from odil_wave.experiment import (
     resolve_config,
     validate_config,
 )
+from odil_wave.experiment.observation import add_noise
 
 # The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
 EXPECTED_SHAPE = {
@@ -622,8 +623,22 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
         tiny_run_config, [40e3], {"noise": {"snr_db": 20.0, "seed": 4}}
     ).traces
     # A frequency shared by two bands gets the same realisation.
-    assert torch.equal(pair[:, 1], alone[:, 0])
+    assert _rel(pair[:, 1], alone[:, 0]) < 1e-10
     assert _rel(reseeded, alone) > 0.05
+
+
+def test_noise_draw_is_fixed_by_seed_and_bin():
+    gen = torch.Generator().manual_seed(0)
+    clean = torch.randn(4, 2, 5, dtype=torch.complex128, generator=gen)
+
+    def noisy_at_bin_12(bins, column):
+        traces = clean[:, column]
+        noisy = add_noise(traces, torch.tensor(bins), snr_db=20.0, seed=3)
+        return noisy[:, bins.index(12)]
+
+    together = noisy_at_bin_12([7, 12], [0, 1])
+    assert torch.equal(noisy_at_bin_12([12], [1]), together)
+    assert torch.equal(noisy_at_bin_12([12, 7], [1, 0]), together)
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
