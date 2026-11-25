@@ -109,7 +109,6 @@ def test_a_new_summary_key_is_new_not_a_difference(two_copies):
 
 
 def _add_tape_column(run_dir, column, value):
-    """Add ``column`` to every ``tape.csv`` row, set to ``value``."""
     path = run_dir / "tape.csv"
     with open(path, newline="") as f:
         rows = list(csv.DictReader(f))
@@ -184,3 +183,12 @@ def test_differences_exit_1_and_name_each(capsys):
     out = capsys.readouterr().out
     assert "results differ" in out
     assert "tape.csv: x" in out and "tape.csv: y" in out
+
+
+def test_a_missing_summary_key_is_a_difference(two_copies):
+    a, b = two_copies
+    summary = next(a.glob("bands/*/band_summary.json"))
+    _edit_json(summary, lambda d: d.update(band_extra=1.0))
+    assert compare_run_dirs(a, b) == Comparison(
+        [f"{summary.relative_to(a)}: band_extra: only in the ref run"], []
+    )
