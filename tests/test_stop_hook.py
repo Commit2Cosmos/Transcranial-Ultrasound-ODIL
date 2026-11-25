@@ -1,5 +1,4 @@
-"""The Claude Code Stop hook in .claude/hooks/, run as Claude Code runs it:
-hook input as JSON on stdin, a stand-in ``pre-commit`` on PATH."""
+"""The Claude Code Stop hook in .claude/hooks/."""
 
 import json
 import subprocess
@@ -10,8 +9,9 @@ from conftest import REPO_ROOT
 HOOK = REPO_ROOT / ".claude" / "hooks" / "pre_commit_stop.py"
 
 
-def fake_pre_commit(tmp_path, exit_code):
-    """A ``pre-commit`` that echoes its arguments and exits with ``exit_code``."""
+def path_with_fake_pre_commit(tmp_path, exit_code):
+    """A PATH directory holding a ``pre-commit`` that prints a failure line
+    naming its arguments and exits with ``exit_code``."""
     script = tmp_path / "pre-commit"
     script.write_text(
         f'#!/bin/sh\necho "ruff-check failed: pre-commit $*"\nexit {exit_code}\n'
@@ -20,7 +20,7 @@ def fake_pre_commit(tmp_path, exit_code):
     return tmp_path
 
 
-def run_hook(path, stop_hook_active=False):
+def run_hook(path_dir, stop_hook_active=False):
     return subprocess.run(
         [sys.executable, str(HOOK)],
         input=json.dumps(
@@ -28,7 +28,7 @@ def run_hook(path, stop_hook_active=False):
         ),
         capture_output=True,
         text=True,
-        env={"PATH": str(path)},
+        env={"PATH": str(path_dir)},
         cwd=REPO_ROOT,
     )
 
@@ -38,18 +38,20 @@ def test_passes_when_pre_commit_is_not_installed(tmp_path):
 
 
 def test_passes_when_pre_commit_passes(tmp_path):
-    result = run_hook(fake_pre_commit(tmp_path, exit_code=0))
+    result = run_hook(path_with_fake_pre_commit(tmp_path, exit_code=0))
     assert result.returncode == 0
     assert result.stdout == ""
 
 
 def test_blocks_the_stop_when_pre_commit_fails(tmp_path):
-    result = run_hook(fake_pre_commit(tmp_path, exit_code=1))
+    result = run_hook(path_with_fake_pre_commit(tmp_path, exit_code=1))
     assert result.returncode == 2
     assert "ruff-check failed: pre-commit run --all-files" in result.stderr
 
 
 def test_reports_to_the_user_when_the_retry_still_fails(tmp_path):
-    result = run_hook(fake_pre_commit(tmp_path, exit_code=1), stop_hook_active=True)
+    result = run_hook(
+        path_with_fake_pre_commit(tmp_path, exit_code=1), stop_hook_active=True
+    )
     assert result.returncode == 0
     assert "ruff-check failed" in json.loads(result.stdout)["systemMessage"]
