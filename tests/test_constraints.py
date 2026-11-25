@@ -16,15 +16,19 @@ def _check(name, overrides=()):
 
 
 # Expected values: research/discretisation-constraints.md §2-3 (#135) and #124.
-def test_default_dispersion_fails_at_order_2():
-    check = _check("dispersion")
+def test_default_config_passes_every_constraint_check():
+    assert all(c.ok for c in check_constraints(resolve_config({})))
+
+
+def test_order_2_fails_dispersion_on_the_default_grid():
+    check = _check("dispersion", ["grid.space_order=2"])
     assert check.value == pytest.approx(1.51, abs=0.01)
     assert check.threshold == pytest.approx(math.pi / 4)
     assert check.severity == "warn" and not check.ok
 
 
-def test_order_4_passes_dispersion_on_the_default_grid():
-    check = _check("dispersion", ["grid.space_order=4"])
+def test_default_order_4_passes_dispersion():
+    check = _check("dispersion")
     assert check.value == pytest.approx(0.084, abs=0.002)
     assert check.ok
 

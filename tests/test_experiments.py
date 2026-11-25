@@ -17,6 +17,7 @@ from odil_wave.experiment import (
     resolve_config,
     validate_config,
 )
+from odil_wave.experiment.observation import add_noise
 
 # The config shape fixed by ADR 0001 / issue #39: block -> field names, in order.
 EXPECTED_SHAPE = {
@@ -97,10 +98,10 @@ def test_default_config_matches_the_documented_shape():
 
 
 def test_resolve_empty_config_gives_the_default_values():
-    """resolve_config({}) is the default config: 64 transducers, one 80 kHz band,
+    """resolve_config({}) is the default config: 76 transducers, one 80 kHz band,
     a homogeneous initial model and inverse-crime observations."""
     cfg = resolve_config({})
-    assert cfg.acquisition.n_transducers == 64
+    assert cfg.acquisition.n_transducers == 76
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[80e3]]
     assert cfg.init.profile == "homogeneous"
     assert cfg.observation.mode == "inverse_crime"
@@ -219,10 +220,15 @@ def test_apply_overrides_bad_form_raises():
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-def test_validate_config_warns_on_the_defaults_failed_constraint_checks():
-    """The default config validates; it fails only the dispersion and ring
-    sampling constraint checks (#124), which warn."""
-    warnings = validate_config(resolve_config({}))
+def test_validate_config_returns_no_warnings_on_the_default():
+    assert validate_config(resolve_config({})) == []
+
+
+def test_validate_config_returns_a_warning_per_failed_warn_check():
+    """Order 2 and 64 transducers fail the dispersion and ring sampling checks."""
+    warnings = validate_config(
+        resolve_config({}, ["grid.space_order=2", "acquisition.n_transducers=64"])
+    )
     assert len(warnings) == 2
     assert warnings[0].startswith("numerical dispersion")
     assert warnings[1].startswith("ring sampling")
@@ -621,9 +627,22 @@ def test_noise_is_seeded_per_frequency(tiny_run_config):
     reseeded = _observe(
         tiny_run_config, [40e3], {"noise": {"snr_db": 20.0, "seed": 4}}
     ).traces
-    # A frequency shared by two bands gets the same realisation.
-    assert torch.equal(pair[:, 1], alone[:, 0])
+    # A frequency shared by two bands gets the same draw; the solver's traces
+    # differ at round-off between band compositions on some CPUs.
+    assert _rel(pair[:, 1], alone[:, 0]) < 1e-10
     assert _rel(reseeded, alone) > 0.05
+
+
+def test_noise_draw_depends_only_on_its_bin():
+    def noisy_at_bin_12(bins):
+        # Unit traces make every RMS, hence sigma, exact whatever the summation order.
+        clean = torch.ones(4, len(bins), 5, dtype=torch.complex128)
+        noisy = add_noise(clean, torch.tensor(bins), snr_db=20.0, seed=3)
+        return noisy[:, bins.index(12)]
+
+    with_bin_7 = noisy_at_bin_12([7, 12])
+    assert torch.equal(noisy_at_bin_12([12]), with_bin_7)
+    assert torch.equal(noisy_at_bin_12([12, 7]), with_bin_7)
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
@@ -717,7 +736,7 @@ def test_regulariser_choice_never_warns(reg):
 )
 def test_shipped_run_configs_validate(path):
     """Every run config in configs/ resolves and validates, warning only for
-    failed constraint checks (the default fails two until #138)."""
+    failed constraint checks."""
     cfg = resolve_config(load_config_file(path))
     failed = [c.message for c in check_constraints(cfg) if not c.ok]
     assert validate_config(cfg) == failed

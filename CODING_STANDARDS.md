@@ -16,7 +16,7 @@ A PR the reviewer has nothing left to ask of: it meets every criterion below. Th
 8. **No leftovers.** No commented-out code, debug output, unused config keys or parameters, compatibility shims for callers that no longer exist, or TODOs without an issue number.
 9. **One way to do it.** The PR extends the existing mechanism rather than adding a parallel one. If it replaces a mechanism, the old one is removed in the same PR, not left beside the new.
 10. **Fails loudly.** Invalid config or input raises where it enters. No silent fallbacks, defaults substituted for bad values, or swallowed exceptions: here they produce a plausible wrong inversion rather than an error.
-11. **Results changes are declared.** If the PR changes what the default config computes (any run metric could differ for the same seed), the PR body says so and says what changed.
+11. **Results changes are declared.** A PR touching `odil_wave/`, `configs/` or `main.py` runs `python -m odil_wave.experiment.compare main` and its body says "results unchanged" or what changed and why.
 12. **No later change would have to undo it.** The catch-all for maintainability: a later change in the same area would not first have to undo or work around this PR. To fail a PR on this, name the concrete later change that is obstructed (e.g. "adding a third preconditioner option means editing this `if` chain instead of adding an object"). If none can be named, it passes.
 
 ### Answering "is this PR merge-ready?"

@@ -111,7 +111,7 @@ class GridCfg:
     )
     c_min: float = 1300.0
     c_max: float = 3100.0
-    space_order: int = 2
+    space_order: int = 4
 
 
 @dataclass(frozen=True)
@@ -196,7 +196,7 @@ class AcquisitionCfg:
       that integrates to 1 (the point source is ``1 / (dx dy)``).
     """
 
-    n_transducers: int = 64
+    n_transducers: int = 76
     a_frac: float = library_default(AcquisitionGeometry, "a_frac")
     b_frac: float = library_default(AcquisitionGeometry, "b_frac")
     ring_center: Optional[List[float]] = library_default(
