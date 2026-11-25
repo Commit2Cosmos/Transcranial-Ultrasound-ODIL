@@ -97,10 +97,10 @@ def test_default_config_matches_the_documented_shape():
 
 
 def test_resolve_empty_config_gives_the_default_values():
-    """resolve_config({}) is the default config: 64 transducers, one 80 kHz band,
+    """resolve_config({}) is the default config: 76 transducers, one 80 kHz band,
     a homogeneous initial model and inverse-crime observations."""
     cfg = resolve_config({})
-    assert cfg.acquisition.n_transducers == 64
+    assert cfg.acquisition.n_transducers == 76
     assert [b.frequencies_hz for b in cfg.continuation.bands] == [[80e3]]
     assert cfg.init.profile == "homogeneous"
     assert cfg.observation.mode == "inverse_crime"
@@ -219,10 +219,13 @@ def test_apply_overrides_bad_form_raises():
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-def test_validate_config_warns_on_the_defaults_failed_constraint_checks():
-    """The default config validates; it fails only the dispersion and ring
-    sampling constraint checks (#124), which warn."""
-    warnings = validate_config(resolve_config({}))
+def test_validate_config_warns_on_failed_warn_constraint_checks():
+    """The default config validates without warnings (#138); order 2 and 64
+    transducers fail the dispersion and ring sampling checks, which warn."""
+    assert validate_config(resolve_config({})) == []
+    warnings = validate_config(
+        resolve_config({}, ["grid.space_order=2", "acquisition.n_transducers=64"])
+    )
     assert len(warnings) == 2
     assert warnings[0].startswith("numerical dispersion")
     assert warnings[1].startswith("ring sampling")
