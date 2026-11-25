@@ -9,8 +9,9 @@ grid:
   interior_extent: [[0.0, 0.05], [0.0, 0.05]]
   c_min: 1400.0
   c_max: 1750.0
-  # Order 2 keeps the inversion's discretisation error (2.2e-2) well above the
-  # independent observation's refinement error (2.3e-3), which tests measure.
+  # Order 2 keeps the inversion's discretisation error well above the
+  # independent observation's refinement error
+  # (test_independent_observations_converge_with_refinement).
   space_order: 2
 pml: {width: 6}
 time: {t_max: 6.0e-5, init_nt: 200}

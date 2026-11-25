@@ -219,10 +219,12 @@ def test_apply_overrides_bad_form_raises():
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-def test_validate_config_warns_on_failed_warn_constraint_checks():
-    """The default config validates without warnings (#138); order 2 and 64
-    transducers fail the dispersion and ring sampling checks, which warn."""
+def test_validate_config_returns_no_warnings_on_the_default():
     assert validate_config(resolve_config({})) == []
+
+
+def test_validate_config_returns_a_warning_per_failed_warn_check():
+    """Order 2 and 64 transducers fail the dispersion and ring sampling checks."""
     warnings = validate_config(
         resolve_config({}, ["grid.space_order=2", "acquisition.n_transducers=64"])
     )
@@ -720,7 +722,7 @@ def test_regulariser_choice_never_warns(reg):
 )
 def test_shipped_run_configs_validate(path):
     """Every run config in configs/ resolves and validates, warning only for
-    failed constraint checks (the default fails two until #138)."""
+    failed constraint checks."""
     cfg = resolve_config(load_config_file(path))
     failed = [c.message for c in check_constraints(cfg) if not c.ok]
     assert validate_config(cfg) == failed
