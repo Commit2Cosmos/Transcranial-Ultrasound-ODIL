@@ -20,14 +20,13 @@ def _write_record(bank_dir: Path, rec_id: str, **fields):
         "id": rec_id,
         "title": f"Does {rec_id} matter?",
         "date": "2026-10-31",
-        "status": "current",
         "outcome": "answered",
         "issue": 100,
         "commit": "abc1234",
         "spec": f"configs/experiments/{rec_id}.yaml",
         "experiment_dir": f"outputs/experiments/{rec_id}",
         "device": "cpu",
-        "variable": "loss.weights.reg",
+        "variables": "loss.weights.reg",
         "baseline": "configs/example_multiband.yaml",
         "answer": "Yes, a little.",
     }
@@ -39,7 +38,7 @@ def _write_record(bank_dir: Path, rec_id: str, **fields):
     text = (
         "---\n"
         + yaml.safe_dump(front, sort_keys=False)
-        + "---\n\n# Title\n\n## Question\n\nQ?\n\n## Validity\n\nCurrent.\n"
+        + "---\n\n# Title\n\n## Question\n\nQ?\n"
     )
     (bank_dir / f"{rec_id}.md").write_text(text)
 
@@ -61,7 +60,7 @@ def test_check_passes_on_sequential_complete_records(bank_dir):
     assert _check(bank_dir) == 0
 
 
-@pytest.mark.parametrize("field", ["answer", "commit"])
+@pytest.mark.parametrize("field", ["answer", "commit", "variables"])
 def test_check_fails_on_a_missing_frontmatter_field(bank_dir, field, capsys):
     _write_record(bank_dir, "0001-tv-weight")
     _write_record(bank_dir, "0002-band-ablation", **{field: None})
@@ -115,7 +114,7 @@ Footer.
 
 def test_regenerate_writes_the_index_table_from_frontmatter(bank_dir):
     (bank_dir / "README.md").write_text(README)
-    _write_record(bank_dir, "0001-tv-weight", status="invalidated")
+    _write_record(bank_dir, "0001-tv-weight")
     _write_record(
         bank_dir,
         "0002-tv-weight-fine",
@@ -128,13 +127,13 @@ def test_regenerate_writes_the_index_table_from_frontmatter(bank_dir):
     assert (bank_dir / "README.md").read_text() == (
         "# Experiment bank\n\nIntro.\n\n## Index\n\n"
         "<!-- index:start -->\n"
-        "| id | question | variable | status | answer |\n"
-        "|---|---|---|---|---|\n"
+        "| id | question | variables | answer |\n"
+        "|---|---|---|---|\n"
         "| [0001-tv-weight](0001-tv-weight.md) | Does 0001-tv-weight matter? "
-        "| loss.weights.reg | invalidated | Yes, a little. |\n"
+        "| loss.weights.reg | Yes, a little. |\n"
         "| [0002-tv-weight-fine](0002-tv-weight-fine.md) "
         "| Does the TV weight matter on a finer grid? "
-        "| loss.weights.reg | current | Yes \\| above 1e-6 |\n"
+        "| loss.weights.reg | Yes \\| above 1e-6 |\n"
         "<!-- index:end -->\n\nFooter.\n"
     )
 

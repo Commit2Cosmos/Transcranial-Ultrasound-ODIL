@@ -4,9 +4,9 @@ Grill the user, one question at a time, into a pre-registered Protocol on an `ex
 
 ## 1. Gather context
 
-Read the index in `docs/experiments/README.md`, then the `current` records that bear on the idea. Weigh each one's `note` Validity entries: a noted conclusion may not hold at HEAD. Read `invalidated` records only when a current one points you at them. If the idea follows up a record, that record's Follow-ups and baseline are the starting point.
+Read the index in `docs/experiments/README.md`, then the records that bear on the idea. If the idea follows up a record, that record's Follow-ups and baseline are the starting point.
 
-Done when you can name every record the Context section will list, with the notes you weighed.
+Done when you can name every record the Context section will list.
 
 ## 2. Grill into the body
 
@@ -26,7 +26,7 @@ The swept keys (dotted config keys), their values and why, the Baseline, what st
 What the setup takes for granted (inverse crime, a single phantom, no seeds) and so cannot speak to.
 
 ## Context
-The records consulted, with any notes weighed; the record this follows up on.
+The records consulted; the record this follows up on.
 
 ## Chain
 Only for an Experiment chain: the planned next questions.

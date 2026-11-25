@@ -65,15 +65,12 @@ The metrics recorded at the start of each frequency band, after the band's warm 
 _Avoid_: baseline row
 
 **Experiment record**:
-The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support, and whether it has since been invalidated.
+The short write-up of one experiment, kept in a bank for quick reference: its question, setup, results, the conclusions it does and does not support. A snapshot pinned to its commit; the user deletes it once they judge it stale.
 _Avoid_: report, results file
 
 **Experiment bank**:
 All experiment records together, with an index that an agent reads first.
 _Avoid_: results archive, log
-
-**Invalidated**:
-Said of an experiment record when a later code change means one of its supported conclusions no longer holds.
 
 **Voided**:
 Said of a launch whose runs no longer test its protocol, so it is cancelled before any record of it is banked and its id released for reuse.

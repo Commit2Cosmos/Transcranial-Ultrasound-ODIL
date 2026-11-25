@@ -14,7 +14,6 @@ Drives one **experiment** (`GLOSSARY.md`) through its lifecycle: **Protocol** is
 - The `experiment` label means **this issue's body is a Protocol**. Experiment issues carry no triage labels.
 - **Claim** the issue by assigning it to `@me` as the session's first write on it.
 - Speak in glossary terms: Protocol, Baseline, Experiment spec, Experiment id, Probe run, Experiment chain, Experiment record.
-- Only the user writes `invalidated` on a record. You flag with `note` entries.
 
 ## Work out the stage
 
