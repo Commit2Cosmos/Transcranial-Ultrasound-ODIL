@@ -55,8 +55,8 @@ def _make_freq(grid, freqs=(8e4,)):
 
 def test_normalize_amplitude_none_and_literal_none_string_are_passthrough():
     amp = np.array([[1.0, 2.0], [3.0, 4.0]])
-    assert np.array_equal(_normalize_amplitude(amp, None), amp)
-    assert np.array_equal(_normalize_amplitude(amp, "none"), amp)
+    np.testing.assert_array_equal(_normalize_amplitude(amp, None), amp)
+    np.testing.assert_array_equal(_normalize_amplitude(amp, "none"), amp)
 
 
 def test_normalize_amplitude_global_scales_by_overall_peak():
@@ -69,7 +69,7 @@ def test_normalize_amplitude_global_scales_by_overall_peak():
 def test_normalize_amplitude_global_zero_array_is_unchanged():
     amp = np.zeros((2, 2))
     out = _normalize_amplitude(amp, "global")
-    assert np.array_equal(out, amp)
+    np.testing.assert_array_equal(out, amp)
 
 
 def test_normalize_amplitude_per_frame_scales_each_frame_independently():
@@ -84,7 +84,7 @@ def test_normalize_amplitude_per_frame_scales_each_frame_independently():
 def test_normalize_amplitude_per_frame_zero_frame_is_unchanged():
     amp = np.stack([np.zeros((1, 2)), np.array([[4.0, 0.0]])])
     out = _normalize_amplitude(amp, "per_frame")
-    assert np.array_equal(out[0], amp[0])  # scale=0 -> divisor forced to 1.0
+    np.testing.assert_array_equal(out[0], amp[0])  # scale=0 -> divisor forced to 1.0
     assert np.allclose(out[1], amp[1] / 4.0)
 
 

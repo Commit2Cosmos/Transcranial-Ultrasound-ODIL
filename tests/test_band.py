@@ -43,8 +43,11 @@ def test_factors_are_kept_only_on_request(wave_stack, keep_factors):
 def test_true_wavefield_interior_crops_to_the_interior(wave_stack):
     band = make_band(wave_stack.geometry, wave_stack.model, wave_stack.sols)
     sl = wave_stack.grid.interior_slice
-    assert torch.equal(
-        band.true_wavefield_interior(), wave_stack.amp[:, :, sl[0], sl[1]]
+    torch.testing.assert_close(
+        band.true_wavefield_interior(),
+        wave_stack.amp[:, :, sl[0], sl[1]],
+        rtol=0,
+        atol=0,
     )
 
 
@@ -95,7 +98,9 @@ def test_observed_traces_skip_the_transmitting_transducer(wave_stack):
     for s in range(geom.n_shots):
         i, j = geom.transducer_ij[s]
         amp[s, :, i, j] += 10.0
-    assert torch.equal(geom.extract_observations(amp), band.observed_traces)
+    torch.testing.assert_close(
+        geom.extract_observations(amp), band.observed_traces, rtol=0, atol=0
+    )
 
 
 def test_band_wavefield_holds_the_initial_model(wave_stack):

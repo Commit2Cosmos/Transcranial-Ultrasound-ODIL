@@ -140,7 +140,7 @@ def test_data_term_ignores_the_transmitting_transducer(truth_problem):
     _, r_data = opt.residuals(u_re, u_im, z)
     _, r_bumped = opt.residuals(bumped, u_im, z)
     assert r_data.shape == (n, opt.nf, n - 1)
-    assert torch.equal(r_bumped, r_data)
+    torch.testing.assert_close(r_bumped, r_data, rtol=0, atol=0)
 
 
 def _directional_check(opt, block):
@@ -465,7 +465,8 @@ def test_model_is_recovered_with_the_wavefield_frozen_at_the_truth(truth_problem
 
     c_full = opt.c_full_of_z(z.detach())
     assert rel_interior_error(c_full, p.truth.c, grid) < 1e-4
-    assert torch.equal(u_re, u_re0) and torch.equal(u_im, u_im0)
+    torch.testing.assert_close(u_re, u_re0, rtol=0, atol=0)
+    torch.testing.assert_close(u_im, u_im0, rtol=0, atol=0)
 
 
 # --------------------------------------------------------------------------- #

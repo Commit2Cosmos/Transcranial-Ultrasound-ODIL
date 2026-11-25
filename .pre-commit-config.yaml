@@ -16,7 +16,15 @@ repos:
         language: python
         types: [python]
         pass_filenames: false
+      - id: exact-equality
+        name: no bare exact-equality asserts in tests
+        # See "Comparing arrays in tests" in CODING_STANDARDS.md.
+        entry: '\.equal\(|(?<!assert_)array_equal\('
+        language: pygrep
+        files: ^tests/
+        types: [python]
 
 # this defines pre-commit hooks to be run locally before each commit
 # ruff lints (ruff-check) and formats (ruff-format); private-names runs the
-# AST check of tests/test_private_names.py (ruff's PLC2701 exempts same-package imports)
+# AST check of tests/test_private_names.py (ruff's PLC2701 exempts same-package imports);
+# exact-equality bans bare torch.equal / np.array_equal in tests

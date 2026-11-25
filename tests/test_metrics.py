@@ -93,13 +93,13 @@ def test_to_numpy_casts_numpy_array_dtype():
     arr = np.array([1, 2, 3], dtype=np.int32)
     out = _to_numpy(arr)
     assert out.dtype == np.float64
-    assert np.array_equal(out, [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(out, [1.0, 2.0, 3.0])
 
 
 def test_to_numpy_accepts_plain_list():
     out = _to_numpy([1.0, 2.0, 3.0])
     assert isinstance(out, np.ndarray)
-    assert np.array_equal(out, [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(out, [1.0, 2.0, 3.0])
 
 
 def test_interior_slices_out_the_pml_region(small_grid):
@@ -107,7 +107,7 @@ def test_interior_slices_out_the_pml_region(small_grid):
     full = _full_field(small_grid, interior_vals, pml_value=-999.0)
     out = _interior(full, small_grid)
     assert out.shape == (6, 6)
-    assert np.array_equal(out, interior_vals)
+    np.testing.assert_array_equal(out, interior_vals)
     assert -999.0 not in out
 
 
@@ -115,7 +115,7 @@ def test_interior_leaves_an_already_interior_shaped_array_unchanged(small_grid):
     interior_vals = np.arange(36, dtype=np.float64).reshape(6, 6)
     out = _interior(interior_vals, small_grid)
     assert out.shape == (6, 6)
-    assert np.array_equal(out, interior_vals)
+    np.testing.assert_array_equal(out, interior_vals)
 
 
 def test_interior_is_identity_when_pml_width_is_zero():
@@ -130,7 +130,7 @@ def test_interior_is_identity_when_pml_width_is_zero():
         init_nt=32,
     )
     vals = np.arange(25, dtype=np.float64).reshape(5, 5)
-    assert np.array_equal(_interior(vals, grid), vals)
+    np.testing.assert_array_equal(_interior(vals, grid), vals)
 
 
 def test_interior_raises_on_shape_matching_neither_full_nor_interior(small_grid):
@@ -151,7 +151,7 @@ def test_interior_mask_leaves_an_already_interior_shaped_mask_unchanged(small_gr
     interior_mask = np.array([[True, False] * 3] * 6)
     out = _interior_mask(interior_mask, small_grid)
     assert out.shape == (6, 6)
-    assert np.array_equal(out, interior_mask)
+    np.testing.assert_array_equal(out, interior_mask)
 
 
 def test_interior_mask_accepts_torch_bool_tensor(small_grid):
@@ -167,7 +167,7 @@ def test_interior_mask_coerces_int_mask_to_bool(small_grid):
     interior_mask_int = np.array([[1, 0, 1, 0, 1, 0]] * 6)
     out = _interior_mask(interior_mask_int, small_grid)
     assert out.dtype == bool
-    assert np.array_equal(out, interior_mask_int.astype(bool))
+    np.testing.assert_array_equal(out, interior_mask_int.astype(bool))
 
 
 def test_interior_mask_raises_on_shape_matching_neither_full_nor_interior(small_grid):

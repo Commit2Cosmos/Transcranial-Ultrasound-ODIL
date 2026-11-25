@@ -467,7 +467,7 @@ def test_observed_data_satisfy_inverse_operator_on_truth(tiny_run_config):
     rms = lambda x: float(x.abs().square().mean().sqrt())  # noqa: E731
     assert rms(r_pde) < 1e-8 * rms(band.sources)
     r_data = band.geometry.extract_observations(amp) - band.observed_traces
-    assert torch.equal(r_data, torch.zeros_like(r_data))
+    torch.testing.assert_close(r_data, torch.zeros_like(r_data), rtol=0, atol=0)
 
 
 def _amplitudes(wavefields) -> torch.Tensor:
@@ -524,7 +524,7 @@ def test_independent_observations_matching_the_inversion_reproduce_its_data(
     plumbing = build_problem(
         resolve_config(deep_merge(tiny_run_config, PLUMBING))
     ).observe([40e3])
-    assert torch.equal(plumbing.traces, crime.traces)
+    torch.testing.assert_close(plumbing.traces, crime.traces, rtol=0, atol=0)
 
 
 INDEPENDENT = {"observation": {"mode": "independent"}}
@@ -641,8 +641,8 @@ def test_noise_draw_depends_only_on_its_bin():
         return noisy[:, bins.index(12)]
 
     with_bin_7 = noisy_at_bin_12([7, 12])
-    assert torch.equal(noisy_at_bin_12([12]), with_bin_7)
-    assert torch.equal(noisy_at_bin_12([12, 7]), with_bin_7)
+    torch.testing.assert_close(noisy_at_bin_12([12]), with_bin_7, rtol=0, atol=0)
+    torch.testing.assert_close(noisy_at_bin_12([12, 7]), with_bin_7, rtol=0, atol=0)
 
 
 def test_independent_observations_report_their_modelling_error(tiny_run_config):
@@ -653,7 +653,9 @@ def test_independent_observations_report_their_modelling_error(tiny_run_config):
     assert obs.solve_s > 0
     # The tape scores the inversion-grid truth, as under the inverse crime.
     crime = build_problem(resolve_config(tiny_run_config))
-    assert torch.equal(problem.truth_velocity.c, crime.truth_velocity.c)
+    torch.testing.assert_close(
+        problem.truth_velocity.c, crime.truth_velocity.c, rtol=0, atol=0
+    )
 
 
 def test_independent_observations_warn_about_a_point_source():

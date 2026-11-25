@@ -47,8 +47,8 @@ def test_problem_npz_holds_the_truth_start_model_and_layout(tiny_two_band_run):
     assert saved["c_star"].shape == (20, 20)
     assert "pml_c" not in saved
     _, brain, skull = problem.truth_velocity.skull_region_masks()
-    assert np.array_equal(saved["brain_mask"], brain[sl].numpy())
-    assert np.array_equal(saved["skull_mask"], skull[sl].numpy())
+    np.testing.assert_array_equal(saved["brain_mask"], brain[sl].numpy())
+    np.testing.assert_array_equal(saved["skull_mask"], skull[sl].numpy())
     assert saved["brain_mask"].any() and saved["skull_mask"].any()
     # 8 transducers evenly spaced around the ring.
     assert saved["transducer_angles_deg"].tolist() == [

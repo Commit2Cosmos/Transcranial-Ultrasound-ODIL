@@ -41,6 +41,15 @@ A comment gives only a reason the code cannot show and that is too small for an 
 
 Never: Args/Returns/Raises/Notes sections restating the signature, a walkthrough of the body, a restatement of what a line does, or a definition of a glossary term. Decision-scale "why" belongs in an ADR; what a term means belongs in `GLOSSARY.md`.
 
+## Comparing arrays in tests
+
+Pick the assert by what the test guarantees:
+
+- **Bit-exact is the contract** (slicing, masking, copying, save/load, untouched values): `torch.testing.assert_close(a, b, rtol=0, atol=0)` or `np.testing.assert_array_equal(a, b)`.
+- **Two arithmetic paths that should agree**: a relative error (`_rel` in `test_experiments.py`) or `rtol` with `atol=0`.
+- Never the default `atol` on scaled quantities.
+- No bare `torch.equal` / `np.array_equal`: a failure reads `assert False`, without where or by how much. The `exact-equality` pre-commit hook enforces this.
+
 ## Glossary terms
 
 `GLOSSARY.md` terms, and its _Avoid_ lists, govern prose: docs, docstrings, comments, config keys, log and metadata keys. Code identifiers may name the **role** an element plays rather than the element: `receivers` (the transducers recording a shot), `src_idx` (the transmitting transducer's shot index), `u_recv`. Use the glossary term when the identifier means the element itself (`transducer_ij`, `n_transducers`).
