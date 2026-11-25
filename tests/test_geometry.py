@@ -116,7 +116,7 @@ def test_extract_observations_skips_the_transmitting_transducer(
     assert obs.shape == (n, nf, n - 1)
     for s in range(n):
         ij = geometry.receiver_ij[s]
-        assert torch.equal(obs[s], U[s][:, ij[:, 0], ij[:, 1]])
+        torch.testing.assert_close(obs[s], U[s][:, ij[:, 0], ij[:, 1]], rtol=0, atol=0)
         own = U[s][:, geometry.transducer_ij[s, 0], geometry.transducer_ij[s, 1]]
         assert not torch.isin(own, obs[s]).any()
 

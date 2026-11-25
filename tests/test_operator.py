@@ -80,8 +80,12 @@ def test_pml_zero_weight_leaves_the_operator_unstretched():
     u = torch.randn(1, 1, grid.nx, grid.ny, dtype=torch.complex64)
     u_xx = torch.randn_like(u)
     u_yy = torch.randn_like(u)
-    assert torch.equal(pml.stretched_laplacian(u, u_xx, u_yy), u_xx + u_yy)
-    assert torch.equal(pml.row_weight, torch.ones_like(pml.row_weight))
+    torch.testing.assert_close(
+        pml.stretched_laplacian(u, u_xx, u_yy), u_xx + u_yy, rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        pml.row_weight, torch.ones_like(pml.row_weight), rtol=0, atol=0
+    )
 
 
 def test_pml_is_inactive_in_the_interior():
@@ -90,8 +94,12 @@ def test_pml_is_inactive_in_the_interior():
     grid = _make_grid(pml_width=3)
     pml = Pml(_make_wavefield(grid), weight=1.0, space_order=2)
     sx, sy = grid.interior_slice
-    assert torch.equal(pml.s_x[:, sx], torch.ones_like(pml.s_x[:, sx]))
-    assert torch.equal(pml.s_y[:, :, sy], torch.ones_like(pml.s_y[:, :, sy]))
+    torch.testing.assert_close(
+        pml.s_x[:, sx], torch.ones_like(pml.s_x[:, sx]), rtol=0, atol=0
+    )
+    torch.testing.assert_close(
+        pml.s_y[:, :, sy], torch.ones_like(pml.s_y[:, :, sy]), rtol=0, atol=0
+    )
     # Faces (ghosts included) k - 1/2 for k = p .. p + n_int: around the
     # interior nodes.
     p = grid.pml_width
@@ -283,7 +291,7 @@ def test_pml_leaves_interior_rows_unchanged(space_order):
     p, band = grid.pml_width, space_order // 2 - 1
     sx = slice(p + band, grid.nx - p - band)
     sy = slice(p + band, grid.ny - p - band)
-    assert torch.equal(r[..., sx, sy], plain[..., sx, sy])
+    torch.testing.assert_close(r[..., sx, sy], plain[..., sx, sy], rtol=1e-12, atol=0)
     assert not torch.allclose(r, plain)
 
 

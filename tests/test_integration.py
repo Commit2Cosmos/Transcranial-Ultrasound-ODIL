@@ -180,7 +180,7 @@ def test_run_inverse_two_bands_chain_models(tiny_run_config, monkeypatch, new_ru
 
     # --- band 1 starts from the init model, band 2 from band 1's result ----- #
     assert len(band_inputs) == 2
-    assert torch.equal(band_inputs[0].c, init_c)
+    torch.testing.assert_close(band_inputs[0].c, init_c, rtol=0, atol=0)
     assert band_inputs[1] is result.band_results[0].velocity_model
     band0_c = _saved_c(band_dirs[0])
     sl = band_inputs[1].grid.interior_slice

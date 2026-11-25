@@ -187,14 +187,14 @@ def test_build_full_c_replicates_the_interior_edge(grid):
     ci = _ramp_interior(grid)
     full = make_model(grid).build_full_c(ci)
     assert full.shape == grid.shape
-    assert torch.equal(full[grid.interior_slice], ci)
+    torch.testing.assert_close(full[grid.interior_slice], ci, rtol=0, atol=0)
     sx, sy = grid.interior_slice
     p = grid.pml_width
     for i in range(p):
-        assert torch.equal(full[i, sy], ci[0])
-        assert torch.equal(full[-1 - i, sy], ci[-1])
-        assert torch.equal(full[sx, i], ci[:, 0])
-        assert torch.equal(full[sx, -1 - i], ci[:, -1])
+        torch.testing.assert_close(full[i, sy], ci[0], rtol=0, atol=0)
+        torch.testing.assert_close(full[-1 - i, sy], ci[-1], rtol=0, atol=0)
+        torch.testing.assert_close(full[sx, i], ci[:, 0], rtol=0, atol=0)
+        torch.testing.assert_close(full[sx, -1 - i], ci[:, -1], rtol=0, atol=0)
     assert torch.all(full[:p, :p] == ci[0, 0])
     assert torch.all(full[-p:, -p:] == ci[-1, -1])
 

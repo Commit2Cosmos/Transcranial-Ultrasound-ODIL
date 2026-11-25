@@ -98,7 +98,7 @@ def test_v_and_u_tilde_round_trip(mode):
         pre.u_tilde_of_v(v_re, v_im), u_tilde, rtol=0, atol=1e-10
     )
     if mode == "none":
-        assert torch.equal(torch.complex(v_re, v_im), u_tilde)
+        torch.testing.assert_close(torch.complex(v_re, v_im), u_tilde, rtol=0, atol=0)
         assert pre.solve_seconds == 0.0
     else:
         assert pre.solve_seconds > 0.0
@@ -203,9 +203,9 @@ def test_pde_diagonal_maps_z_through_its_scale_and_reports_it():
     H_zz = torch.tensor([0.0, 0.5, 1.0, 2.0, 4.0], dtype=torch.float64)
     pre = PdeDiagonalModelPreconditioner(H_zz, target=3.0, eps=1e-2)
     s, floored = preconditioner_scale(H_zz, 3.0, 1e-2)
-    assert torch.equal(pre.scale, s)
+    torch.testing.assert_close(pre.scale, s, rtol=0, atol=0)
     z = torch.linspace(-1.0, 1.0, 5, dtype=torch.float64)
-    assert torch.equal(pre.z_of_y(z), s * z)
+    torch.testing.assert_close(pre.z_of_y(z), s * z, rtol=0, atol=0)
     torch.testing.assert_close(pre.z_of_y(pre.y_of_z(z)), z, rtol=1e-15, atol=0.0)
     info = pre.info()
     assert info["model_preconditioner"] == "pde_diagonal"
