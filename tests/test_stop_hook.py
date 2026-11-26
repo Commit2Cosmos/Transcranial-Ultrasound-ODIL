@@ -1,57 +1,126 @@
 """The Claude Code Stop hook in .claude/hooks/."""
 
 import json
+import shutil
 import subprocess
 import sys
 
+import pytest
 from conftest import REPO_ROOT
 
 HOOK = REPO_ROOT / ".claude" / "hooks" / "pre_commit_stop.py"
 
 
-def path_with_fake_pre_commit(tmp_path, exit_code):
-    """A PATH directory holding a ``pre-commit`` that prints a failure line
-    naming its arguments and exits with ``exit_code``."""
-    script = tmp_path / "pre-commit"
-    script.write_text(
-        f'#!/bin/sh\necho "ruff-check failed: pre-commit $*"\nexit {exit_code}\n'
+def git(repo, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
     )
-    script.chmod(0o755)
-    return tmp_path
 
 
-def run_hook(path_dir, stop_hook_active=False):
+@pytest.fixture
+def repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    for name in ("unchanged.py", "edited.py", "deleted.py"):
+        (repo / name).write_text("x = 1\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def change_files(repo):
+    (repo / "edited.py").write_text("x = 2\n")
+    (repo / "deleted.py").unlink()
+    (repo / "untracked.py").write_text("x = 3\n")
+
+
+def bin_dir(tmp_path, uv_exit_code=None):
+    """A PATH directory holding ``git`` and, unless ``uv_exit_code`` is None,
+    a ``uv`` that prints a failure line naming its arguments and exits with it."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(shutil.which("git"))
+    if uv_exit_code is not None:
+        uv = bin_dir / "uv"
+        uv.write_text(
+            f'#!/bin/sh\necho "ruff-check failed: uv $*"\nexit {uv_exit_code}\n'
+        )
+        uv.chmod(0o755)
+    return bin_dir
+
+
+def run_hook(path_dir, cwd, stop_hook_active=False, project_dir=None):
+    payload = {"hook_event_name": "Stop", "stop_hook_active": stop_hook_active}
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
+    env = {"PATH": str(path_dir)}
+    if project_dir is not None:
+        env["CLAUDE_PROJECT_DIR"] = str(project_dir)
     return subprocess.run(
         [sys.executable, str(HOOK)],
-        input=json.dumps(
-            {"hook_event_name": "Stop", "stop_hook_active": stop_hook_active}
-        ),
+        input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={"PATH": str(path_dir)},
+        env=env,
         cwd=REPO_ROOT,
     )
 
 
-def test_passes_when_pre_commit_is_not_installed(tmp_path):
-    assert run_hook(tmp_path).returncode == 0
+def test_blocks_the_stop_on_the_changed_files_when_pre_commit_fails(tmp_path, repo):
+    change_files(repo)
+    result = run_hook(bin_dir(tmp_path, uv_exit_code=1), cwd=repo)
+    assert result.returncode == 2
+    line = next(s for s in result.stderr.splitlines() if "ruff-check failed" in s)
+    command, files = line.split(" --files ")
+    assert command == "ruff-check failed: uv run --frozen pre-commit run"
+    assert set(files.split()) == {"edited.py", "untracked.py"}
 
 
-def test_passes_when_pre_commit_passes(tmp_path):
-    result = run_hook(path_with_fake_pre_commit(tmp_path, exit_code=0))
+def test_passes_on_a_clean_tree_without_running_pre_commit(tmp_path, repo):
+    result = run_hook(bin_dir(tmp_path, uv_exit_code=1), cwd=repo)
     assert result.returncode == 0
     assert result.stdout == ""
 
 
-def test_blocks_the_stop_when_pre_commit_fails(tmp_path):
-    result = run_hook(path_with_fake_pre_commit(tmp_path, exit_code=1))
+def test_tells_the_user_the_check_was_skipped_when_uv_is_missing(tmp_path, repo):
+    change_files(repo)
+    result = run_hook(bin_dir(tmp_path), cwd=repo)
+    assert result.returncode == 0
+    assert "skipped" in json.loads(result.stdout)["systemMessage"]
+
+
+def test_checks_the_whole_tree_from_a_subdirectory(tmp_path, repo):
+    change_files(repo)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "new.py").write_text("x = 4\n")
+    result = run_hook(bin_dir(tmp_path, uv_exit_code=1), cwd=repo / "sub")
     assert result.returncode == 2
-    assert "ruff-check failed: pre-commit run --all-files" in result.stderr
+    files = result.stderr.split(" --files ")[1].split()
+    assert set(files) == {"edited.py", "untracked.py", "sub/new.py"}
 
 
-def test_reports_to_the_user_when_the_retry_still_fails(tmp_path):
+def test_passes_when_pre_commit_passes(tmp_path, repo):
+    change_files(repo)
+    result = run_hook(bin_dir(tmp_path, uv_exit_code=0), cwd=repo)
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_falls_back_to_the_project_dir_when_stdin_has_no_cwd(tmp_path, repo):
+    change_files(repo)
+    result = run_hook(bin_dir(tmp_path, uv_exit_code=1), cwd=None, project_dir=repo)
+    assert result.returncode == 2
+    assert "untracked.py" in result.stderr
+
+
+def test_reports_to_the_user_when_the_retry_still_fails(tmp_path, repo):
+    change_files(repo)
     result = run_hook(
-        path_with_fake_pre_commit(tmp_path, exit_code=1), stop_hook_active=True
+        bin_dir(tmp_path, uv_exit_code=1), cwd=repo, stop_hook_active=True
     )
     assert result.returncode == 0
     assert "ruff-check failed" in json.loads(result.stdout)["systemMessage"]
