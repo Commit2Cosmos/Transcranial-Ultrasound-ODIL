@@ -23,7 +23,7 @@ index below first.
   history keeps it. Agents never delete or annotate records.
 - **Index**: generated from the frontmatter by
   `uv run python -m odil_wave.experiment.bank`. `--check` validates only
-  (required fields, unique id numbers) and runs in CI through
+  (required fields, no unknown fields, unique id numbers) and runs in CI through
   `tests/test_experiment_bank.py`.
 
 ## Voiding a launch

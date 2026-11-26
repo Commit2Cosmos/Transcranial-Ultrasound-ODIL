@@ -48,7 +48,7 @@ Pick the assert by what the test guarantees:
 - **Bit-exact is the contract** (slicing, masking, copying, save/load, untouched values): `torch.testing.assert_close(a, b, rtol=0, atol=0)` or `np.testing.assert_array_equal(a, b)`.
 - **Two arithmetic paths that should agree**: a relative error (`_rel` in `test_experiments.py`) or `rtol` with `atol=0`.
 - Never the default `atol` on scaled quantities.
-- No bare `torch.equal` / `np.array_equal` / `torch.all(a == b)`: a failure reads `assert False` (or `assert tensor(False)`), without where or by how much. `==` also broadcasts, so a shape mismatch can pass, and NaN never equals NaN. The `exact-equality` pre-commit hook enforces this.
+- No bare `torch.equal` / `np.array_equal` / `torch.all(a == b)` / `np.all(a == b)`: a failure reads `assert False` (or `assert tensor(False)`), without where or by how much. `==` also broadcasts, so a shape mismatch can pass, and NaN never equals NaN. The `exact-equality` pre-commit hook enforces this.
 
 ## Glossary terms
 
