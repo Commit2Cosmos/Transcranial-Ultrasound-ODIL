@@ -512,7 +512,7 @@ PLUMBING = {
         "mode": "independent",
         "refine": 1,
         "space_order": 2,
-        "time_symbols": "leapfrog",
+        "time_symbols": "exact",
     }
 }
 

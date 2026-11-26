@@ -138,9 +138,9 @@ def test_spectrum_independent_of_nt(source_kw):
 
 
 def test_true_traces_independent_of_nt():
-    """Doubling nt at a fixed bin frequency leaves the traces unchanged up to the
-    time symbols: their leapfrog form (#116) moves by 7e-4 between the two dt,
-    which shifts the traces by about 1e-3."""
+    """Doubling nt at a fixed bin frequency leaves the traces unchanged: the exact
+    time symbols (#116) do not depend on dt, so only the source spectrum's
+    quadrature (1e-4, above) moves them."""
     traces = []
     for nt in (120, 240):
         grid, freq, src = _ricker_at_nt(nt)
@@ -153,4 +153,4 @@ def test_true_traces_independent_of_nt():
     rel = torch.linalg.vector_norm(traces[1] - traces[0]) / torch.linalg.vector_norm(
         traces[0]
     )
-    assert float(rel) < 3e-3
+    assert float(rel) < 1e-4

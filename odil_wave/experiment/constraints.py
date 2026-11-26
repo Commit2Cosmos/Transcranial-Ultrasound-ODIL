@@ -82,7 +82,6 @@ def check_constraints(cfg: "RunConfig") -> List[Check]:
         _dispersion(cfg, g),
         _ring_sampling(cfg, g),
         _temporal_nyquist(g),
-        _time_symbol(g),
         _pml_width(cfg),
         _source_spectrum(cfg, g),
     ]
@@ -220,29 +219,7 @@ def _temporal_nyquist(g: _Geometry) -> Check:
         message=(
             f"temporal Nyquist: the top band frequency {g.f_max / 1e3:g} kHz is not "
             f"below 1/(2 dt) = {nyquist / 1e3:.4g} kHz (dt = {g.dt:.3g} s), so the "
-            "discrete time symbol aliases it; raise time.init_nt"
-        ),
-    )
-
-
-def _time_symbol(g: _Geometry) -> Check:
-    half = math.pi * g.f_max * g.dt
-    # Relative wavenumber error of the centred D_tt symbol, ~ (omega dt)**2 / 24.
-    err = 1.0 - math.sin(half) / half
-    phase = 2.0 * math.pi * g.n_wavelengths * err
-    return Check(
-        name="time_symbol",
-        quantity="time-symbol phase error over 2R (rad)",
-        value=phase,
-        op="<=",
-        threshold=PHASE_TOLERANCE,
-        severity="warn",
-        message=(
-            f"time-symbol error: dt = {g.dt:.3g} s accumulates {phase:.2f} rad of "
-            f"phase error over the ring diameter at {g.f_max / 1e3:g} kHz in water "
-            f"(> {PHASE_TOLERANCE:.2f} rad; velocity bias {err * SOS_WATER:.1f} "
-            "m/s); raise "
-            "time.init_nt (#116)"
+            "DFT on the time axis aliases it; raise time.init_nt"
         ),
     )
 

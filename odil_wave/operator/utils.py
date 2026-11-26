@@ -1,4 +1,4 @@
-"""Frequency-domain wave equation residual (discrete temporal symbols)."""
+"""Frequency-domain wave equation residual."""
 
 from dataclasses import dataclass, field
 
@@ -18,8 +18,8 @@ class WaveEquation:
 
     (the conservative stretched form with its rows divided by ``s_x s_y``,
     ADR 0002) with ``s = 1 + damping_scale σ_nd / (iω_nd)`` (``1`` = designed
-    PML absorption, ``0`` disables it) and the 2nd-order centred symbol
-    ``λ_tt = -(4/Δt'²) sin²(ω_nd Δt'/2)`` from FrequencySelection. In the
+    PML absorption, ``0`` disables it) and ``λ_tt`` from FrequencySelection
+    (``-ω_nd²`` by default). In the
     interior, beyond ``P/2 - 1`` cells from the PML,
     ``r = λ_tt u - c'^2 ∇'^2 u - f̂'``. Defaults follow ADR 0001.
 

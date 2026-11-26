@@ -268,7 +268,8 @@ class ObservationCfg:
     * ``space_order``: stencil order of the observation solve, as
       ``grid.space_order``.
     * ``time_symbols``: ``"exact"`` (``i omega``, ``-omega**2``) |
-      ``"leapfrog"`` (the inversion's centred differences).
+      ``"leapfrog"`` (the centred differences of the removed time-domain
+      solver). The inversion uses ``"exact"``.
     * ``pml_thickness_factor``: float >= 1; the observation PML's physical
       thickness relative to the inversion's, ``round(factor * pml.width *
       refine)`` cells.
