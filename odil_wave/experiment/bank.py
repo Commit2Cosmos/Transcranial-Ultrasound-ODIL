@@ -85,6 +85,11 @@ def check(bank_dir: Path) -> List[str]:
             problems.append(
                 f"{rec.name}: missing frontmatter fields: {', '.join(missing)}"
             )
+        unknown = [str(f) for f in rec.front if f not in REQUIRED_FIELDS]
+        if unknown:
+            problems.append(
+                f"{rec.name}: unknown frontmatter fields: {', '.join(unknown)}"
+            )
         if "id" in rec.front and str(rec.front["id"]) != rec.name:
             problems.append(
                 f"{rec.name}: frontmatter id {rec.front['id']!r} is not the filename"

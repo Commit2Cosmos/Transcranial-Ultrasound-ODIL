@@ -38,7 +38,7 @@ def test_tone_burst_is_zero_outside_its_window(grid):
     t_start = 10 * grid.dt
     w = make_source(grid, t_start=t_start).waveform()
     outside = (grid.t < t_start) | (grid.t >= t_start + N_CYCLES / F0)
-    assert torch.all(w[outside] == 0)
+    torch.testing.assert_close(w[outside], torch.zeros_like(w[outside]), rtol=0, atol=0)
     assert float(w.abs().max()) > 0
 
 
