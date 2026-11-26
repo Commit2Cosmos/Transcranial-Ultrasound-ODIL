@@ -147,8 +147,10 @@ def test_symbols_and_broadcast(grid):
     ``lambda_tt = -ω²`` on the selected bins (#116), broadcast to (1,nf,1,1)."""
     fs = FrequencySelection.from_frequencies(grid, [F0, 2 * F0])
     omega_nd = 2 * math.pi * fs.frequencies * grid.t0
-    torch.testing.assert_close(fs.lambda_t, (1j * omega_nd).to(fs.lambda_t.dtype))
-    torch.testing.assert_close(fs.lambda_tt, -(omega_nd**2))
+    torch.testing.assert_close(
+        fs.lambda_t, (1j * omega_nd).to(fs.lambda_t.dtype), rtol=1e-12, atol=0
+    )
+    torch.testing.assert_close(fs.lambda_tt, -(omega_nd**2), rtol=1e-12, atol=0)
     lt, ltt = fs.symbols_broadcast()
     assert lt.shape == (1, fs.n_frequencies, 1, 1)
     assert ltt.shape == (1, fs.n_frequencies, 1, 1)
@@ -164,7 +166,10 @@ def test_leapfrog_symbols_tend_to_the_exact_ones(grid):
         leap.lambda_t, discrete_lambda_t(leap.omega_nd, leap.dt_nd)
     )
     torch.testing.assert_close(
-        leap.lambda_tt, discrete_lambda_tt(leap.omega_nd, leap.dt_nd)
+        leap.lambda_tt,
+        discrete_lambda_tt(leap.omega_nd, leap.dt_nd),
+        rtol=1e-12,
+        atol=0,
     )
     wdt = float(leap.omega_nd[0] * leap.dt_nd)
     assert complex(exact.lambda_t[0]) == pytest.approx(1j * float(leap.omega_nd[0]))

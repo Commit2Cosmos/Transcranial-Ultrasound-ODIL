@@ -139,8 +139,8 @@ def test_spectrum_independent_of_nt(source_kw):
 
 def test_true_traces_independent_of_nt():
     """Doubling nt at a fixed bin frequency leaves the traces unchanged: the exact
-    time symbols (#116) do not depend on dt, so only the source spectrum's
-    quadrature (1e-4, above) moves them."""
+    time symbols (#116) do not depend on dt; the source spectrum's quadrature
+    moves them by about 1e-5."""
     traces = []
     for nt in (120, 240):
         grid, freq, src = _ricker_at_nt(nt)

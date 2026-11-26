@@ -48,9 +48,8 @@ class FrequencySelection:
 
     All frequency-domain sources and observations must use the same instance
     (same bins). ``time_symbols`` picks ``lambda_t`` / ``lambda_tt``:
-    ``"exact"`` (``iω``, ``-ω²``, the inversion's) or ``"leapfrog"`` (the
-    centred differences of the removed time-domain solver); defaults follow
-    ADR 0001.
+    ``"exact"`` (``iω``, ``-ω²``) or ``"leapfrog"`` (2nd-order centred
+    differences); defaults follow ADR 0001.
     """
 
     grid: Grid
