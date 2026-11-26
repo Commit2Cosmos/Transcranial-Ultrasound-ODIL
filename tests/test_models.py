@@ -19,7 +19,7 @@ def test_homogeneous(grid):
     """A homogeneous medium is a constant field equal to ``base``."""
     vm = make_model(grid)
     assert vm.c.shape == grid.shape
-    assert torch.all(vm.c == 1500.0)
+    torch.testing.assert_close(vm.c, torch.full_like(vm.c, 1500.0), rtol=0, atol=0)
     assert vm.c_min == 1500.0 and vm.c_max == 1500.0
     assert vm.head_mask is None
 
@@ -195,8 +195,14 @@ def test_build_full_c_replicates_the_interior_edge(grid):
         torch.testing.assert_close(full[-1 - i, sy], ci[-1], rtol=0, atol=0)
         torch.testing.assert_close(full[sx, i], ci[:, 0], rtol=0, atol=0)
         torch.testing.assert_close(full[sx, -1 - i], ci[:, -1], rtol=0, atol=0)
-    assert torch.all(full[:p, :p] == ci[0, 0])
-    assert torch.all(full[-p:, -p:] == ci[-1, -1])
+    corner = full[:p, :p]
+    torch.testing.assert_close(
+        corner, torch.full_like(corner, float(ci[0, 0])), rtol=0, atol=0
+    )
+    corner = full[-p:, -p:]
+    torch.testing.assert_close(
+        corner, torch.full_like(corner, float(ci[-1, -1])), rtol=0, atol=0
+    )
 
 
 def test_build_full_c_sums_the_pml_gradient_onto_the_edge_cells(grid):
@@ -217,9 +223,13 @@ def test_from_interior_replicates_an_interior_c_into_the_pml(grid):
     ci[0] = 1650.0
     vm = VelocityModel.from_interior(grid, ci)
     assert vm.c.shape == grid.shape and vm.c.dtype == grid.dtype
-    assert torch.all(vm.c[grid.interior_slice] == ci.to(grid.dtype))
-    assert torch.all(vm.c[: grid.pml_width, grid.interior_slice[1]] == 1650.0)
-    assert torch.all(vm.c[-grid.pml_width :, grid.interior_slice[1]] == 1700.0)
+    torch.testing.assert_close(
+        vm.c[grid.interior_slice], ci, rtol=0, atol=0, check_dtype=False
+    )
+    top = vm.c[: grid.pml_width, grid.interior_slice[1]]
+    torch.testing.assert_close(top, torch.full_like(top, 1650.0), rtol=0, atol=0)
+    bottom = vm.c[-grid.pml_width :, grid.interior_slice[1]]
+    torch.testing.assert_close(bottom, torch.full_like(bottom, 1700.0), rtol=0, atol=0)
 
 
 def test_from_field_custom_profile(grid):

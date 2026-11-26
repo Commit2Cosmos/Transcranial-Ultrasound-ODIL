@@ -79,7 +79,8 @@ def test_explicit_L0_c0_override():
 def test_pml_profile_zero_interior_positive_border(grid):
     """sigma vanishes in the interior and is strictly positive at the outer edge."""
     total = grid.sigma_x + grid.sigma_y
-    assert torch.all(total[grid.interior_slice] == 0)
+    interior = total[grid.interior_slice]
+    torch.testing.assert_close(interior, torch.zeros_like(interior), rtol=0, atol=0)
     # corners of the full grid sit deepest in the PML.
     assert total[0, 0].item() > 0
     assert total[-1, -1].item() > 0

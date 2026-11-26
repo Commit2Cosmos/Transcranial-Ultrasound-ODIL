@@ -97,6 +97,14 @@ def test_check_fails_when_the_frontmatter_id_is_not_the_filename(bank_dir, capsy
     assert "0001-tv-weight" in capsys.readouterr().err
 
 
+def test_check_fails_on_an_unknown_frontmatter_field(bank_dir, capsys):
+    """A retired key such as ``status`` (dropped in #183) must not pass unnoticed."""
+    _write_record(bank_dir, "0001-tv-weight", status="done")
+    assert _check(bank_dir) == 1
+    err = capsys.readouterr().err
+    assert "0001-tv-weight: unknown frontmatter fields: status" in err
+
+
 README = """\
 # Experiment bank
 
