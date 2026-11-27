@@ -143,10 +143,14 @@ def test_empty_selection_raises(grid):
 
 
 def test_symbols_and_broadcast(grid):
-    """lambda_t / lambda_tt match their closed forms and broadcast to (1,nf,1,1)."""
-    fs = FrequencySelection.from_frequencies(grid, [F0])
-    assert torch.allclose(fs.lambda_t, discrete_lambda_t(fs.omega_nd, fs.dt_nd))
-    assert torch.allclose(fs.lambda_tt, discrete_lambda_tt(fs.omega_nd, fs.dt_nd))
+    """The inversion's selection carries the exact symbols, ``lambda_t = iω`` and
+    ``lambda_tt = -ω²`` on the selected bins (#116), broadcast to (1,nf,1,1)."""
+    fs = FrequencySelection.from_frequencies(grid, [F0, 2 * F0])
+    omega_nd = 2 * math.pi * fs.frequencies * grid.t0
+    torch.testing.assert_close(
+        fs.lambda_t, (1j * omega_nd).to(fs.lambda_t.dtype), rtol=1e-12, atol=0
+    )
+    torch.testing.assert_close(fs.lambda_tt, -(omega_nd**2), rtol=1e-12, atol=0)
     lt, ltt = fs.symbols_broadcast()
     assert lt.shape == (1, fs.n_frequencies, 1, 1)
     assert ltt.shape == (1, fs.n_frequencies, 1, 1)
@@ -156,8 +160,17 @@ def test_symbols_and_broadcast(grid):
 def test_leapfrog_symbols_tend_to_the_exact_ones(grid):
     """The centred differences are second order: ``λ_tt`` is ``-ω²`` up to a
     relative ``(ω Δt)² / 12``."""
-    leap = FrequencySelection.from_frequencies(grid, [F0])
-    exact = FrequencySelection.from_bins(grid, leap.fft_bins, time_symbols="exact")
+    exact = FrequencySelection.from_frequencies(grid, [F0])
+    leap = FrequencySelection.from_bins(grid, exact.fft_bins, time_symbols="leapfrog")
+    torch.testing.assert_close(
+        leap.lambda_t, discrete_lambda_t(leap.omega_nd, leap.dt_nd)
+    )
+    torch.testing.assert_close(
+        leap.lambda_tt,
+        discrete_lambda_tt(leap.omega_nd, leap.dt_nd),
+        rtol=1e-12,
+        atol=0,
+    )
     wdt = float(leap.omega_nd[0] * leap.dt_nd)
     assert complex(exact.lambda_t[0]) == pytest.approx(1j * float(leap.omega_nd[0]))
     ratio = float(leap.lambda_tt[0] / exact.lambda_tt[0])

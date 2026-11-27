@@ -28,9 +28,9 @@ def discrete_lambda_tt(omega_nd: torch.Tensor, dt_nd: float) -> torch.Tensor:
     return -(4.0 / dt_nd**2) * torch.sin(0.5 * omega_nd * dt_nd) ** 2
 
 
-# The time-derivative symbols a FrequencySelection can carry: the leapfrog
-# scheme's centred differences, or the continuous ``iω`` and ``-ω²``.
-TIME_SYMBOLS = ("leapfrog", "exact")
+# The time-derivative symbols a FrequencySelection can carry: the continuous
+# ``iω`` and ``-ω²``, or the leapfrog scheme's centred differences.
+TIME_SYMBOLS = ("exact", "leapfrog")
 
 
 def _map_frequency_to_bin(freqs_all: torch.Tensor, f_hz: float) -> tuple[int, float]:
@@ -48,8 +48,8 @@ class FrequencySelection:
 
     All frequency-domain sources and observations must use the same instance
     (same bins). ``time_symbols`` picks ``lambda_t`` / ``lambda_tt``:
-    ``"leapfrog"`` (the inversion's) or ``"exact"`` (``iω``, ``-ω²``); defaults
-    follow ADR 0001.
+    ``"exact"`` (``iω``, ``-ω²``) or ``"leapfrog"`` (2nd-order centred
+    differences); defaults follow ADR 0001.
     """
 
     grid: Grid
@@ -61,7 +61,7 @@ class FrequencySelection:
     dt: float
     dt_nd: float
     requested_frequencies: Optional[torch.Tensor] = None
-    time_symbols: str = "leapfrog"
+    time_symbols: str = "exact"
     lambda_t: torch.Tensor = field(init=False, repr=False)
     lambda_tt: torch.Tensor = field(init=False, repr=False)
 
@@ -138,7 +138,7 @@ class FrequencySelection:
         fft_bins: Union[Sequence[int], torch.Tensor],
         *,
         requested_frequencies: Optional[Union[Sequence[float], torch.Tensor]] = None,
-        time_symbols: str = "leapfrog",
+        time_symbols: str = "exact",
     ) -> "FrequencySelection":
         """Build from integer rFFT / FFT bin indices on ``grid.t``."""
         bins = torch.as_tensor(fft_bins, dtype=torch.long, device=grid.device).reshape(

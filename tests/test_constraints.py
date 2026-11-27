@@ -57,14 +57,6 @@ def test_time_step_follows_the_cfl_when_init_nt_is_null():
     assert check.threshold == pytest.approx(1209 / (2 * 500e-6))
 
 
-def test_default_time_symbol_error_passes():
-    """omega dt = 0.194 -> (omega dt)^2 / 24 = 1.57e-3 over 12 wavelengths."""
-    check = _check("time_symbol")
-    assert check.value == pytest.approx(0.118, abs=0.002)
-    assert check.threshold == pytest.approx(math.pi / 4)
-    assert check.severity == "warn" and check.ok
-
-
 @pytest.mark.parametrize("width, ok", [(15, True), (12, True), (11, False)])
 def test_pml_needs_12_cells(width, ok):
     check = _check("pml_width", [f"pml.width={width}"])

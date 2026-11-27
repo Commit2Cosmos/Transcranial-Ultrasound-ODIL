@@ -42,7 +42,7 @@ from odil_wave import (
     WaveEquation,
 )
 from odil_wave.defaults import library_default
-from odil_wave.grid import TIME_SYMBOLS
+from odil_wave.grid import TIME_SYMBOLS, FrequencySelection
 from odil_wave.models.shepp_logan import SheppLogan
 
 from .atomic import write_text_atomic
@@ -268,7 +268,7 @@ class ObservationCfg:
     * ``space_order``: stencil order of the observation solve, as
       ``grid.space_order``.
     * ``time_symbols``: ``"exact"`` (``i omega``, ``-omega**2``) |
-      ``"leapfrog"`` (the inversion's centred differences).
+      ``"leapfrog"`` (centred differences), as :class:`FrequencySelection`.
     * ``pml_thickness_factor``: float >= 1; the observation PML's physical
       thickness relative to the inversion's, ``round(factor * pml.width *
       refine)`` cells.
@@ -278,7 +278,7 @@ class ObservationCfg:
     mode: str = "inverse_crime"
     refine: int = 3
     space_order: int = 4
-    time_symbols: str = "exact"
+    time_symbols: str = library_default(FrequencySelection, "time_symbols")
     pml_thickness_factor: float = 1.0
     noise: NoiseCfg = field(default_factory=NoiseCfg)
 
